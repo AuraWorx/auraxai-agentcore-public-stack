@@ -1,5 +1,6 @@
 import { Component, input, computed, inject, ChangeDetectionStrategy } from '@angular/core';
 import { ChartRendererComponent } from './renderers/chart-renderer.component';
+import { DiagramRendererComponent } from './renderers/diagram-renderer.component';
 import { DefaultRendererComponent } from './renderers/default-renderer.component';
 import { VisualStateService } from '../../../../services/visual-state/visual-state.service';
 
@@ -10,13 +11,21 @@ import { VisualStateService } from '../../../../services/visual-state/visual-sta
 @Component({
   selector: 'app-inline-visual',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ChartRendererComponent, DefaultRendererComponent],
+  imports: [ChartRendererComponent, DiagramRendererComponent, DefaultRendererComponent],
   template: `
     @if (!isDismissed()) {
       <div class="inline-visual-container">
         @switch (uiType()) {
           @case ('chart') {
             <app-chart-renderer
+              [payload]="payload()"
+              [isExpanded]="isExpanded()"
+              (dismiss)="onDismiss()"
+              (toggleExpanded)="onToggleExpanded()"
+            />
+          }
+          @case ('diagram') {
+            <app-diagram-renderer
               [payload]="payload()"
               [isExpanded]="isExpanded()"
               (dismiss)="onDismiss()"

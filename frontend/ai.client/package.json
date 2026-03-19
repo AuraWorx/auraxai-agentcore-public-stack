@@ -39,6 +39,7 @@
     "katex": "^0.16.25",
     "marked": "^17.0.1",
     "mermaid": "^11.12.1",
+    "ng-diagram": "^1.1.1",
     "ng2-charts": "^8.0.0",
     "ngx-markdown": "^21.0.0",
     "prismjs": "^1.30.0",

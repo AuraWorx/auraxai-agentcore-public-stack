@@ -70,6 +70,13 @@ TOOL_CATALOG: Dict[str, ToolMetadata] = {
         category=ToolCategory.DATA,
         icon="chart-bar",
     ),
+    "create_diagram": ToolMetadata(
+        tool_id="create_diagram",
+        name="Diagrams",
+        description="Create interactive flowcharts, architecture diagrams, org charts, and mind maps.",
+        category=ToolCategory.DATA,
+        icon="rectangle-group",
+    ),
 
     # --- Built-in Tools (Utilities) ---
     "calculator": ToolMetadata(

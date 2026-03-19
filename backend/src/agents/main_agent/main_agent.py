@@ -113,6 +113,11 @@ class MainAgent:
         self.tool_registry = create_default_registry()
         self.tool_filter = ToolFilter(self.tool_registry)
 
+        # DEBUG: Log registry state and enabled tools
+        logger.info(f"🔧 [DIAG] Registry tools: {self.tool_registry.get_all_tool_ids()}")
+        logger.info(f"🔧 [DIAG] Enabled tools requested: {self.enabled_tools}")
+        logger.info(f"🔧 [DIAG] Registry has create_diagram: {self.tool_registry.has_tool('create_diagram')}")
+
         # Register external MCP tool IDs from enabled tools
         # (These will be loaded lazily during _create_agent)
         self._register_external_mcp_tools()
@@ -142,6 +147,12 @@ class MainAgent:
             local_tools = filter_result.local_tools
             gateway_tool_ids = filter_result.gateway_tool_ids
             external_mcp_tool_ids = filter_result.external_mcp_tool_ids
+
+            # DEBUG: Log filtered tool results
+            local_tool_names = [getattr(t, 'tool_name', str(t)) for t in local_tools]
+            logger.info(f"🔧 [DIAG] Filtered local tools: {local_tool_names}")
+            logger.info(f"🔧 [DIAG] Gateway tools: {gateway_tool_ids}")
+            logger.info(f"🔧 [DIAG] External MCP tools: {external_mcp_tool_ids}")
 
             # Get gateway client and add to tools if available
             if gateway_tool_ids:

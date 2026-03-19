@@ -113,10 +113,14 @@ class ToolFilter:
         gateway_tool_ids = []
         external_mcp_tool_ids = []
 
+        logger.info(f"🔧 [DIAG-FILTER] Processing {len(enabled_tool_ids)} enabled_tool_ids: {enabled_tool_ids}")
+        logger.info(f"🔧 [DIAG-FILTER] Registry has {self.registry.get_tool_count()} tools: {self.registry.get_all_tool_ids()}")
+
         for tool_id in enabled_tool_ids:
             if self.registry.has_tool(tool_id):
                 # Local tool from registry
                 filtered_tools.append(self.registry.get_tool(tool_id))
+                logger.info(f"🔧 [DIAG-FILTER] ✅ '{tool_id}' found in registry")
             elif tool_id.startswith("gateway_"):
                 # Gateway MCP tool (AgentCore Gateway)
                 gateway_tool_ids.append(tool_id)
@@ -124,7 +128,7 @@ class ToolFilter:
                 # External MCP tool (deployed separately)
                 external_mcp_tool_ids.append(tool_id)
             else:
-                logger.warning(f"Tool '{tool_id}' not found in registry or catalog, skipping")
+                logger.warning(f"🔧 [DIAG-FILTER] ❌ Tool '{tool_id}' not found in registry or catalog, skipping")
 
         logger.info(f"Local tools enabled: {len(filtered_tools)}")
         logger.info(f"Gateway tools enabled: {len(gateway_tool_ids)}")

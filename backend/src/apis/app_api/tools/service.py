@@ -629,6 +629,8 @@ class ToolCatalogService:
         public_tools = {
             "calculator",
             "get_current_weather",
+            "create_visualization",
+            "create_diagram",
         }
         return tool_id in public_tools
 
@@ -638,6 +640,8 @@ class ToolCatalogService:
         enabled_by_default = {
             "fetch_url_content",
             "calculator",
+            "create_visualization",
+            "create_diagram",
         }
         return tool_id in enabled_by_default
 
