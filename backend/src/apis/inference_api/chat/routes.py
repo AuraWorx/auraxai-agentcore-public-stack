@@ -105,6 +105,39 @@ async def _resolve_caching_enabled(model_id: str | None, explicit_caching_enable
 
 
 # ============================================================
+# Spreadsheet Analysis Tool Injection
+# ============================================================
+
+SPREADSHEET_TOOL_IDS = {"list_available_files", "analyze_spreadsheet"}
+
+
+def _build_spreadsheet_tools(
+    enabled_tools: list | None,
+    assistant_id: str | None,
+    session_id: str,
+    user_id: str,
+) -> list:
+    """Create context-bound spreadsheet analysis tools if enabled by the user."""
+    if not enabled_tools:
+        return []
+
+    requested = SPREADSHEET_TOOL_IDS.intersection(enabled_tools)
+    if not requested:
+        return []
+
+    from agents.builtin_tools.spreadsheet_analysis import make_list_files_tool, make_analyze_tool
+
+    tools = []
+    if "list_available_files" in requested:
+        tools.append(make_list_files_tool(assistant_id, session_id, user_id))
+    if "analyze_spreadsheet" in requested:
+        tools.append(make_analyze_tool(assistant_id, session_id, user_id))
+
+    logger.info(f"Created {len(tools)} spreadsheet analysis tools (assistant={assistant_id})")
+    return tools
+
+
+# ============================================================
 # Helper Functions for Streaming Error/Status Messages
 # ============================================================
 
@@ -610,6 +643,26 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
             # AgentCore Memory tracks preferences across sessions per user_id
             # Supports multiple LLM providers: AWS Bedrock, OpenAI, and Google Gemini
             # Use augmented message and assistant system prompt if assistant RAG was applied
+
+            # Create context-bound spreadsheet analysis tools if enabled
+            # Resolve assistant_id: request param > session preferences (handles #205 workaround)
+            resolved_assistant_id = input_data.rag_assistant_id
+            if not resolved_assistant_id and not is_preview_session(input_data.session_id):
+                try:
+                    from apis.shared.sessions.metadata import get_session_metadata
+                    meta = await get_session_metadata(input_data.session_id, user_id)
+                    if meta and meta.preferences and meta.preferences.assistant_id:
+                        resolved_assistant_id = meta.preferences.assistant_id
+                except Exception:
+                    pass
+
+            extra_tools = _build_spreadsheet_tools(
+                enabled_tools=input_data.enabled_tools,
+                assistant_id=resolved_assistant_id,
+                session_id=input_data.session_id,
+                user_id=user_id,
+            )
+
             agent = await get_agent(
                 session_id=input_data.session_id,
                 user_id=user_id,
@@ -622,6 +675,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 provider=input_data.provider,
                 max_tokens=input_data.max_tokens,
                 agent_type=input_data.agent_type,
+                extra_tools=extra_tools,
             )
 
         # Resume requests must target interrupts that the cached agent

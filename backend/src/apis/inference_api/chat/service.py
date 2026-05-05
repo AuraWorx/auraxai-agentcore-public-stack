@@ -100,6 +100,7 @@ async def get_agent(
     provider: Optional[str] = None,
     max_tokens: Optional[int] = None,
     agent_type: Optional[str] = None,
+    extra_tools: Optional[list] = None,
 ) -> BaseAgent:
     """
     Get or create agent instance with current configuration for session
@@ -141,8 +142,8 @@ async def get_agent(
         agent_type=agent_type,
     )
 
-    # Check cache
-    if cache_key in _agent_cache:
+    # Check cache (skip for context-bound extra_tools — they contain per-request state)
+    if not extra_tools and cache_key in _agent_cache:
         logger.debug("✅ Agent cache hit")
         return _agent_cache[cache_key]
 
@@ -165,12 +166,18 @@ async def get_agent(
         caching_enabled=caching_enabled,
         provider=provider,
         max_tokens=max_tokens,
+        extra_tools=extra_tools,
     )
 
     # Stamp the type onto the construction snapshot so a paused turn can
     # resume on the same factory variant after cache eviction.
     if hasattr(agent, "_construction_snapshot"):
         agent._construction_snapshot["agent_type"] = resolved_agent_type
+
+    # Don't cache agents with context-bound extra_tools
+    if extra_tools:
+        logger.debug("⏭️ Skipping cache for agent with extra_tools")
+        return agent
 
     # Add to cache with LRU eviction
     if len(_agent_cache) >= _CACHE_MAX_SIZE:

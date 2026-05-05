@@ -58,6 +58,7 @@ class BaseAgent(ABC):
         provider: Optional[str] = None,
         max_tokens: Optional[int] = None,
         skip_persistence: bool = False,
+        extra_tools: Optional[List[Any]] = None,
     ):
         """
         Initialize base agent with shared infrastructure.
@@ -80,6 +81,7 @@ class BaseAgent(ABC):
         self.user_id = user_id or session_id
         self.auth_token = auth_token
         self.enabled_tools = enabled_tools
+        self.extra_tools = extra_tools or []
         self.agent = None
 
         # Initialize model configuration
@@ -399,6 +401,11 @@ class BaseAgent(ABC):
                     local_tools.append(client)
 
             logger.info(f"Added {len(external_clients)} external MCP clients to tools")
+
+        # Append context-bound tools (e.g., spreadsheet analysis) created per-request
+        if self.extra_tools:
+            local_tools.extend(self.extra_tools)
+            logger.info(f"Added {len(self.extra_tools)} extra context-bound tools")
 
         return local_tools
 
