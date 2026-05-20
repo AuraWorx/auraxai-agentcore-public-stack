@@ -1,0 +1,81 @@
+name: "Backup Data"
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Run at 3 AM UTC every day
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  LOAD_ENV_QUIET: true
+
+concurrency:
+  group: backup-data-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Backup Data
+    runs-on: ubuntu-24.04
+
+    environment: ${{ inputs.environment || 'production' }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      CDK_AWS_REGION: ${{ vars.AWS_REGION }}
+      CDK_PROJECT_PREFIX: ${{ vars.CDK_PROJECT_PREFIX }}
+      CDK_AWS_ACCOUNT: ${{ vars.CDK_AWS_ACCOUNT }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS credentials
+        uses: ./.github/actions/configure-aws-credentials
+        with:
+          aws-region: ${{ env.CDK_AWS_REGION }}
+          role-session-name: GitHubActions-BackupData
+          aws-role-arn: ${{ env.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Run data backup
+        run: |
+          bash scripts/stack-bootstrap/backup.sh
+
+      - name: Generate summary
+        if: always()
+        run: |
+          source scripts/common/summary.sh
+
+          if [ "${{ job.status }}" = "success" ]; then
+            STATUS="success"
+          else
+            STATUS="failure"
+          fi
+
+          write_workflow_header "Data Backup" "$STATUS" "BackupData"
+
+          if [ "$STATUS" = "failure" ]; then
+            write_failure_summary "Data Backup" "1" "Backup failed — check logs above"
+          fi
