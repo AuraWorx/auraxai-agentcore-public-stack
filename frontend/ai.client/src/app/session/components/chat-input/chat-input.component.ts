@@ -47,7 +47,6 @@ import {
   MentionableAgent,
 } from '../../../agents/services/agent-mention.service';
 import { AgentMentionMenuComponent } from './agent-mention-menu.component';
-import { ConversationModePickerComponent } from './conversation-mode-picker.component';
 import { SteeringService } from '../../services/chat/steering.service';
 
 // Must stay in sync with the inline min-height/max-height on the textarea in
@@ -106,7 +105,7 @@ interface MentionToken {
 
 @Component({
   selector: 'app-chat-input',
-  imports: [AnnouncementBannerComponent, FormsModule, ModelDropdownComponent, NgIcon, QuotaWarningBannerComponent, StorageQuotaBannerComponent, TooltipDirective, FileCardComponent, AgentMentionMenuComponent, SpinnerComponent, ConversationModePickerComponent],
+  imports: [AnnouncementBannerComponent, FormsModule, ModelDropdownComponent, NgIcon, QuotaWarningBannerComponent, StorageQuotaBannerComponent, TooltipDirective, FileCardComponent, AgentMentionMenuComponent, SpinnerComponent],
   // `relative` is the anchor the announcement banner floats against — it sits
   // `bottom-full` of this host, above the quota tabs and clear of the composer.
   host: { class: 'relative block' },

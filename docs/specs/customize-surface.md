@@ -254,6 +254,26 @@ This is the second time the "git history says dormant" heuristic has misled on t
 first was `thinking` in step 3, declared in `curated-models.ts` and absent from the deployed
 records). **Check the data in the environment that matters.**
 
+### ⚠️ The composer picker is PARKED (2026-09-13)
+
+`ConversationModePickerComponent` has been **removed from the composer and deleted from the
+tree**, on the owner's call: the placement works, but he wants feedback and thinking time before
+committing a permanent composer slot to it. Alternatives under consideration are the conversation
+title menu, folding it into the model dropdown, the new-chat empty state, a `/mode` inline command,
+and generalising the assistant indicator into a conversation-context chip.
+
+Everything behind the control is untouched and still live: `SystemPromptsService`, the
+`/system-prompts/` catalog, `selected_prompt_id` on `SessionPreferences`, the hydration fix in
+step 5 notes, and the admin CRUD at `/admin/system-prompts`. **Only the control is gone**, so
+restoring it is a revert, not a rebuild.
+
+⚠️ **RELEASE GATE — do not ship this to prod alongside the drawer deletion.** `origin/main` still
+carries `components/model-settings/`, so prod users select Guided Learning through the old drawer
+today. `develop` deletes that drawer (step 5) *and* now has no picker. The first release that
+carries both to prod leaves **no way to select a mode at all**, silently killing a feature at
+~60 sessions/month and growing. Before that release: either restore the picker, land a
+replacement placement, or accept the regression deliberately and tell derrickfink@boisestate.edu.
+
 ## Step 5 notes
 
 ⚠️ **A latent bug surfaced while verifying the new picker, and is fixed here.** The session

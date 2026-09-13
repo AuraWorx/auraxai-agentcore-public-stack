@@ -178,13 +178,6 @@
             </div>
           }
 
-          <!--
-            Conversation Mode. Sits with the model and effort controls because all
-            three answer the same question — how should *this* conversation run.
-            Renders nothing until an admin authors a mode.
-          -->
-          <app-conversation-mode-picker [sessionId]="sessionId()" />
-
           @if (showVoiceControl()) {
           <!-- Voice Toggle Button -->
           <button
