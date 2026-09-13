@@ -149,7 +149,7 @@ import { ModelService } from '../../../session/services/model/model.service';
           <h3 class="mt-3 text-sm/6 font-semibold text-gray-900 dark:text-white">Preview your agent</h3>
           <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">Save this agent to start a live preview here.</p>
           @if (canSave()) {
-            <button type="button" (click)="save.emit()" [disabled]="saving()" class="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-2 text-sm/6 font-semibold text-white shadow-xs transition hover:bg-primary-600 disabled:opacity-50">
+            <button type="button" (click)="save.emit()" [disabled]="saving()" class="mt-4 inline-flex items-center gap-1.5 rounded-2xl bg-primary-accessible px-3 py-2 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 disabled:opacity-50">
               {{ saving() ? 'Saving…' : 'Save & preview' }}
             </button>
           }

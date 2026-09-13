@@ -107,9 +107,9 @@ function styleForFilename(filename: string): FileKindStyle {
 
         <!-- Download button -->
         <a
-          class="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary-500 px-3.5 py-1.5
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-2xl bg-primary-accessible px-3.5 py-1.5
                  text-sm/5 font-semibold text-white! no-underline! transition-colors
-                 hover:bg-primary-700
+                 hover:brightness-95
                  focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
           [href]="f.download_url"
           [attr.download]="f.filename"

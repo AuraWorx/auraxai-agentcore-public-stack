@@ -225,7 +225,7 @@ import { SessionService } from '../../../../../services/session/session.service'
           @if (displayMode() === 'fullscreen') {
             <button
               type="button"
-              class="ml-auto flex shrink-0 items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+              class="ml-auto flex shrink-0 items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
               (click)="exitFullscreen()"
             >
               <svg

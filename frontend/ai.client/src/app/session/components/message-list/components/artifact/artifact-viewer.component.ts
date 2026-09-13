@@ -52,7 +52,7 @@ import type { ArtifactContent } from '../../../../services/artifacts/artifact-ht
             </p>
             <button
               type="button"
-              class="rounded-md bg-primary-accessible px-3 py-1.5 text-sm font-medium text-white transition-[filter] hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accessible focus-visible:ring-offset-1 dark:focus-visible:ring-offset-gray-900"
+              class="rounded-2xl bg-primary-accessible px-3 py-1.5 text-sm font-medium text-white transition-[filter] hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accessible focus-visible:ring-offset-1 dark:focus-visible:ring-offset-gray-900"
               (click)="retrySource.emit()"
             >
               Try again
@@ -85,7 +85,7 @@ import type { ArtifactContent } from '../../../../services/artifacts/artifact-ht
             </p>
             <button
               type="button"
-              class="rounded-md bg-primary-accessible px-3 py-1.5 text-sm font-medium text-white transition-[filter] hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accessible focus-visible:ring-offset-1 dark:focus-visible:ring-offset-gray-900"
+              class="rounded-2xl bg-primary-accessible px-3 py-1.5 text-sm font-medium text-white transition-[filter] hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accessible focus-visible:ring-offset-1 dark:focus-visible:ring-offset-gray-900"
               (click)="retry.emit()"
             >
               Try again

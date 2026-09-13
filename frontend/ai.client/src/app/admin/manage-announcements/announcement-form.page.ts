@@ -325,7 +325,7 @@ function byteLength(value: string): number {
                         type="button"
                         (click)="toggleRole(role.roleId)"
                         [attr.aria-pressed]="isRoleSelected(role.roleId)"
-                        class="rounded-sm border px-2.5 py-1 text-xs/5 font-medium focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        class="rounded-2xl border px-2.5 py-1 text-xs/5 font-medium focus:outline-none focus:ring-2 focus:ring-primary-500"
                         [class]="roleChipClass(role.roleId)"
                       >
                         {{ role.displayName || role.roleId }}
@@ -417,14 +417,14 @@ function byteLength(value: string): number {
           <div class="flex justify-end gap-3">
             <a
               routerLink="/admin/manage-announcements"
-              class="rounded-sm border border-gray-300 bg-white px-4 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              class="rounded-2xl border border-gray-300 bg-white px-4 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             >
               Cancel
             </a>
             <button
               type="submit"
               [disabled]="!canSubmit()"
-              class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               @if (isSubmitting()) {
                 <app-spinner size="sm" variant="on-solid" label="Saving" />
@@ -619,7 +619,7 @@ export class AnnouncementFormPage implements OnInit {
 
   protected roleChipClass(roleId: string): string {
     return this.isRoleSelected(roleId)
-      ? 'border-primary-600 bg-primary-600 text-white'
+      ? 'border-primary-accessible bg-primary-accessible text-white'
       : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600';
   }
 

@@ -70,7 +70,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
           </div>
           <a
             routerLink="/admin/connectors/new"
-            class="inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-sm bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
+            class="inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
           >
             <ng-icon name="heroPlus" class="size-5" />
             Add Connector
@@ -326,7 +326,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
                 </p>
                 <a
                   routerLink="/admin/connectors/new"
-                  class="mt-6 inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
+                  class="mt-6 inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
                 >
                   <ng-icon name="heroPlus" class="size-5" />
                   Add Connector

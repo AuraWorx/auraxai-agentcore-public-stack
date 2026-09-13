@@ -176,7 +176,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                 <button
                   type="button"
                   (click)="copyCallbackUrl(created.callbackUrl || '')"
-                  class="inline-flex items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                  class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                   [appTooltip]="callbackCopied() ? 'Copied!' : 'Copy to clipboard'"
                 >
                   <ng-icon [name]="callbackCopied() ? 'heroClipboardDocumentCheck' : 'heroClipboard'" class="size-5" />
@@ -188,7 +188,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
               <button
                 type="button"
                 (click)="goBack()"
-                class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
               >
                 Done
               </button>
@@ -294,7 +294,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                       <label
-                        class="inline-flex cursor-pointer items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus-within:outline-hidden focus-within:ring-3 focus-within:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                        class="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus-within:outline-hidden focus-within:ring-3 focus-within:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                       >
                         {{ connectorForm.controls.iconData.value ? 'Replace' : 'Upload' }}
                         <input
@@ -308,7 +308,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                         <button
                           type="button"
                           (click)="removeUploadedIcon()"
-                          class="inline-flex items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                          class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                         >
                           Remove
                         </button>
@@ -352,7 +352,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                       <button
                         type="button"
                         (click)="copyCallbackUrl(loaded.callbackUrl || '')"
-                        class="inline-flex items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                        class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                         [appTooltip]="callbackCopied() ? 'Copied!' : 'Copy to clipboard'"
                       >
                         <ng-icon [name]="callbackCopied() ? 'heroClipboardDocumentCheck' : 'heroClipboard'" class="size-5" />
@@ -644,7 +644,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
               <button
                 type="submit"
                 [disabled]="isSubmitting() || connectorForm.invalid || !!credentialPairError()"
-                class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 @if (isSubmitting()) {
                   <app-spinner size="sm" variant="on-solid" label="Saving" />
@@ -658,7 +658,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                 type="button"
                 (click)="goBack()"
                 [disabled]="isSubmitting()"
-                class="rounded-sm border border-gray-300 bg-white px-6 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                class="rounded-2xl border border-gray-300 bg-white px-6 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
               >
                 Cancel
               </button>

@@ -44,13 +44,13 @@ interface SkillCard {
   providers: [provideIcons({ heroMagnifyingGlass, heroArrowTopRightOnSquare })],
   template: `
     <div class="min-h-dvh">
-      <div class="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
+      <div class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
         <app-customize-tabs />
 
-        <div class="mt-6 mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div class="mt-6 mb-10 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 class="text-2xl/8 font-bold text-gray-900 dark:text-white">Skills</h1>
-            <p class="mt-1 text-sm/6 text-gray-600 dark:text-gray-400">
+            <h1 class="text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl dark:text-white">Skills</h1>
+            <p class="mt-1.5 max-w-2xl text-sm/6 text-gray-600 dark:text-gray-400">
               Instructions your assistant can pull in on demand. Skills are off until you
               turn them on, and apply to every conversation.
             </p>
@@ -145,7 +145,7 @@ interface SkillCard {
           <p class="mt-6 text-sm/6 text-gray-500 dark:text-gray-400" aria-live="polite">
             {{ enabledLabel() }}
           </p>
-          <ul class="mt-3 grid gap-3 sm:grid-cols-2">
+          <ul class="mt-3 grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
             @for (card of cards(); track card.skill.skillId) {
               <li>
                 <app-customize-card
