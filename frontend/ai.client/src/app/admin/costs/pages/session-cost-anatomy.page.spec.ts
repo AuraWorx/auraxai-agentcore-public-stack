@@ -275,29 +275,46 @@ describe('SessionCostAnatomyPage', () => {
       expect(page.bytes(2_048)).toBe('2.0 KB');
     });
 
+    // ⚠️ Never replace the `navigator` global here (e.g. `vi.stubGlobal('navigator',
+    // {...navigator, clipboard})`): a spread drops prototype getters such as
+    // `userAgent`, and with the suite running `isolate: false` Angular's forms
+    // `DefaultValueAccessor` in a *later* spec file then throws on
+    // `navigator.userAgent.toLowerCase()`. Override only the `clipboard`
+    // property and put it back.
+    function withClipboard<T>(clipboard: unknown, run: () => Promise<T>): Promise<T> {
+      const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+      Object.defineProperty(navigator, 'clipboard', { value: clipboard, configurable: true });
+      return run().finally(() => {
+        if (original) Object.defineProperty(navigator, 'clipboard', original);
+        else delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+      });
+    }
+
     it('copies profile + anatomy as one JSON document and flips the button label', async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
-      vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
-      const page = setup(vi.fn().mockReturnValue(of(MOCK_ANATOMY))).componentInstance;
-      await vi.waitFor(() => expect(page.profileResource.hasValue()).toBe(true));
-      await vi.waitFor(() => expect(page.anatomyResource.hasValue()).toBe(true));
+      await withClipboard({ writeText }, async () => {
+        const page = setup(vi.fn().mockReturnValue(of(MOCK_ANATOMY))).componentInstance;
+        await vi.waitFor(() => expect(page.profileResource.hasValue()).toBe(true));
+        await vi.waitFor(() => expect(page.anatomyResource.hasValue()).toBe(true));
 
-      await page.copyDiagnosticJson();
+        await page.copyDiagnosticJson();
 
-      expect(writeText).toHaveBeenCalledTimes(1);
-      const doc = JSON.parse(writeText.mock.calls[0][0]);
-      expect(doc.profile.sessionId).toBe('sess-1');
-      expect(doc.anatomy.calls).toHaveLength(2);
-      expect(doc._about).toContain('Content-free');
-      expect(page.copied()).toBe(true);
+        expect(writeText).toHaveBeenCalledTimes(1);
+        const doc = JSON.parse(writeText.mock.calls[0][0]);
+        expect(doc.profile.sessionId).toBe('sess-1');
+        expect(doc.anatomy.calls).toHaveLength(2);
+        expect(doc._about).toContain('Content-free');
+        expect(page.copied()).toBe(true);
+      });
     });
 
     it('does not throw when the clipboard is unavailable', async () => {
-      vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
-      const page = setup(vi.fn().mockReturnValue(of(MOCK_ANATOMY))).componentInstance;
-      await vi.waitFor(() => expect(page.profileResource.hasValue()).toBe(true));
-      await expect(page.copyDiagnosticJson()).resolves.toBeUndefined();
-      expect(page.copied()).toBe(false);
+      await withClipboard(undefined, async () => {
+        const page = setup(vi.fn().mockReturnValue(of(MOCK_ANATOMY))).componentInstance;
+        await vi.waitFor(() => expect(page.profileResource.hasValue()).toBe(true));
+        await expect(page.copyDiagnosticJson()).resolves.toBeUndefined();
+        expect(page.copied()).toBe(false);
+      });
     });
   });
 
