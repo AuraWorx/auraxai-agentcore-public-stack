@@ -2,7 +2,12 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentMentionService } from '../../../../agents/services/agent-mention.service';
-import { MentionTextComponent, splitMentions } from './mention-text.component';
+import { SkillCommandService } from '../../../../services/skill/skill-command.service';
+import {
+  MentionTextComponent,
+  splitMentions,
+  splitSkillCommands,
+} from './mention-text.component';
 
 const NAMES = ['Brand Deck Builder', 'Brand', 'myBoiseState'];
 
@@ -80,7 +85,10 @@ describe('MentionTextComponent', () => {
   async function render(text: string) {
     await TestBed.configureTestingModule({
       imports: [MentionTextComponent],
-      providers: [{ provide: AgentMentionService, useClass: MentionServiceStub }],
+      providers: [
+        { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
+      ],
     }).compileComponents();
 
     const fixture = TestBed.createComponent(MentionTextComponent);
@@ -101,5 +109,62 @@ describe('MentionTextComponent', () => {
     const source = 'hey @Brand Deck Builder\n  indented line';
     const fixture = await render(source);
     expect(fixture.nativeElement.textContent).toBe(source);
+  });
+});
+
+/** Stand-in for SkillCommandService: the real one reaches SkillService → HttpClient. */
+class SkillCommandServiceStub {
+  readonly commands = signal([
+    { skillId: 's1', slug: 'brand-deck', name: 'Brand Deck', description: '' },
+  ]);
+  async load(): Promise<void> {}
+}
+
+const SLUGS = ['brand-deck', 'web-research'];
+
+/**
+ * The second pass over what `splitMentions` left as prose. It runs separately because the
+ * two are matched against different things — Agent names (with spaces) vs skill slugs
+ * (without) — and because a mention must never be re-examined for slashes.
+ */
+describe('splitSkillCommands', () => {
+  it('marks a known command', () => {
+    expect(splitSkillCommands([{ text: 'run /brand-deck now', isMention: false }], SLUGS)).toEqual([
+      { text: 'run ', isMention: false },
+      { text: '/brand-deck', isMention: false, isCommand: true },
+      { text: ' now', isMention: false },
+    ]);
+  });
+
+  it('leaves an unknown slug as prose', () => {
+    const input = [{ text: '/not-a-skill', isMention: false }];
+    expect(splitSkillCommands(input, SLUGS)).toEqual(input);
+  });
+
+  it.each(['and/or', 'open 24/7', 'https://example.com', 'src/app/foo', '/brand-deck/x'])(
+    'leaves %j as prose',
+    (text) => {
+      expect(splitSkillCommands([{ text, isMention: false }], SLUGS)).toEqual([
+        { text, isMention: false },
+      ]);
+    },
+  );
+
+  it('never re-examines a mention run', () => {
+    const input = [{ text: '@Brand/Deck', isMention: true }];
+    expect(splitSkillCommands(input, SLUGS)).toEqual(input);
+  });
+
+  it('is inert with no known slugs', () => {
+    const input = [{ text: '/brand-deck', isMention: false }];
+    expect(splitSkillCommands(input, [])).toEqual(input);
+  });
+
+  it('reproduces the source text exactly across every run', () => {
+    const source = 'hey /brand-deck and /web-research please';
+    const joined = splitSkillCommands([{ text: source, isMention: false }], SLUGS)
+      .map((segment) => segment.text)
+      .join('');
+    expect(joined).toBe(source);
   });
 });

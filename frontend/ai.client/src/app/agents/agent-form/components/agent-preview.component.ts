@@ -120,6 +120,7 @@ import { ModelService } from '../../../session/services/model/model.service';
                 [showVoiceControl]="false"
                 [autoFocus]="false"
                 [showAgentMentions]="false"
+              [showSkillCommands]="false"
                 [showAnnouncements]="false"
                 (messageSubmitted)="onMessageSubmitted($event)"
                 (messageCancelled)="onMessageCancelled()"

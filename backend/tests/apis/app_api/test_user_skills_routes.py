@@ -114,6 +114,22 @@ class TestGetUserSkills:
             "web_research",
         ]
 
+    def test_serves_the_runtime_activation_slug(self, monkeypatch):
+        """The `/` command menu writes this slug into the message verbatim.
+
+        It has to be the same string the ``AgentSkills`` plugin injects as
+        ``Skill.name``, so it is derived here from the one shared slug rule
+        rather than re-implemented client-side.
+        """
+        repo = _FakeRepo(
+            skills=[_skill("pdf_workflows_v2", "PDF Workflows")],
+            prefs={},
+        )
+        client = _make_client(monkeypatch, ["pdf_workflows_v2"], repo)
+
+        body = client.get("/skills/").json()
+        assert body["skills"][0]["slug"] == "pdf-workflows-v2"
+
     def test_non_active_skills_are_hidden(self, monkeypatch):
         repo = _FakeRepo(
             skills=[

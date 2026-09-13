@@ -125,6 +125,21 @@
       />
     }
 
+    <!--
+      `/` skill-command menu. Same anchoring as the `@` menu, and mutually exclusive with
+      it — `isSkillMenuVisible` already subtracts the case where both tokens would match,
+      so the two can never both claim the arrow keys.
+    -->
+    @if (isSkillMenuVisible()) {
+      <app-skill-command-menu
+        [items]="skillResults()"
+        [activeIndex]="skillActiveIndex()"
+        [query]="skillQuery()"
+        (picked)="onSkillPicked($event)"
+        (browseAll)="onSkillBrowseAll()"
+      />
+    }
+
     <!-- Main Input Area -->
     <div class="relative">
       <label for="user-message" class="sr-only">How can I help you today?</label>
@@ -143,10 +158,20 @@
         [attr.placeholder]="placeholder()"
         role="combobox"
         aria-autocomplete="list"
-        [attr.aria-expanded]="isMentionMenuOpen()"
-        [attr.aria-controls]="isMentionMenuOpen() ? 'agent-mention-listbox' : null"
+        [attr.aria-expanded]="isMentionMenuOpen() || isSkillMenuVisible()"
+        [attr.aria-controls]="
+          isMentionMenuOpen()
+            ? 'agent-mention-listbox'
+            : isSkillMenuVisible()
+              ? 'skill-command-listbox'
+              : null
+        "
         [attr.aria-activedescendant]="
-          isMentionMenuOpen() ? 'agent-mention-option-' + mentionActiveIndex() : null
+          isMentionMenuOpen()
+            ? 'agent-mention-option-' + mentionActiveIndex()
+            : isSkillMenuVisible()
+              ? 'skill-command-option-' + skillActiveIndex()
+              : null
         "
         class="block w-full resize-none bg-transparent px-6 py-4 text-base text-gray-900 placeholder:text-gray-500 dark:text-gray-100 dark:placeholder:text-gray-400 focus:outline-hidden overflow-y-auto"
         style="min-height: 60px; max-height: 200px;"
@@ -228,6 +253,35 @@
                 (click)="clearMention()"
                 class="flex size-4 shrink-0 items-center justify-center rounded-full text-state-success-500 transition-colors hover:bg-state-success-200 hover:text-state-success-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-state-success-500 dark:text-state-success-400 dark:hover:bg-state-success-700 dark:hover:text-state-success-200"
                 aria-label="Send this message to the assistant instead"
+              >
+                <ng-icon name="heroXMark" class="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          }
+
+          <!--
+            Invoked-skill chips. Says which skills this message will run, and gives the way
+            back out. Unlike the mention chip these are not a separate binding — they are
+            a read of the `/slug` tokens in the text, so clearing one edits the text.
+
+            Neutral surface, brand blue only in the label. `bg-primary-50` looks like a
+            pale tint by its name but is not one: the primary scale is generated from
+            #0033a0 by lightness offset alone and keeps full chroma, so `primary-50`
+            resolves to rgb(118,179,255) — a saturated mid-blue that reads as a filled
+            blob behind small text. The `state-*` scales ARE real tints; `primary` is not.
+          -->
+          @for (command of invokedSkills(); track command.skillId) {
+            <div
+              class="flex items-center gap-1 rounded-full border border-gray-300 bg-white pl-2.5 pr-1 py-1 text-xs font-medium text-primary-accessible dark:border-gray-500 dark:bg-gray-700 dark:text-primary-50"
+              role="status"
+              [attr.aria-label]="'This message runs the ' + command.name + ' skill'"
+            >
+              <span class="max-w-40 truncate">{{ command.name }}</span>
+              <button
+                type="button"
+                (click)="clearSkillCommand(command)"
+                class="flex size-4 shrink-0 items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-gray-200"
+                [attr.aria-label]="'Do not run the ' + command.name + ' skill'"
               >
                 <ng-icon name="heroXMark" class="size-3" aria-hidden="true" />
               </button>
