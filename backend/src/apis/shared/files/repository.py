@@ -287,6 +287,51 @@ class FileUploadRepository:
             logger.error(f"Error listing files for session {session_id}: {e}")
             raise
 
+    async def list_session_file_stats(self, session_id: str) -> List[dict]:
+        """Content-free upload stats for one session — admin diagnostics.
+
+        Same ``SessionIndex`` query as :meth:`list_session_files`, but projects
+        only ``uploadId, sessionId, sizeBytes, mimeType, source, status,
+        createdAt``. ``filename``, ``s3Key`` and ``s3Uri`` carry the user's
+        chosen file name and never leave DynamoDB on this path. Returns plain
+        dicts (``sizeBytes`` as ``int``), not ``FileMetadata``, because that
+        model requires the very fields this read refuses to fetch.
+        """
+        from apis.shared.observability.content_policy import (
+            FILE_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FILE_ROW_PROJECTION)
+        try:
+            query_params = {
+                "IndexName": "SessionIndex",
+                "KeyConditionExpression": "GSI1PK = :pk",
+                "ExpressionAttributeValues": {":pk": f"CONV#{session_id}"},
+                "ProjectionExpression": projection,
+                "ExpressionAttributeNames": names,
+            }
+            response = self._table.query(**query_params)
+            items = response.get("Items", [])
+            while "LastEvaluatedKey" in response:
+                query_params["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+                response = self._table.query(**query_params)
+                items.extend(response.get("Items", []))
+
+            stats: List[dict] = []
+            for item in items:
+                row = strip_content(dict(item))
+                size = row.get("sizeBytes")
+                if isinstance(size, Decimal):
+                    row["sizeBytes"] = int(size)
+                stats.append(row)
+            return stats
+
+        except ClientError as e:
+            logger.error(f"Error listing file stats for session {session_id}: {e}")
+            raise
+
     # =========================================================================
     # Quota Operations
     # =========================================================================
