@@ -75,7 +75,7 @@ import { ToastService } from '../../services/toast/toast.service';
               <div class="flex shrink-0 items-center gap-2">
                 <a
                   [routerLink]="['/admin/system-prompts/edit', prompt.prompt_id]"
-                  class="inline-flex items-center gap-1 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                  class="inline-flex items-center gap-1 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                   [attr.aria-label]="'Edit ' + prompt.name"
                 >
                   <ng-icon name="heroPencil" class="size-4" />
@@ -84,7 +84,7 @@ import { ToastService } from '../../services/toast/toast.service';
                 <button
                   type="button"
                   (click)="onDelete(prompt)"
-                  class="inline-flex items-center gap-1 rounded-sm border border-state-danger-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-state-danger-700 hover:bg-state-danger-50 focus:outline-none focus:ring-2 focus:ring-state-danger-500 dark:border-state-danger-500 dark:bg-gray-700 dark:text-state-danger-400 dark:hover:bg-state-danger-900/20"
+                  class="inline-flex items-center gap-1 rounded-2xl border border-state-danger-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-state-danger-700 hover:bg-state-danger-50 focus:outline-none focus:ring-2 focus:ring-state-danger-500 dark:border-state-danger-500 dark:bg-gray-700 dark:text-state-danger-400 dark:hover:bg-state-danger-900/20"
                   [attr.aria-label]="'Delete ' + prompt.name"
                 >
                   <ng-icon name="heroTrash" class="size-4" />

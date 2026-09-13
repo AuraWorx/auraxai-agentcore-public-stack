@@ -12,7 +12,7 @@
       </div>
       <div class="flex items-center gap-2">
         @if (!loading() && mode() === 'edit' && userPermission() === 'owner') {
-          <button type="button" (click)="openShareDialog()" class="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
+          <button type="button" (click)="openShareDialog()" class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
             <ng-icon name="heroShare" class="size-4" aria-hidden="true" />
             Share
           </button>
@@ -485,8 +485,8 @@
                       <div class="flex items-center gap-2">
                         <span class="text-xs/5 font-medium text-gray-600 dark:text-gray-300">Access:</span>
                         <div class="flex rounded-lg border border-gray-300 p-0.5 dark:border-gray-600">
-                          <button type="button" (click)="setAccess(sel.ref, 'read')" class="rounded-md px-2.5 py-1 text-xs/5 font-medium transition" [class.bg-white]="sel.access === 'read'" [class.shadow-xs]="sel.access === 'read'" [class.text-gray-900]="sel.access === 'read'" [class.dark:bg-gray-700]="sel.access === 'read'" [class.dark:text-white]="sel.access === 'read'" [class.text-gray-500]="sel.access !== 'read'">Read</button>
-                          <button type="button" (click)="setAccess(sel.ref, 'readwrite')" [disabled]="!canWrite(sel)" class="rounded-md px-2.5 py-1 text-xs/5 font-medium transition disabled:cursor-not-allowed disabled:opacity-40" [class.bg-white]="sel.access === 'readwrite'" [class.shadow-xs]="sel.access === 'readwrite'" [class.text-gray-900]="sel.access === 'readwrite'" [class.dark:bg-gray-700]="sel.access === 'readwrite'" [class.dark:text-white]="sel.access === 'readwrite'" [class.text-gray-500]="sel.access !== 'readwrite'" [appTooltip]="canWrite(sel) ? '' : 'Editor access on the space is required to write'" appTooltipPosition="top">Read + write</button>
+                          <button type="button" (click)="setAccess(sel.ref, 'read')" class="rounded-2xl px-2.5 py-1 text-xs/5 font-medium transition" [class.bg-white]="sel.access === 'read'" [class.shadow-xs]="sel.access === 'read'" [class.text-gray-900]="sel.access === 'read'" [class.dark:bg-gray-700]="sel.access === 'read'" [class.dark:text-white]="sel.access === 'read'" [class.text-gray-500]="sel.access !== 'read'">Read</button>
+                          <button type="button" (click)="setAccess(sel.ref, 'readwrite')" [disabled]="!canWrite(sel)" class="rounded-2xl px-2.5 py-1 text-xs/5 font-medium transition disabled:cursor-not-allowed disabled:opacity-40" [class.bg-white]="sel.access === 'readwrite'" [class.shadow-xs]="sel.access === 'readwrite'" [class.text-gray-900]="sel.access === 'readwrite'" [class.dark:bg-gray-700]="sel.access === 'readwrite'" [class.dark:text-white]="sel.access === 'readwrite'" [class.text-gray-500]="sel.access !== 'readwrite'" [appTooltip]="canWrite(sel) ? '' : 'Editor access on the space is required to write'" appTooltipPosition="top">Read + write</button>
                         </div>
                       </div>
                       <label class="flex items-center gap-2 text-xs/5 text-gray-600 dark:text-gray-300">

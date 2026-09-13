@@ -11,7 +11,7 @@
       <div class="flex items-center gap-3">
         <button
           (click)="refresh()"
-          class="inline-flex items-center gap-1.5 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
           [appTooltip]="'Refresh'"
           appTooltipPosition="bottom"
           aria-label="Refresh dashboard"
@@ -20,7 +20,7 @@
         </button>
         <button
           (click)="navigateToNewInferenceJob()"
-          class="inline-flex items-center gap-1.5 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
         >
           <ng-icon name="heroPlus" class="size-4" />
           New Inference Job
@@ -158,13 +158,13 @@
                     >Yes</button>
                     <button
                       (click)="cancelStopTraining()"
-                      class="rounded-sm border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                      class="rounded-2xl border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                     >No</button>
                   </div>
                 } @else {
                   <button
                     (click)="confirmStopTraining(job.job_id)"
-                    class="inline-flex items-center gap-1.5 rounded-sm border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-state-danger-300 hover:bg-state-danger-50 hover:text-state-danger-600 dark:border-gray-600 dark:text-gray-300 dark:hover:border-state-danger-700 dark:hover:bg-state-danger-900/20 dark:hover:text-state-danger-400"
+                    class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-state-danger-300 hover:bg-state-danger-50 hover:text-state-danger-600 dark:border-gray-600 dark:text-gray-300 dark:hover:border-state-danger-700 dark:hover:bg-state-danger-900/20 dark:hover:text-state-danger-400"
                     [attr.aria-label]="'Stop training job ' + job.job_id"
                   >
                     <ng-icon name="heroStopSolid" class="size-3.5" />
@@ -206,13 +206,13 @@
                     >Yes</button>
                     <button
                       (click)="cancelStopInference()"
-                      class="rounded-sm border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                      class="rounded-2xl border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                     >No</button>
                   </div>
                 } @else {
                   <button
                     (click)="confirmStopInference(job.job_id)"
-                    class="inline-flex items-center gap-1.5 rounded-sm border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-state-danger-300 hover:bg-state-danger-50 hover:text-state-danger-600 dark:border-gray-600 dark:text-gray-300 dark:hover:border-state-danger-700 dark:hover:bg-state-danger-900/20 dark:hover:text-state-danger-400"
+                    class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-state-danger-300 hover:bg-state-danger-50 hover:text-state-danger-600 dark:border-gray-600 dark:text-gray-300 dark:hover:border-state-danger-700 dark:hover:bg-state-danger-900/20 dark:hover:text-state-danger-400"
                     [attr.aria-label]="'Stop inference job ' + job.job_id"
                   >
                     <ng-icon name="heroStopSolid" class="size-3.5" />
@@ -288,7 +288,7 @@
                         </button>
                         <button
                           (click)="cancelStopTraining()"
-                          class="rounded-sm border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                          class="rounded-2xl border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                         >
                           No
                         </button>
@@ -398,7 +398,7 @@
                         </button>
                         <button
                           (click)="cancelStopInference()"
-                          class="rounded-sm border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                          class="rounded-2xl border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                         >
                           No
                         </button>

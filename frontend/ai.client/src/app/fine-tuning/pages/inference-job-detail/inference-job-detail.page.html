@@ -46,7 +46,7 @@
       </div>
       <button
         (click)="refreshJob()"
-        class="inline-flex items-center gap-1.5 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+        class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
         [appTooltip]="'Refresh'"
         appTooltipPosition="bottom"
         aria-label="Refresh job details"
@@ -165,7 +165,7 @@
           </button>
           <button
             (click)="cancelStop()"
-            class="rounded-sm border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+            class="rounded-2xl border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
           >
             Cancel
           </button>
@@ -173,7 +173,7 @@
       } @else if (canStop(job.status)) {
         <button
           (click)="confirmStop()"
-          class="inline-flex items-center gap-1.5 rounded-sm border border-state-danger-300 bg-white px-4 py-2 text-sm font-medium text-state-danger-700 hover:bg-state-danger-50 dark:border-state-danger-700 dark:bg-gray-800 dark:text-state-danger-400 dark:hover:bg-state-danger-900/20"
+          class="inline-flex items-center gap-1.5 rounded-2xl border border-state-danger-300 bg-white px-4 py-2 text-sm font-medium text-state-danger-700 hover:bg-state-danger-50 dark:border-state-danger-700 dark:bg-gray-800 dark:text-state-danger-400 dark:hover:bg-state-danger-900/20"
         >
           <ng-icon name="heroStopSolid" class="size-4" />
           Stop Job
@@ -187,7 +187,7 @@
         <h2 class="text-base/7 font-semibold text-gray-900 dark:text-white">CloudWatch Logs</h2>
         <button
           (click)="refreshLogs()"
-          class="inline-flex items-center gap-1.5 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          class="inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
           [appTooltip]="'Refresh Logs'"
           appTooltipPosition="top"
           aria-label="Refresh logs"

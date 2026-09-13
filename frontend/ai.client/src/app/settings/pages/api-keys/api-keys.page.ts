@@ -73,7 +73,7 @@ type TooltipField = 'responseType' | 'exampleFormat' | 'optionalParams' | null;
               </div>
             } @else if (!showCreateDialog()) {
               <button (click)="handleCreateClick()"
-                class="flex items-center justify-center gap-2 rounded-sm border-2 border-dashed border-secondary-300 bg-white px-4 py-3 text-sm/6 font-semibold text-secondary-600 transition-colors hover:border-secondary-400 hover:bg-secondary-50 focus-visible:ring-2 focus-visible:ring-secondary-500 focus-visible:ring-offset-2 dark:border-secondary-600/40 dark:bg-gray-800 dark:text-secondary-400 dark:hover:border-secondary-500 dark:hover:bg-secondary-950/30">
+                class="flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-secondary-300 bg-white px-4 py-3 text-sm/6 font-semibold text-secondary-600 transition-colors hover:border-secondary-400 hover:bg-secondary-50 focus-visible:ring-2 focus-visible:ring-secondary-500 focus-visible:ring-offset-2 dark:border-secondary-600/40 dark:bg-gray-800 dark:text-secondary-400 dark:hover:border-secondary-500 dark:hover:bg-secondary-950/30">
                 <ng-icon name="heroPlus" class="size-4" /> Create New API Key
               </button>
             } @else {
