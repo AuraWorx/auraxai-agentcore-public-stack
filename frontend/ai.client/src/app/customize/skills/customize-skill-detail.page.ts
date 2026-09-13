@@ -11,8 +11,8 @@ import { RouterLink } from '@angular/router';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import {
   heroArrowLeft,
-  heroArrowTopRightOnSquare,
   heroDocumentText,
+  heroPencilSquare,
 } from '@ng-icons/heroicons/outline';
 import { MarkdownComponent } from 'ngx-markdown';
 import { SkillService } from '../../services/skill/skill.service';
@@ -67,7 +67,7 @@ const KIND_ORDER: Record<string, number> = { reference: 0, script: 1, asset: 2 }
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [NgIcon, RouterLink, SpinnerComponent, MarkdownComponent],
   providers: [
-    provideIcons({ heroArrowLeft, heroArrowTopRightOnSquare, heroDocumentText }),
+    provideIcons({ heroArrowLeft, heroDocumentText, heroPencilSquare }),
   ],
   template: `
     <div class="min-h-dvh">
@@ -104,16 +104,16 @@ const KIND_ORDER: Record<string, number> = { reference: 0, script: 1, asset: 2 }
                 }
               </div>
             </div>
-            <!-- Editing lives on /my-skills, which owns the authoring form and
-                 the upload path. This is a read surface; it links there rather
-                 than growing a second editor. -->
+            <!-- Editing lives on the authoring form, which owns the upload
+                 path. This is a read surface; it links there rather than
+                 growing a second editor. -->
             @if (s.isOwned) {
               <a
-                [routerLink]="['/my-skills', s.skillId, 'edit']"
+                [routerLink]="['/customize/skills', s.skillId, 'edit']"
                 class="inline-flex shrink-0 items-center gap-1.5 rounded-2xl border border-gray-200 bg-white px-3.5 py-1.5 text-sm/6 font-medium text-gray-700 transition-colors hover:border-gray-300 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-white"
               >
-                Edit in My Skills
-                <ng-icon name="heroArrowTopRightOnSquare" class="size-4" aria-hidden="true" />
+                Edit
+                <ng-icon name="heroPencilSquare" class="size-4" aria-hidden="true" />
               </a>
             }
           </div>

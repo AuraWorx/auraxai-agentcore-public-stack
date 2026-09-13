@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigService } from '../../services/config.service';
+import { ConfigService } from '../../../services/config.service';
 import { MySkill } from '../models/my-skill.model';
 import { MySkillService } from './my-skill.service';
 

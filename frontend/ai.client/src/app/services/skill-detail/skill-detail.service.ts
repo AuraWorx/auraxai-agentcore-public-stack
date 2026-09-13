@@ -2,7 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '../config.service';
-import { SkillResourceKind } from '../../my-skills/models/my-skill.model';
+import { SkillResourceKind } from '../../customize/skills/models/my-skill.model';
 
 /**
  * One supporting file on a skill's agentskills.io bundle. Bytes live in S3;

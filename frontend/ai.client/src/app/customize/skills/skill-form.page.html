@@ -1,15 +1,15 @@
 <div class="min-h-dvh">
   <div class="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:px-8">
     <a
-      routerLink="/my-skills"
+      routerLink="/customize/skills"
       class="inline-flex items-center gap-1.5 text-sm/6 font-medium text-gray-600 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:text-white"
     >
       <ng-icon name="heroArrowLeft" class="size-4" aria-hidden="true" />
-      My Skills
+      Skills
     </a>
 
     <h1 class="mt-4 text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl dark:text-white">
-      {{ isEdit() ? 'Edit skill' : 'New skill' }}
+      {{ isEdit() ? 'Edit skill' : importMode() ? 'Upload skill' : 'New skill' }}
     </h1>
 
     @if (error()) {
@@ -24,7 +24,14 @@
     <form [formGroup]="form" (ngSubmit)="onSubmit()" class="mt-8 space-y-6">
       <!-- Import from SKILL.md -->
       @if (!isEdit()) {
-        <div class="rounded-2xl border border-dashed border-gray-300 p-4 dark:border-gray-700">
+        <div
+          class="rounded-2xl border border-dashed p-4"
+          [class]="
+            importMode()
+              ? 'border-primary-500 bg-primary-50/40 dark:border-primary-500 dark:bg-primary-900/10'
+              : 'border-gray-300 dark:border-gray-700'
+          "
+        >
           <label
             for="skill-md-import"
             class="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -265,7 +272,7 @@
           {{ saving() ? 'Saving…' : isEdit() ? 'Save changes' : 'Create skill' }}
         </button>
         <a
-          routerLink="/my-skills"
+          routerLink="/customize/skills"
           class="rounded-2xl px-4 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-300 dark:hover:bg-gray-700"
         >
           Cancel

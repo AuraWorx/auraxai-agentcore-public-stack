@@ -145,20 +145,23 @@ export const routes: Routes = [
         loadComponent: () => import('./schedules/schedules.page').then(m => m.SchedulesPage),
         canActivate: [authGuard],
     },
+    // `/my-skills` was absorbed into `/customize/skills` — one noun, one place.
+    // Redirects rather than deletions: the paths are in bookmarks, and the skill
+    // detail page linked out to `/my-skills/:id/edit` for its whole life.
     {
         path: 'my-skills/new',
-        loadComponent: () => import('./my-skills/my-skill-form.page').then(m => m.MySkillFormPage),
-        canActivate: [authGuard],
+        redirectTo: 'customize/skills/new',
+        pathMatch: 'full',
     },
     {
         path: 'my-skills/:skillId/edit',
-        loadComponent: () => import('./my-skills/my-skill-form.page').then(m => m.MySkillFormPage),
-        canActivate: [authGuard],
+        redirectTo: 'customize/skills/:skillId/edit',
+        pathMatch: 'full',
     },
     {
         path: 'my-skills',
-        loadComponent: () => import('./my-skills/my-skills.page').then(m => m.MySkillsPage),
-        canActivate: [authGuard],
+        redirectTo: 'customize/skills',
+        pathMatch: 'full',
     },
     // ── Customize ───────────────────────────────────────────────────────────────
     // The capabilities hub: what the user adds to their assistant. Tools and
@@ -187,6 +190,21 @@ export const routes: Routes = [
         path: 'customize/skills',
         loadComponent: () =>
             import('./customize/skills/customize-skills.page').then(m => m.CustomizeSkillsPage),
+        canActivate: [authGuard],
+    },
+    // ⚠️ ORDER: `new` must stay ABOVE `:skillId`. The router matches in
+    // declaration order, so a `:skillId` route declared first swallows this one
+    // and the create form renders as "skill not found" for an id of "new".
+    {
+        path: 'customize/skills/new',
+        loadComponent: () =>
+            import('./customize/skills/skill-form.page').then(m => m.SkillFormPage),
+        canActivate: [authGuard],
+    },
+    {
+        path: 'customize/skills/:skillId/edit',
+        loadComponent: () =>
+            import('./customize/skills/skill-form.page').then(m => m.SkillFormPage),
         canActivate: [authGuard],
     },
     // One skill: its SKILL.md body, supporting files and catalog facts. The id
