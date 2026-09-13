@@ -301,8 +301,9 @@ worse than leaving it where it was.
 - Cards read the existing root services — no new endpoints, no new state. Because both
   surfaces share the same singletons, a toggle in Customize updates the drawer live and
   vice versa
-- Sidenav entry (which also gives `/my-skills` a reachable home — see the standing
-  `sidenav.html:92` comment saying its navigation was undecided)
+- Sidenav entry (which also gave `/my-skills` a reachable home — see the standing
+  `sidenav.html:92` comment saying its navigation was undecided; step 8 removed
+  `/my-skills` entirely, so the entry is now the only path to either half)
 - The lock-agnostic write path described in §"The agent-lock seam"
 
 **Out:** connectors tab (step 2), tool detail pane / per-sub-tool expansion, any drawer
@@ -414,8 +415,9 @@ body can be authored by a non-admin (Skills v2 PR-3 user tier), and the reasonin
 Skills v2 D4: the platform never grants, mounts or folds a tool because a skill names it. A
 bare list of tool names on a page about a skill you just enabled would read as a grant.
 
-**A skill the user authored links out to `/my-skills/{id}/edit`** rather than growing a second
-editor here. One destination for every card; the read view stays useful for your own skill.
+**A skill the user authored links to `/customize/skills/{id}/edit`** rather than growing a
+second editor here. One destination for every card; the read view stays useful for your own
+skill. (This link read `/my-skills/{id}/edit` until step 8 folded that route in.)
 
 **This page closes no functional gap**, and that is the difference from the tool detail page.
 That one had to exist the moment #1079 deleted the drawer, because per-sub-tool enablement had
@@ -486,6 +488,65 @@ directions, and both times the code was the misleading source:
 **Verify in a browser before merging.** Every step but one had a defect that only the browser
 found — `1 tools`, a menu wrapping "Claude Sonnet 5" across three lines, and a mode that
 silently stopped applying after a reload. None were caught by 2800 passing tests.
+
+## Step 8 — one skills surface
+
+`/my-skills` is gone. It was a top-level route reachable only by a link-out from
+`/customize/skills`, which meant the same noun lived in two places with two different answers
+to "what skills do I have?" — one page listed what you *authored*, the other what you could
+*turn on*, and neither showed the whole set. Both now live under `/customize/skills`, split by
+a `scope` query param rather than by route:
+
+| Scope | Population | Idiom |
+|---|---|---|
+| **Yours** (default) | skills you authored, at any status, **plus** catalog skills you have turned on | dense rows, with edit/delete on the ones you own |
+| **Discover** | catalog skills your roles grant that are still off | browse cards with a switch |
+
+Turning a skill on is this platform's analogue of "installing" one. There is no install step:
+access is RBAC (`resolve_accessible_skill_ids`) and the only state a user owns is the
+enablement preference. That is what makes the two-scope split meaningful here rather than an
+imported metaphor.
+
+**No backend change.** The page reads two endpoints that already existed and merges them
+client-side:
+
+- `GET /skills/` (`SkillService`) — the picker feed: accessible **and ACTIVE**, with the
+  enablement preference.
+- `GET /skills/mine` (`MySkillService`) — the authored tier, at **every** status.
+
+⚠️ The merge is what keeps a DRAFT skill visible to its author. A non-active skill is filtered
+out of `GET /skills/` by status, and widening that endpoint to carry drafts was considered and
+rejected: it feeds the composer picker, so a draft would appear as activatable in chat while
+the runtime's `_apply_enabled_skills_filter` refuses it. Two reads on one page is the cheaper
+mistake.
+
+⚠️ A draft therefore has **no toggle at all** (`toggleable` on `SkillRowComponent`), not a
+disabled one. `SkillService.toggleSkill` returns silently for a skill it never loaded, so the
+button would have been a control that does nothing.
+
+**Routing.** `/customize/skills/new` and `/customize/skills/{id}/edit` now host the authoring
+form (`git mv`, so history follows it). The three old paths stay as **redirects** — they are in
+bookmarks, and the detail page linked to `/my-skills/{id}/edit` for its whole life.
+
+⚠️ `customize/skills/new` MUST stay declared **above** `customize/skills/:skillId`. The router
+matches in declaration order, so the parameterised route would otherwise swallow it and the
+create form would render "skill not found" for a skill named `new`. Same class of trap as the
+`/settings/connectors` ordering in step 2, and as `/{skill_id}` vs `/mine` on the backend
+router.
+
+⚠️ `setScope` calls `router.navigate([], { relativeTo: this.route, ... })`. **`relativeTo` is
+load-bearing** — without it the empty command list resolves against the root, the navigation
+lands on the same URL with the query params dropped, and the scope silently never changes.
+The browser found this; the tests did not, because they drive the `scope` input directly (the
+test router has no matched route to bind a query param back through).
+
+**Add ▾** replaces the old "New skill" button and the link-out, offering *Upload skill*
+(`?import=1`, which re-titles the form and leads with the SKILL.md import block) and *Create a
+skill*. It is gated on `accessible$() === true` — the same 404-from-`/skills/mine` signal that
+used to hide the whole `/my-skills` page, because with `SKILLS_ENABLED` off the form could only
+fail to save. The picker is **not** auto-clicked on `?import=1`: a programmatic `.click()` on a
+file input without a user gesture is blocked or suppressed in several browsers, and a menu item
+that silently does nothing is worse than one extra click.
 
 ## Known gaps
 

@@ -181,10 +181,11 @@ describe('CustomizeSkillDetailPage', () => {
       'my_skill',
       detail({ skillId: 'my_skill', displayName: 'My Skill', isOwned: true }),
     );
-    expect(text(mine)).toContain('Edit in My Skills');
-    // The route is /my-skills/:skillId/edit — a bare /my-skills/:id does not exist.
+    expect(text(mine)).toContain('Edit');
+    // The route is /customize/skills/:skillId/edit — the bare
+    // /customize/skills/:id is this very page, so the suffix is load-bearing.
     expect(
-      mine.nativeElement.querySelector('a[href="/my-skills/my_skill/edit"]'),
+      mine.nativeElement.querySelector('a[href="/customize/skills/my_skill/edit"]'),
     ).toBeTruthy();
   });
 
@@ -193,7 +194,9 @@ describe('CustomizeSkillDetailPage', () => {
       'web_research',
       detail({ skillId: 'web_research', displayName: 'Web Research', isOwned: false }),
     );
-    expect(text(fixture)).not.toContain('Edit in My Skills');
+    expect(
+      fixture.nativeElement.querySelector('a[href$="/edit"]'),
+    ).toBeNull();
   });
 
   it('distinguishes a missing skill from a failed read', async () => {

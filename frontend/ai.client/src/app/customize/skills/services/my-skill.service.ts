@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { ConfigService } from '../../services/config.service';
+import { ConfigService } from '../../../services/config.service';
 import {
   CreateMySkillRequest,
   MySkill,

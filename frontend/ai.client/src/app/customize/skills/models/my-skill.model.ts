@@ -9,7 +9,7 @@
  * models and knowledge bind on the Agent, never on a skill.
  */
 
-import { SkillStatus } from '../../admin/skills/models/admin-skill.model';
+import { SkillStatus } from '../../../admin/skills/models/admin-skill.model';
 
 export type { SkillStatus };
 

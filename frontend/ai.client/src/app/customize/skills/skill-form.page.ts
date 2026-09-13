@@ -8,12 +8,12 @@ import {
   heroEye,
   heroTrash,
 } from '@ng-icons/heroicons/outline';
-import { parseSkillMarkdown } from '../admin/skills/models/skill-import.util';
+import { parseSkillMarkdown } from '../../admin/skills/models/skill-import.util';
 import {
   DISALLOWED_RESOURCE_MESSAGE,
   RESOURCE_ACCEPT_ATTR,
   isAllowedResourceFilename,
-} from '../shared/skills/skill-resource-types';
+} from '../../shared/skills/skill-resource-types';
 import {
   MAX_RESOURCE_BYTES,
   MAX_RESOURCES_PER_SKILL,
@@ -36,13 +36,13 @@ import { MySkillService } from './services/my-skill.service';
  * the admin form there is no id field to fill in or validate.
  */
 @Component({
-  selector: 'app-my-skill-form',
+  selector: 'app-skill-form',
   imports: [ReactiveFormsModule, RouterLink, NgIcon],
-  templateUrl: './my-skill-form.page.html',
+  templateUrl: './skill-form.page.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   viewProviders: [provideIcons({ heroArrowLeft, heroArrowUpTray, heroEye, heroTrash })],
 })
-export class MySkillFormPage {
+export class SkillFormPage {
   private fb = inject(FormBuilder);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -58,6 +58,8 @@ export class MySkillFormPage {
   protected readonly saving = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly importNotice = signal<string | null>(null);
+  /** Arrived via `Add → Upload skill` rather than `Add → Create a skill`. */
+  protected readonly importMode = signal(false);
 
   /** Manifest of files already on the skill (edit mode). */
   protected readonly resources = signal<MySkillResourceRef[]>([]);
@@ -101,6 +103,12 @@ export class MySkillFormPage {
       this.skillId.set(id);
       void this.loadSkill(id);
     }
+    // `Add → Upload skill` lands here with `?import=1`. The picker is NOT
+    // auto-clicked: a programmatic `.click()` on a file input without a user
+    // gesture is blocked or prompt-suppressed in several browsers, and a
+    // silently-nothing menu item is worse than one extra click. The flag only
+    // re-titles the page and leads with the import block.
+    this.importMode.set(this.route.snapshot.queryParamMap.get('import') !== null);
   }
 
   private async loadSkill(id: string): Promise<void> {
@@ -286,7 +294,7 @@ export class MySkillFormPage {
           await this.skillService.uploadResource(created.skillId, staged.file, staged.kind);
         }
       }
-      await this.router.navigate(['/my-skills']);
+      await this.router.navigate(['/customize/skills']);
     } catch {
       this.error.set(this.skillService.error$() ?? 'Failed to save the skill.');
     } finally {
