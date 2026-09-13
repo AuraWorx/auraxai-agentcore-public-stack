@@ -3,12 +3,45 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '../config.service';
 
+/**
+ * One argument an MCP prompt accepts.
+ *
+ * A snapshot taken before the backend widened this stored bare names, and those
+ * rehydrate server-side with `required: false` — so an old snapshot renders a
+ * form with no required fields rather than none at all.
+ */
+export interface McpPromptArgument {
+  name: string;
+  description?: string | null;
+  required: boolean;
+}
+
 /** A prompt template an MCP server exposes (`prompts/list`). */
 export interface McpPrompt {
   name: string;
   title?: string | null;
   description?: string | null;
-  arguments: string[];
+  arguments: McpPromptArgument[];
+}
+
+/**
+ * One message a server composed for a prompt.
+ *
+ * `kind` is the MCP content type. Anything but `text` carries no body — an
+ * image or a binary resource has nothing readable to show — so the UI names the
+ * kind instead of rendering an empty message.
+ */
+export interface ResolvedPromptMessage {
+  role: string;
+  kind: string;
+  text: string;
+}
+
+/** The result of `prompts/get`, composed live from the user's arguments. */
+export interface ResolvedPrompt {
+  description?: string | null;
+  messages: ResolvedPromptMessage[];
+  truncated: boolean;
 }
 
 /**
@@ -60,6 +93,28 @@ type Entry =
  * admin refreshes it, so re-fetching every time the detail pane opens would be
  * a request per drill-in for an answer that rarely moves.
  */
+/**
+ * Coerce a snapshot from a backend that predates structured prompt arguments.
+ *
+ * The two packages deploy on separate workflows and the order between them is
+ * not enforced, so a SPA can reach a backend still sending bare argument names.
+ * Without this the form would render a field labelled `undefined` — a shape
+ * mismatch showing up as a nonsense label rather than as an error.
+ */
+function normalize(snapshot: ToolCapabilities): ToolCapabilities {
+  return {
+    ...snapshot,
+    prompts: (snapshot.prompts ?? []).map((prompt) => ({
+      ...prompt,
+      arguments: (prompt.arguments ?? []).map((arg) =>
+        typeof arg === 'string'
+          ? { name: arg as string, description: null, required: false }
+          : arg,
+      ),
+    })),
+  };
+}
+
 @Injectable({ providedIn: 'root' })
 export class ToolCapabilityService {
   private readonly http = inject(HttpClient);
@@ -94,8 +149,8 @@ export class ToolCapabilityService {
     if (!toolId || this.entries()[toolId]) return;
     this.entries.update((current) => ({ ...current, [toolId]: { state: 'loading' } }));
     try {
-      const value = await firstValueFrom(
-        this.http.get<ToolCapabilities>(this.url(toolId)),
+      const value = normalize(
+        await firstValueFrom(this.http.get<ToolCapabilities>(this.url(toolId))),
       );
       this.entries.update((current) => ({
         ...current,
@@ -104,6 +159,26 @@ export class ToolCapabilityService {
     } catch {
       this.entries.update((current) => ({ ...current, [toolId]: { state: 'failed' } }));
     }
+  }
+
+  /**
+   * Compose one of a server's prompts with the user's argument values.
+   *
+   * Deliberately uncached and never stored: the result depends on arguments
+   * typed a moment ago, and for a 3LO server on the caller's own token. Each
+   * call is a live `prompts/get` against the server.
+   */
+  async resolvePrompt(
+    toolId: string,
+    promptName: string,
+    args: Record<string, string>,
+  ): Promise<ResolvedPrompt> {
+    const url =
+      `${this.config.appApiUrl()}/tools/${encodeURIComponent(toolId)}` +
+      `/prompts/${encodeURIComponent(promptName)}`;
+    return firstValueFrom(
+      this.http.post<ResolvedPrompt>(url, { arguments: args }),
+    );
   }
 
   /** Drop a cached snapshot so the next `ensure` re-reads it. */

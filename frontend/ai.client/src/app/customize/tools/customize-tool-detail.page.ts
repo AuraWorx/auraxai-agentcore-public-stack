@@ -13,10 +13,16 @@ import {
   heroArrowLeft,
   heroArrowPath,
   heroCheckCircle,
+  heroClipboard,
   heroMagnifyingGlass,
+  heroPlay,
 } from '@ng-icons/heroicons/outline';
 import { ServerTool, Tool, ToolService } from '../../services/tool/tool.service';
-import { ToolCapabilityService } from '../../services/tool-capability/tool-capability.service';
+import {
+  McpPrompt,
+  ResolvedPrompt,
+  ToolCapabilityService,
+} from '../../services/tool-capability/tool-capability.service';
 import { ConnectorStatusService } from '../../settings/connectors/services/connector-status.service';
 import { OAuthConsentService } from '../../services/oauth-consent/oauth-consent.service';
 import { splitToolDescription } from '../../shared/utils/tool-description';
@@ -31,6 +37,20 @@ interface SubToolRow extends ServerTool {
 
 /** Above this many sub-tools the list gets its own filter box. */
 const FILTER_THRESHOLD = 8;
+
+/**
+ * What one prompt's try-it form is doing right now. Keyed by prompt name so
+ * only the open prompt holds state — collapsing one and opening another is not
+ * meant to carry the first one's answer across.
+ */
+interface PromptRun {
+  values: Record<string, string>;
+  resolving: boolean;
+  result: ResolvedPrompt | null;
+  error: string | null;
+  /** Names of required arguments left blank on the last attempt. */
+  missing: ReadonlySet<string>;
+}
 
 /**
  * Customize → Tools → one tool. Everything the browse card had no room for:
@@ -67,7 +87,14 @@ const FILTER_THRESHOLD = 8;
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [NgIcon, RouterLink, SpinnerComponent],
   providers: [
-    provideIcons({ heroArrowLeft, heroArrowPath, heroCheckCircle, heroMagnifyingGlass }),
+    provideIcons({
+      heroArrowLeft,
+      heroArrowPath,
+      heroCheckCircle,
+      heroClipboard,
+      heroMagnifyingGlass,
+      heroPlay,
+    }),
   ],
   template: `
     <div class="min-h-dvh">
@@ -363,21 +390,145 @@ const FILTER_THRESHOLD = 8;
                   This server offers prompts, but none right now.
                 </p>
               } @else {
+                <p class="mt-1 text-sm/6 text-gray-500 dark:text-gray-400">
+                  A prompt is a starter this server writes for you. Fill in its values to
+                  see what it produces.
+                </p>
                 <ul class="mt-3 flex flex-col gap-2">
                   @for (prompt of prompts(); track prompt.name) {
                     <li class="rounded-2xl border border-gray-200 px-4 py-3 dark:border-white/10">
-                      <span class="block font-mono text-sm/6 font-medium text-gray-900 dark:text-white">{{
-                        prompt.title || prompt.name
-                      }}</span>
-                      @if (prompt.description) {
-                        <span class="mt-0.5 block text-sm/6 text-gray-500 dark:text-gray-400">{{
-                          prompt.description
-                        }}</span>
-                      }
-                      @if (prompt.arguments.length > 0) {
-                        <span class="mt-1 block font-mono text-xs/5 text-gray-400 dark:text-gray-500"
-                          >arguments: {{ prompt.arguments.join(', ') }}</span
+                      <button
+                        type="button"
+                        (click)="togglePrompt(prompt)"
+                        [attr.aria-expanded]="isPromptOpen(prompt)"
+                        [attr.aria-controls]="'prompt-form-' + prompt.name"
+                        class="flex w-full items-start justify-between gap-4 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+                      >
+                        <span class="min-w-0 flex-1">
+                          <span class="block font-mono text-sm/6 font-medium text-gray-900 dark:text-white">{{
+                            prompt.title || prompt.name
+                          }}</span>
+                          @if (prompt.description) {
+                            <span class="mt-0.5 block text-sm/6 text-gray-500 dark:text-gray-400">{{
+                              prompt.description
+                            }}</span>
+                          }
+                        </span>
+                        <span
+                          class="mt-0.5 shrink-0 text-xs/5 font-medium text-primary-accessible dark:text-primary-accessible-dark"
                         >
+                          {{ isPromptOpen(prompt) ? 'Close' : 'Try it' }}
+                        </span>
+                      </button>
+
+                      @if (isPromptOpen(prompt) && run(); as active) {
+                        <div [id]="'prompt-form-' + prompt.name" class="mt-3 border-t border-gray-200 pt-3 dark:border-white/10">
+                          @for (arg of prompt.arguments; track arg.name) {
+                            <div class="mb-3">
+                              <label
+                                [for]="'prompt-arg-' + prompt.name + '-' + arg.name"
+                                class="block font-mono text-xs/5 font-medium text-gray-700 dark:text-gray-300"
+                              >
+                                {{ arg.name }}
+                                @if (arg.required) {
+                                  <span class="text-state-danger-600 dark:text-state-danger-400" aria-hidden="true">*</span>
+                                  <span class="sr-only">(required)</span>
+                                }
+                              </label>
+                              @if (arg.description) {
+                                <span class="mt-0.5 block text-xs/5 text-gray-500 dark:text-gray-400">{{
+                                  arg.description
+                                }}</span>
+                              }
+                              <input
+                                type="text"
+                                [id]="'prompt-arg-' + prompt.name + '-' + arg.name"
+                                [value]="argumentValue(arg.name)"
+                                (input)="onArgumentInput(arg.name, $event)"
+                                [attr.aria-invalid]="isMissing(arg.name) || null"
+                                [attr.aria-describedby]="
+                                  isMissing(arg.name) ? 'prompt-arg-err-' + prompt.name + '-' + arg.name : null
+                                "
+                                class="mt-1 block w-full rounded-2xl border bg-white px-3.5 py-1.5 text-sm/6 text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-gray-800 dark:text-white"
+                                [class]="
+                                  isMissing(arg.name)
+                                    ? 'border-state-danger-400 dark:border-state-danger-500'
+                                    : 'border-gray-300 dark:border-gray-600'
+                                "
+                              />
+                              @if (isMissing(arg.name)) {
+                                <p
+                                  [id]="'prompt-arg-err-' + prompt.name + '-' + arg.name"
+                                  class="mt-1 text-xs/5 text-state-danger-600 dark:text-state-danger-400"
+                                >
+                                  This one is required.
+                                </p>
+                              }
+                            </div>
+                          }
+
+                          <button
+                            type="button"
+                            (click)="resolvePrompt(prompt)"
+                            [disabled]="active.resolving"
+                            class="inline-flex items-center gap-1.5 rounded-2xl bg-primary-accessible px-3.5 py-1.5 text-sm/6 font-semibold text-white transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <ng-icon
+                              name="heroPlay"
+                              class="size-4"
+                              aria-hidden="true"
+                            />
+                            {{ active.resolving ? 'Composing…' : 'Compose' }}
+                          </button>
+
+                          @if (active.error) {
+                            <p class="mt-2 text-sm/6 text-state-danger-600 dark:text-state-danger-400" role="alert">
+                              {{ active.error }}
+                            </p>
+                          }
+
+                          @if (active.result; as result) {
+                            <div class="mt-3">
+                              <div class="flex items-center justify-between gap-2">
+                                <span class="text-xs/5 font-medium text-gray-500 dark:text-gray-400">
+                                  What this produces
+                                </span>
+                                <button
+                                  type="button"
+                                  (click)="copyResolved()"
+                                  class="inline-flex items-center gap-1 text-xs/5 font-medium text-primary-accessible hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark"
+                                >
+                                  <ng-icon name="heroClipboard" class="size-3.5" aria-hidden="true" />
+                                  {{ copied() ? 'Copied' : 'Copy' }}
+                                </button>
+                              </div>
+                              @for (message of result.messages; track $index) {
+                                <div class="mt-1.5">
+                                  <span class="font-mono text-[11px]/5 uppercase text-gray-400 dark:text-gray-500">{{
+                                    message.role
+                                  }}</span>
+                                  @if (message.text) {
+                                    <pre
+                                      class="mt-0.5 overflow-x-auto rounded-lg bg-gray-50 p-2 font-mono text-[11px]/5 whitespace-pre-wrap text-gray-600 dark:bg-white/5 dark:text-gray-300"
+                                      >{{ message.text }}</pre
+                                    >
+                                  } @else {
+                                    <!-- An image or binary resource has no readable body.
+                                         Naming it beats rendering an empty block. -->
+                                    <p class="mt-0.5 text-xs/5 italic text-gray-500 dark:text-gray-400">
+                                      {{ message.kind }} content — not shown here
+                                    </p>
+                                  }
+                                </div>
+                              }
+                              @if (result.truncated) {
+                                <p class="mt-1.5 text-xs/5 text-gray-500 dark:text-gray-400">
+                                  Cut short — the server returned more than this preview shows.
+                                </p>
+                              }
+                            </div>
+                          }
+                        </div>
                       }
                     </li>
                   }
@@ -514,6 +665,10 @@ export class CustomizeToolDetailPage {
   protected readonly pending = signal<ReadonlySet<string>>(new Set());
 
   private readonly expandedDetails = signal<ReadonlySet<string>>(new Set());
+
+  /** The prompt whose try-it form is open, and what that form is doing. */
+  protected readonly openPrompt = signal<string | null>(null);
+  private readonly promptRun = signal<PromptRun | null>(null);
 
   constructor() {
     // A deep link to this page is a legitimate first paint; the catalog is
@@ -654,6 +809,130 @@ export class CustomizeToolDetailPage {
       return next;
     });
   }
+
+  // ===========================================================================
+  // Trying a prompt
+  // ===========================================================================
+
+  /**
+   * Open one prompt's form, or close it if it was already open.
+   *
+   * Opening a different prompt discards the previous run rather than keeping a
+   * second form's answer alive off-screen: the result belongs to the arguments
+   * that produced it, and showing it under a prompt it did not come from would
+   * be worse than showing nothing.
+   */
+  protected togglePrompt(prompt: McpPrompt): void {
+    if (this.openPrompt() === prompt.name) {
+      this.openPrompt.set(null);
+      this.promptRun.set(null);
+      return;
+    }
+    this.openPrompt.set(prompt.name);
+    this.promptRun.set({
+      values: Object.fromEntries(prompt.arguments.map(a => [a.name, ''])),
+      resolving: false,
+      result: null,
+      error: null,
+      missing: new Set(),
+    });
+  }
+
+  protected isPromptOpen(prompt: McpPrompt): boolean {
+    return this.openPrompt() === prompt.name;
+  }
+
+  protected run(): PromptRun | null {
+    return this.promptRun();
+  }
+
+  protected argumentValue(name: string): string {
+    return this.promptRun()?.values[name] ?? '';
+  }
+
+  protected isMissing(name: string): boolean {
+    return this.promptRun()?.missing.has(name) ?? false;
+  }
+
+  protected onArgumentInput(name: string, event: Event): void {
+    const value = (event.target as HTMLInputElement).value;
+    this.promptRun.update(current => {
+      if (!current) return current;
+      // Clear the field's error as soon as it is edited — an error that
+      // outlives the thing it is about reads as a stuck form.
+      const missing = new Set(current.missing);
+      missing.delete(name);
+      return { ...current, values: { ...current.values, [name]: value }, missing };
+    });
+  }
+
+  /**
+   * Ask the server to compose this prompt.
+   *
+   * Required arguments are checked here rather than by disabling the button: a
+   * disabled control explains nothing, and the server would reject the call
+   * with a message written for a developer.
+   */
+  protected async resolvePrompt(prompt: McpPrompt): Promise<void> {
+    const current = this.promptRun();
+    if (!current || current.resolving) return;
+
+    const missing = new Set(
+      prompt.arguments
+        .filter(a => a.required && !(current.values[a.name] ?? '').trim())
+        .map(a => a.name),
+    );
+    if (missing.size > 0) {
+      this.promptRun.set({ ...current, missing, error: null });
+      return;
+    }
+
+    this.promptRun.set({ ...current, resolving: true, error: null, missing });
+    try {
+      const result = await this.capabilityService.resolvePrompt(
+        this.toolId(),
+        prompt.name,
+        current.values,
+      );
+      this.promptRun.update(run =>
+        run ? { ...run, resolving: false, result } : run,
+      );
+    } catch {
+      this.promptRun.update(run =>
+        run
+          ? {
+              ...run,
+              resolving: false,
+              error:
+                'The server couldn’t compose that prompt. Check the values and try again.',
+            }
+          : run,
+      );
+    }
+  }
+
+  /** Every readable message, joined — what a person would paste elsewhere. */
+  protected resolvedText(): string {
+    return (this.promptRun()?.result?.messages ?? [])
+      .filter(m => m.text)
+      .map(m => m.text)
+      .join('\n\n');
+  }
+
+  protected async copyResolved(): Promise<void> {
+    const text = this.resolvedText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.copied.set(true);
+      setTimeout(() => this.copied.set(false), 2000);
+    } catch {
+      // A blocked clipboard is not worth an error banner — the text is on
+      // screen and selectable either way.
+    }
+  }
+
+  protected readonly copied = signal(false);
 
   protected onSubToolFilter(event: Event): void {
     this.subToolQuery.set((event.target as HTMLInputElement).value);

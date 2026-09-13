@@ -21,14 +21,19 @@ NOTE: importing MCP-client construction from ``agents`` mirrors the existing
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from apis.shared.tools.models import (
     MAX_CAPABILITY_ENTRIES,
     MAX_CAPABILITY_PAGES,
+    MAX_RESOLVED_PROMPT_CHARS,
+    MAX_RESOLVED_PROMPT_MESSAGES,
     DiscoveredMCPTool,
+    MCPPromptArgument,
     MCPPromptEntry,
     MCPResourceEntry,
+    ResolvedPrompt,
+    ResolvedPromptMessage,
     ToolCapabilitySnapshot,
     ToolDefinition,
     _clip,
@@ -154,7 +159,11 @@ def _prompt_entries(result) -> List[MCPPromptEntry]:
                 title=_clip(getattr(prompt, "title", None)),
                 description=_clip(getattr(prompt, "description", None)),
                 arguments=[
-                    getattr(arg, "name", "")
+                    MCPPromptArgument(
+                        name=getattr(arg, "name", ""),
+                        description=_clip(getattr(arg, "description", None)),
+                        required=bool(getattr(arg, "required", False)),
+                    )
                     for arg in (getattr(prompt, "arguments", None) or [])
                     if getattr(arg, "name", None)
                 ],
@@ -287,3 +296,110 @@ async def discover_capabilities_for_saved_tool(
         logger.warning("Capability discovery failed for %s: %s", tool.tool_id, exc)
         snapshot.error = f"Could not reach the MCP server: {exc}"
         return snapshot
+
+
+# =============================================================================
+# Prompt resolution (prompts/get)
+# =============================================================================
+
+
+def _message_text(content) -> tuple[str, str]:
+    """Flatten one ``PromptMessage`` content block to ``(kind, text)``.
+
+    An MCP prompt message can carry text, an image, audio, a resource link or an
+    embedded resource. Only text survives into something a person can read and
+    edit, so everything else is reported by kind and its payload is dropped
+    rather than base64'd into the response — a preview is not the place to move
+    megabytes, and the caller renders the kind so nothing goes missing silently.
+    """
+    kind = getattr(content, "type", None) or "text"
+    if kind == "text":
+        return "text", getattr(content, "text", "") or ""
+    if kind == "resource_link":
+        return kind, str(getattr(content, "uri", "") or "")
+    if kind == "resource":
+        resource = getattr(content, "resource", None)
+        # An embedded *text* resource is still readable; binary blobs are not.
+        text = getattr(resource, "text", None)
+        if text:
+            return "text", text
+        return kind, str(getattr(resource, "uri", "") or "")
+    return kind, ""
+
+
+async def resolve_prompt_for_saved_tool(
+    tool: ToolDefinition,
+    prompt_name: str,
+    arguments: Dict[str, str],
+    oauth_token: Optional[str] = None,
+) -> ResolvedPrompt:
+    """Ask a saved MCP server to compose one of its prompts (``prompts/get``).
+
+    Unlike the listings, this is deliberately a *live* call and not a stored
+    snapshot: the result depends on the arguments the user just typed, and for a
+    3LO server on the token only they hold.
+
+    Raises:
+        RuntimeError: the server could not be reached or refused the prompt.
+            The route translates this into a 502.
+    """
+    if tool.protocol != "mcp_external" or not tool.mcp_config:
+        raise RuntimeError("This tool is not an external MCP server.")
+
+    from agents.main_agent.integrations.external_mcp_client import (
+        create_external_mcp_client,
+    )
+
+    forward = bool(getattr(tool, "forward_auth_token", False))
+    client = create_external_mcp_client(
+        config=tool.mcp_config,
+        tool_definition=tool,
+        oauth_token=oauth_token if (forward or tool.requires_oauth_provider) else None,
+    )
+    if client is None:
+        raise RuntimeError("Could not build a client for this server.")
+
+    def _get() -> ResolvedPrompt:
+        with client:
+            return _to_resolved(client.get_prompt_sync(prompt_name, arguments))
+
+    try:
+        return await asyncio.to_thread(_get)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a 502 by the route
+        logger.warning(
+            "prompts/get failed for %s/%s: %s", tool.tool_id, prompt_name, exc
+        )
+        raise RuntimeError(f"The server could not compose that prompt: {exc}") from exc
+
+
+def _to_resolved(result) -> ResolvedPrompt:
+    """Cap and flatten a ``GetPromptResult`` into the wire model."""
+    messages: List[ResolvedPromptMessage] = []
+    budget = MAX_RESOLVED_PROMPT_CHARS
+    truncated = False
+
+    for message in (getattr(result, "messages", None) or [])[:MAX_RESOLVED_PROMPT_MESSAGES]:
+        kind, text = _message_text(getattr(message, "content", None))
+        if len(text) > budget:
+            text = text[:budget]
+            truncated = True
+        budget -= len(text)
+        messages.append(
+            ResolvedPromptMessage(
+                role=getattr(message, "role", "user") or "user",
+                kind=kind,
+                text=text,
+            )
+        )
+        if budget <= 0:
+            truncated = True
+            break
+
+    if len(getattr(result, "messages", None) or []) > MAX_RESOLVED_PROMPT_MESSAGES:
+        truncated = True
+
+    return ResolvedPrompt(
+        description=_clip(getattr(result, "description", None)),
+        messages=messages,
+        truncated=truncated,
+    )

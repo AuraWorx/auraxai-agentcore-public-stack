@@ -7,7 +7,7 @@ Integrates with the existing AppRole RBAC system.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from apis.shared.timestamps import from_iso, to_iso
@@ -1521,15 +1521,52 @@ def _clip(value: Optional[str]) -> Optional[str]:
     return text[: MAX_CAPABILITY_TEXT - 1] + "…"
 
 
+class MCPPromptArgument(BaseModel):
+    """One argument an MCP prompt accepts (``PromptArgument``).
+
+    Capture originally flattened this to the name alone, which is enough to
+    *describe* a prompt and not enough to *fill one in*: a form needs
+    ``required`` to validate and ``description`` for the field's hint.
+
+    ``required`` defaults to False because that is what the MCP type says —
+    ``required`` is ``bool | None`` and absent means not required. A snapshot
+    taken before this model existed stored bare strings; those rehydrate here
+    with the same default, so an old snapshot under-constrains a form rather
+    than blocking the user on a field we never actually learned about.
+    """
+
+    name: str
+    description: Optional[str] = None
+    required: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "required": self.required,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Union[str, dict]) -> "MCPPromptArgument":
+        # Pre-widening snapshots stored the name as a bare string.
+        if isinstance(data, str):
+            return cls(name=data)
+        return cls(
+            name=data.get("name", ""),
+            description=data.get("description"),
+            required=bool(data.get("required", False)),
+        )
+
+
 class MCPPromptEntry(BaseModel):
     """A prompt template exposed by an MCP server (``prompts/list``)."""
 
     name: str
     title: Optional[str] = None
     description: Optional[str] = None
-    arguments: List[str] = Field(
+    arguments: List[MCPPromptArgument] = Field(
         default_factory=list,
-        description="Argument names the prompt accepts, in the order the server listed them.",
+        description="Arguments the prompt accepts, in the order the server listed them.",
     )
 
     def to_dict(self) -> dict:
@@ -1537,7 +1574,7 @@ class MCPPromptEntry(BaseModel):
             "name": self.name,
             "title": self.title,
             "description": self.description,
-            "arguments": self.arguments,
+            "arguments": [a.to_dict() for a in self.arguments],
         }
 
     @classmethod
@@ -1546,7 +1583,9 @@ class MCPPromptEntry(BaseModel):
             name=data.get("name", ""),
             title=data.get("title"),
             description=data.get("description"),
-            arguments=list(data.get("arguments") or []),
+            arguments=[
+                MCPPromptArgument.from_dict(a) for a in (data.get("arguments") or [])
+            ],
         )
 
 
@@ -1646,3 +1685,40 @@ class ToolCapabilitySnapshot(BaseModel):
             error=item.get("error"),
             truncated=bool(item.get("truncated", False)),
         )
+
+
+# =============================================================================
+# Resolved prompt (prompts/get)
+# =============================================================================
+#
+# Unlike the capability snapshot, a resolved prompt is never persisted. It is
+# composed from arguments the user just typed, it can be large, and it is of no
+# use to anyone but the person who asked for it — storing it would be a cost
+# with no reader.
+
+#: A resolved prompt is shown to a person, so it is bounded by what a person
+#: will actually read rather than by the DynamoDB item limit.
+MAX_RESOLVED_PROMPT_CHARS = 20000
+MAX_RESOLVED_PROMPT_MESSAGES = 20
+
+
+class ResolvedPromptMessage(BaseModel):
+    """One message a server composed for a prompt.
+
+    ``kind`` is the MCP content type. Anything other than ``text`` carries no
+    body — see ``_message_text`` — and the UI says so rather than rendering an
+    empty message.
+    """
+
+    role: str
+    kind: str = "text"
+    text: str = ""
+
+
+class ResolvedPrompt(BaseModel):
+    """The result of ``prompts/get`` for one prompt."""
+
+    description: Optional[str] = None
+    messages: List[ResolvedPromptMessage] = Field(default_factory=list)
+    #: True when the message list or its text was cut short by the caps above.
+    truncated: bool = Field(default=False)
