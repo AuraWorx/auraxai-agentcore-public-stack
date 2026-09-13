@@ -143,7 +143,7 @@ interface ToolCard {
           <p class="mt-6 text-sm/6 text-gray-500 dark:text-gray-400" aria-live="polite">
             {{ enabledLabel() }}
           </p>
-          <ul class="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <ul class="mt-3 grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
             @for (card of cards(); track card.tool.toolId) {
               <li>
                 <app-customize-card
