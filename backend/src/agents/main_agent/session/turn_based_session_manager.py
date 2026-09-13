@@ -564,8 +564,17 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         )
         self.compaction_state = persisted
 
-    def _save_compaction_state(self, state: CompactionState) -> None:
-        """Save compaction state to DynamoDB session metadata."""
+    def _save_compaction_state(self, state: CompactionState, record_event: bool = False) -> None:
+        """Save compaction state to DynamoDB session metadata.
+
+        ``record_event=True`` means this save *is* a compaction (a new
+        checkpoint was cut), and bumps the session's ``compactionCount`` in
+        the same update. That counter is what the admin profile reads for
+        "how many times did compaction fire" — the persisted ``compaction``
+        map is last-write-wins and cannot answer it. A top-level ``ADD`` is
+        monotonic and race-free: two Agents serving one session can each
+        increment, and neither can move it backwards.
+        """
         if not self.user_id or not self.compaction_config or not self.compaction_config.enabled:
             return
 
@@ -585,10 +594,18 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 return
 
             state.updated_at = datetime.now(timezone.utc).isoformat()
+            update_expression = "SET compaction = :state"
+            values: Dict[str, Any] = {":state": state.to_dict()}
+            if record_event:
+                from apis.shared.feature_flags import cost_diagnostics_enabled
+
+                if cost_diagnostics_enabled():
+                    update_expression += " ADD compactionCount :one"
+                    values[":one"] = 1
             table.update_item(
                 Key={"PK": pk, "SK": sk},
-                UpdateExpression="SET compaction = :state",
-                ExpressionAttributeValues={":state": state.to_dict()},
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=values,
             )
             logger.debug(f"Saved compaction state: checkpoint={state.checkpoint}")
         except Exception as e:
@@ -812,7 +829,8 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # Running total persisted alongside the rest of the compaction state
         # so a refresh can rehydrate the end-of-conversation summary indicator.
         self.compaction_state.total_summarized_turns += summarized_turns
-        self._save_compaction_state(self.compaction_state)
+        # This save is the compaction event itself — count it.
+        self._save_compaction_state(self.compaction_state, record_event=True)
 
         logger.info(
             f"Compaction checkpoint set: {new_checkpoint}, "

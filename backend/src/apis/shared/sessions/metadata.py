@@ -1729,6 +1729,20 @@ async def _bump_session_aggregates(
         # A split of :wasted, not a deduction from it.
         values[":partialWasted"] = wasted_decimal if is_partial_miss else Decimal("0")
 
+        # Content-free behavioral rollups for the admin session profile: how
+        # many tool calls this session has made and how many failed, summed
+        # from the per-call census the coordinator attached as `toolCalls`.
+        # Only written while the census is on — an absent attribute is what
+        # lets the profile say "not tracked" instead of an honest-looking 0.
+        from apis.shared.feature_flags import cost_diagnostics_enabled
+
+        if cost_diagnostics_enabled():
+            tool_calls_total, tool_errors_total = _tool_census_totals(message_metadata)
+            update_parts_add.append("toolCallCount :toolCalls")
+            update_parts_add.append("toolErrorCount :toolErrors")
+            values[":toolCalls"] = tool_calls_total
+            values[":toolErrors"] = tool_errors_total
+
         update_expression = (
             "ADD " + ", ".join(update_parts_add) + " SET " + ", ".join(update_parts_set)
         )
@@ -1748,6 +1762,29 @@ async def _bump_session_aggregates(
     except Exception as e:
         # Non-fatal — lazy backfill compensates on next read.
         logger.debug("bump_session_aggregates failed (will be backfilled on read): %s", e)
+
+
+def _tool_census_totals(message_metadata: Any) -> tuple[int, int]:
+    """``(calls, errors)`` summed over the call's ``toolCalls`` extra field.
+
+    The field is ``{tool_name: {"calls": n, "errors": e}}`` when the
+    coordinator attached one, and absent otherwise; malformed entries count as
+    zero rather than raising — the aggregate bump must never fail on it.
+    """
+    extra = getattr(message_metadata, "model_extra", None)
+    tool_calls = extra.get("toolCalls") if isinstance(extra, dict) else None
+    if not isinstance(tool_calls, dict):
+        return 0, 0
+    calls = errors = 0
+    for entry in tool_calls.values():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            calls += int(entry.get("calls") or 0)
+            errors += int(entry.get("errors") or 0)
+        except (TypeError, ValueError):
+            continue
+    return calls, errors
 
 
 def _emit_session_cache_rollup_metrics(

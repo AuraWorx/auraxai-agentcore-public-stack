@@ -8,6 +8,7 @@ from agents.main_agent.session.hooks.prefix_fingerprint import PrefixFingerprint
 from agents.main_agent.session.hooks.steering import SteeringHook
 from agents.main_agent.session.hooks.stop import StopHook
 from agents.main_agent.session.hooks.tool_approval import MCPExternalApprovalHook
+from agents.main_agent.session.hooks.tool_census import ToolCensusHook
 
 __all__ = [
     "AgentStatusHook",
@@ -18,4 +19,5 @@ __all__ = [
     "SteeringHook",
     "StopHook",
     "MCPExternalApprovalHook",
+    "ToolCensusHook",
 ]

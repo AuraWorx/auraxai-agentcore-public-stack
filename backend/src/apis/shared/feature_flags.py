@@ -284,6 +284,30 @@ def tool_summaries_enabled() -> bool:
     return os.environ.get("TOOL_SUMMARIES_ENABLED", "").strip().lower() != "false"
 
 
+def cost_diagnostics_enabled() -> bool:
+    """Whether the content-free behavioral counters are written at turn end.
+
+    Covers the ``ToolCensusHook`` tally (tool name → calls/errors per model
+    call, persisted as ``toolCalls`` on the call's ``C#`` cost row), the
+    ``toolCallCount`` / ``toolErrorCount`` session rollups, and the
+    ``compactionCount`` session counter. These are what the admin session
+    profile reads to say *what the user was doing* without reading the
+    conversation. **Default ON with a kill switch** (house style): unset or
+    empty resolves to enabled; only the literal ``"false"`` disables.
+
+    Read-side surfaces (``GET /admin/costs/.../profile``) are not gated —
+    they tolerate the attributes' absence and report "not tracked", which is
+    exactly what an environment with this switched off should see.
+
+    Cost note (CLAUDE.md token-effectiveness tenet): every write here is
+    additive to rows the turn already writes (one extra attribute on the
+    ``C#`` put, two ``ADD`` terms on the existing session-aggregate
+    ``UpdateItem``, one ``ADD`` on the existing compaction-state update).
+    Nothing reaches the prompt; the cacheable prefix is untouched.
+    """
+    return os.environ.get("COST_DIAGNOSTICS_ENABLED", "").strip().lower() != "false"
+
+
 def config_cache_enabled() -> bool:
     """Whether tenant-global config catalogs are served from the in-process cache.
 

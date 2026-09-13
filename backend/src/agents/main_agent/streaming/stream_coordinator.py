@@ -1171,6 +1171,11 @@ class StreamCoordinator:
             message_ids_to_store = assistant_message_ids if assistant_message_ids else ([message_id] if message_id is not None else [])
 
             if message_ids_to_store:
+                # Content-free tool census, read (not drained) per call so each
+                # cost row carries the tools that call requested. None when the
+                # wrapper has no hook (tests, older agents) or the census is off.
+                tool_census_hook = getattr(main_agent_wrapper, "tool_census_hook", None)
+
                 # Build list of metadata storage tasks for parallel execution
                 metadata_tasks = []
                 for idx, msg_id in enumerate(message_ids_to_store):
@@ -1222,6 +1227,10 @@ class StreamCoordinator:
                             citations=citations_for_message,  # Pass citations for persistence
                             call_index=idx,  # Nth model call of this turn (prefix fingerprint lookup)
                             turn_agent_id=turn_agent_id,  # Which Agent ran this turn (#756)
+                            tool_calls=(
+                                tool_census_hook.tally_for_call(idx)
+                                if tool_census_hook is not None else None
+                            ),
                         )
                     )
 
@@ -2711,6 +2720,7 @@ class StreamCoordinator:
         citations: Optional[List] = None,
         call_index: Optional[int] = None,
         turn_agent_id: Optional[str] = None,
+        tool_calls: Optional[Dict[str, Dict[str, int]]] = None,
     ) -> None:
         """
         Store message-level metadata (token usage, latency, model info, citations)
@@ -2881,6 +2891,14 @@ class StreamCoordinator:
                 # else on the row distinguishes them.
                 if turn_agent_id:
                     metadata_kwargs["turnAgentId"] = turn_agent_id
+
+                # Content-free tool census for this call (tool name → calls /
+                # errors), another extra field. Read by the admin session
+                # profile to show what the user was doing; tool names are
+                # catalog ids, never content. Absent when the call requested
+                # no tools or COST_DIAGNOSTICS_ENABLED=false.
+                if tool_calls:
+                    metadata_kwargs["toolCalls"] = tool_calls
 
                 message_metadata = MessageMetadata(**metadata_kwargs)
 
