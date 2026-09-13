@@ -20,11 +20,12 @@ from agents.main_agent.tools import (
 
 # Import new service and models
 from .service import get_tool_catalog_service
-from .discovery import discover_tools_for_saved_tool
+from .discovery import discover_tools_for_saved_tool, resolve_prompt_for_saved_tool
 from apis.shared.tools.models import (
     UserToolsResponse,
     ToolPreferencesRequest,
     MCPDiscoverResponse,
+    ResolvedPrompt,
     ToolCapabilitySnapshot,
 )
 
@@ -192,6 +193,51 @@ async def get_my_tool_capabilities(
 
     snapshot = await service.repository.get_capabilities(tool_id)
     return snapshot or ToolCapabilitySnapshot(tool_id=tool_id)
+
+
+class ResolvePromptRequest(BaseModel):
+    """Argument values for one ``prompts/get`` call, keyed by argument name."""
+
+    arguments: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/{tool_id}/prompts/{prompt_name}", response_model=ResolvedPrompt)
+async def resolve_my_tool_prompt(
+    tool_id: str,
+    prompt_name: str,
+    body: ResolvePromptRequest,
+    user: User = Depends(get_current_user_from_session),
+):
+    """Compose one of a server's prompts with the caller's argument values.
+
+    Live, unlike the capability listings: the result depends on arguments typed
+    a moment ago, and a 3LO server can only compose it under the caller's own
+    token. Nothing is persisted — the composition belongs to this request.
+
+    Lives on app-api rather than inference-api deliberately. This is user-facing
+    CRUD, not part of the AgentCore Runtime invocation path, and a route added to
+    inference-api would 404 in cloud before reaching the container.
+    """
+    service = get_tool_catalog_service()
+
+    # RBAC: same gate as the discover and capabilities routes.
+    accessible = await service.get_user_accessible_tools(user)
+    if not any(t.tool_id == tool_id for t in accessible):
+        raise HTTPException(status_code=404, detail="Tool not found or not accessible")
+
+    tool = await service.repository.get_tool(tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    try:
+        return await resolve_prompt_for_saved_tool(
+            tool,
+            prompt_name,
+            body.arguments,
+            oauth_token=user.raw_token,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 # =============================================================================

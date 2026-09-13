@@ -81,7 +81,15 @@ const CATALOG: Tool[] = [
 const SNAPSHOT = {
   toolId: 'canvas_faculty',
   prompts: [
-    { name: 'grade_summary', title: 'Grade summary', description: 'Summarize grades.', arguments: ['course_id'] },
+    {
+      name: 'grade_summary',
+      title: 'Grade summary',
+      description: 'Summarize grades.',
+      arguments: [
+        { name: 'course_id', description: 'Which course', required: true },
+        { name: 'tone', description: null, required: false },
+      ],
+    },
   ],
   resources: [
     {
@@ -186,9 +194,152 @@ describe('CustomizeToolDetailPage', () => {
     fixture.detectChanges();
 
     expect(text(fixture)).toContain('Grade summary');
-    expect(text(fixture)).toContain('arguments: course_id');
     expect(text(fixture)).toContain('canvas://courses/{course_id}/syllabus');
     expect(text(fixture)).toContain('template');
+  });
+
+  // ===========================================================================
+  // Trying a prompt
+  // ===========================================================================
+
+  /** Opens `canvas_faculty` with its snapshot flushed and one prompt expanded. */
+  async function openPromptForm(): Promise<ComponentFixture<CustomizeToolDetailPage>> {
+    const fixture = await create('canvas_faculty');
+    http.expectOne('/api/tools/canvas_faculty/capabilities').flush(SNAPSHOT);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    fixture.componentInstance['togglePrompt'](SNAPSHOT.prompts[0] as never);
+    fixture.detectChanges();
+    return fixture;
+  }
+
+  const field = (fixture: ComponentFixture<CustomizeToolDetailPage>, name: string) =>
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>(
+      `#prompt-arg-grade_summary-${name}`,
+    );
+
+  it('still labels arguments from a backend that predates the structured shape', async () => {
+    // The two packages deploy separately, so a SPA can reach an older backend
+    // that sends bare names. A field labelled `undefined` would be the tell.
+    const fixture = await create('canvas_faculty');
+    http.expectOne('/api/tools/canvas_faculty/capabilities').flush({
+      ...SNAPSHOT,
+      prompts: [{ ...SNAPSHOT.prompts[0], arguments: ['course_id'] }],
+    });
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    fixture.componentInstance['togglePrompt'](
+      fixture.componentInstance['prompts']()[0] as never,
+    );
+    fixture.detectChanges();
+
+    expect(field(fixture, 'course_id')).toBeTruthy();
+    expect(text(fixture)).not.toContain('undefined');
+  });
+
+  it('builds a field per argument, marking the required ones', async () => {
+    const fixture = await openPromptForm();
+
+    expect(field(fixture, 'course_id')).toBeTruthy();
+    expect(field(fixture, 'tone')).toBeTruthy();
+    // The hint the server gave for the argument, not just its name.
+    expect(text(fixture)).toContain('Which course');
+    expect(text(fixture)).toContain('(required)');
+  });
+
+  it('refuses to compose while a required argument is blank, and says which', async () => {
+    const fixture = await openPromptForm();
+
+    fixture.componentInstance['resolvePrompt'](SNAPSHOT.prompts[0] as never);
+    await settle();
+    fixture.detectChanges();
+
+    expect(text(fixture)).toContain('This one is required.');
+    // Nothing was sent — the server would have answered with a developer's error.
+    http.expectNone('/api/tools/canvas_faculty/prompts/grade_summary');
+  });
+
+  it('clears a field’s error as soon as it is edited', async () => {
+    const fixture = await openPromptForm();
+    fixture.componentInstance['resolvePrompt'](SNAPSHOT.prompts[0] as never);
+    await settle();
+    fixture.detectChanges();
+    expect(text(fixture)).toContain('This one is required.');
+
+    const input = field(fixture, 'course_id')!;
+    input.value = 'BIO 101';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    expect(text(fixture)).not.toContain('This one is required.');
+  });
+
+  it('composes the prompt and shows what the server returned', async () => {
+    const fixture = await openPromptForm();
+    const input = field(fixture, 'course_id')!;
+    input.value = 'BIO 101';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    const resolving = fixture.componentInstance['resolvePrompt'](
+      SNAPSHOT.prompts[0] as never,
+    );
+    const request = http.expectOne('/api/tools/canvas_faculty/prompts/grade_summary');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({
+      arguments: { course_id: 'BIO 101', tone: '' },
+    });
+    request.flush({
+      description: 'Grades',
+      messages: [
+        { role: 'user', kind: 'text', text: 'Summarize grades for BIO 101.' },
+        { role: 'user', kind: 'image', text: '' },
+      ],
+      truncated: false,
+    });
+    await resolving;
+    fixture.detectChanges();
+
+    expect(text(fixture)).toContain('Summarize grades for BIO 101.');
+    // An image has no readable body, so the message is named rather than blank.
+    expect(text(fixture)).toContain('image content — not shown here');
+  });
+
+  it('keeps a failed compose on the page instead of clearing the form', async () => {
+    const fixture = await openPromptForm();
+    const input = field(fixture, 'course_id')!;
+    input.value = 'BIO 101';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    const resolving = fixture.componentInstance['resolvePrompt'](
+      SNAPSHOT.prompts[0] as never,
+    );
+    http
+      .expectOne('/api/tools/canvas_faculty/prompts/grade_summary')
+      .flush({ detail: 'nope' }, { status: 502, statusText: 'Bad Gateway' });
+    await resolving;
+    fixture.detectChanges();
+
+    expect(text(fixture)).toContain('couldn’t compose that prompt');
+    expect(field(fixture, 'course_id')!.value).toBe('BIO 101');
+  });
+
+  it('discards a run when a different prompt is opened', async () => {
+    const fixture = await openPromptForm();
+    const input = field(fixture, 'course_id')!;
+    input.value = 'BIO 101';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    // Closing and reopening is the same path as switching prompts.
+    fixture.componentInstance['togglePrompt'](SNAPSHOT.prompts[0] as never);
+    fixture.componentInstance['togglePrompt'](SNAPSHOT.prompts[0] as never);
+    fixture.detectChanges();
+
+    expect(field(fixture, 'course_id')!.value).toBe('');
   });
 
   it('asks for no capability snapshot for a tool that is not an external MCP server', async () => {

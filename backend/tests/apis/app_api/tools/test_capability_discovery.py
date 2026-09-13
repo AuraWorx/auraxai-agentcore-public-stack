@@ -72,7 +72,11 @@ def _prompts(*names):
                 name=n,
                 title=None,
                 description=f"desc for {n}",
-                arguments=[SimpleNamespace(name="course_id")],
+                arguments=[
+                    SimpleNamespace(
+                        name="course_id", description="Which course", required=True
+                    )
+                ],
             )
             for n in names
         ],
@@ -124,7 +128,14 @@ async def test_collects_prompts_and_resources():
     assert snapshot.supports_prompts is True
     assert snapshot.supports_resources is True
     assert [p.name for p in snapshot.prompts] == ["grade_summary"]
-    assert snapshot.prompts[0].arguments == ["course_id"]
+    # Arguments carry `required` and `description`, not just a name: a form
+    # cannot be built from names alone.
+    argument = snapshot.prompts[0].arguments[0]
+    assert (argument.name, argument.required, argument.description) == (
+        "course_id",
+        True,
+        "Which course",
+    )
     assert {r.uri for r in snapshot.resources} == {
         "canvas://a",
         "canvas://courses/{id}/syllabus",
