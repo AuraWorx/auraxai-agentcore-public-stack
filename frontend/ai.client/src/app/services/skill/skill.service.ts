@@ -17,6 +17,17 @@ export interface UserSkill {
   category: string | null;
   userEnabled: boolean | null;
   isEnabled: boolean;
+  /**
+   * The runtime's activation key — the name the model sees in
+   * `<available_skills>` and the token the composer's `/` menu writes into a
+   * message. Served by the backend rather than derived here so the two can
+   * never disagree about the slug rule.
+   *
+   * Optional because the SPA and the backend deploy independently (and in no
+   * enforced order): a client that lands ahead of the backend that serves this
+   * field must degrade to "no slash commands", not to a menu of `/undefined`.
+   */
+  slug?: string;
 }
 
 /** Response from GET /skills/ */

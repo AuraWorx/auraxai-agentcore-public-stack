@@ -71,6 +71,7 @@ export class ChatRequestService implements OnDestroy {
     fileUploadIds?: string[],
     assistantId?: string,
     mentionAgentId?: string,
+    invokedSkillIds?: string[],
   ): Promise<void> {
     // Ensure conversation exists and get its ID
     // Update URL to reflect current conversation
@@ -129,6 +130,7 @@ export class ChatRequestService implements OnDestroy {
         fileUploadIds,
         assistantId,
         mentionAgentId,
+        invokedSkillIds,
       );
       await this.chatHttpService.sendChatRequest(requestObject);
     } catch (error) {
@@ -308,6 +310,7 @@ export class ChatRequestService implements OnDestroy {
     fileUploadIds?: string[],
     assistantId?: string,
     mentionAgentId?: string,
+    invokedSkillIds?: string[],
   ) {
     const selectedModel = this.modelService.getSelectedModel();
 
@@ -336,6 +339,16 @@ export class ChatRequestService implements OnDestroy {
     const enabledSkillIds = this.skillService.getEnabledSkillIds();
     if (enabledSkillIds.length > 0) {
       requestObject['enabled_skills'] = enabledSkillIds;
+    }
+
+    // Skills the user invoked with a `/` command in the composer. A strict subset of
+    // `enabled_skills` — the menu only offers skills that are already on — so this
+    // changes nothing about what the turn discloses and nothing about the cacheable
+    // prefix. The backend intersects it against the turn's effective set anyway (an
+    // Agent's bindings can still replace that set) and appends a one-line directive to
+    // the user message telling the model to activate the named skill.
+    if (invokedSkillIds && invokedSkillIds.length > 0) {
+      requestObject['invoked_skills'] = invokedSkillIds;
     }
 
     // Per-model inference param overrides, set either in the Settings →

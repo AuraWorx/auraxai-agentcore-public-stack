@@ -3,6 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { AgentMentionService, MentionableAgent } from '../../../agents/services/agent-mention.service';
+import { SkillCommand, SkillCommandService } from '../../../services/skill/skill-command.service';
 import { FileUploadService } from '../../../services/file-upload';
 import { SystemPromptsService } from '../../../services/system-prompts/system-prompts.service';
 import { ToastService } from '../../../services/toast/toast.service';
@@ -64,6 +65,30 @@ class SteeringServiceStub {
   reset(): void {}
 }
 
+const SKILLS: SkillCommand[] = [
+  { skillId: 's1', slug: 'brand-deck', name: 'Brand Deck', description: 'Build a deck' },
+  { skillId: 's2', slug: 'brand-voice', name: 'Brand Voice', description: 'House style' },
+  { skillId: 's3', slug: 'web-research', name: 'Web Research', description: 'Search the web' },
+];
+
+/**
+ * Stand-in for SkillCommandService. A DI token rather than a `vi.mock`, per the house
+ * rule — and required rather than optional, because the real one reaches SkillService →
+ * HttpClient, which Angular 21 root-provides a live backend for.
+ */
+class SkillCommandServiceStub {
+  readonly commands = signal<SkillCommand[]>(SKILLS);
+  readonly loading = signal(false);
+  async load(): Promise<void> {}
+  search(query: string): SkillCommand[] {
+    const needle = query.trim().toLowerCase();
+    return this.commands().filter((command) => command.slug.startsWith(needle));
+  }
+  bySlugOrUndefined(slug: string): SkillCommand | undefined {
+    return this.commands().find((command) => command.slug === slug);
+  }
+}
+
 class MentionServiceStub {
   readonly mentionable = signal<MentionableAgent[]>(AGENTS);
   readonly loading = signal(false);
@@ -84,6 +109,7 @@ describe('ChatInputComponent — the `@` menu keyboard path (D11)', () => {
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -190,6 +216,172 @@ describe('ChatInputComponent — the `@` menu keyboard path (D11)', () => {
 });
 
 /**
+ * The `/` skill-command menu.
+ *
+ * Two things separate it from the `@` menu and both are covered here. First, `/` is
+ * ordinary punctuation — dates, fractions, paths and URLs all contain one — so the token
+ * rule has to keep the menu shut far more often than it opens it. Second, there is no
+ * remembered pick: the invoked set is DERIVED from the composer text, so a hand-typed
+ * command works exactly like a menu pick and the chip can never disagree with what is
+ * about to be sent.
+ */
+describe('ChatInputComponent — the `/` skill-command menu', () => {
+  let fixture: ComponentFixture<ChatInputComponent>;
+  let component: ChatInputComponent;
+  let textarea: HTMLTextAreaElement;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [ChatInputComponent],
+      providers: [
+        { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
+        {
+          provide: FileUploadService,
+          useValue: {
+            pendingUploadsList: signal([]),
+            hasActivePendingUploads: signal(false),
+            readyUploadIds: signal([]),
+            clearReadyUploads: () => undefined,
+            clearPendingUpload: () => undefined,
+          },
+        },
+        { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
+        { provide: ToolService, useValue: {} },
+        {
+          provide: VoiceChatService,
+          useValue: {
+            status: signal('idle'),
+            isVoiceActive: signal(false),
+            agentTranscript: signal(''),
+          },
+        },
+        { provide: SystemPromptsService, useValue: { activePrompt: signal(null) } },
+        { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
+        { provide: SteeringService, useClass: SteeringServiceStub },
+      ],
+    })
+      .overrideComponent(ChatInputComponent, {
+        set: { imports: [], schemas: [NO_ERRORS_SCHEMA] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(ChatInputComponent);
+    component = fixture.componentInstance;
+    fixture.componentRef.setInput('showFileControls', false);
+    fixture.componentRef.setInput('showVoiceControl', false);
+    fixture.componentRef.setInput('autoFocus', false);
+    fixture.detectChanges();
+
+    textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+  });
+
+  function type(value: string): void {
+    textarea.value = value;
+    textarea.setSelectionRange(value.length, value.length);
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  function pressKey(key: string): void {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+    fixture.detectChanges();
+  }
+
+  it('opens the menu on a word-initial `/`', () => {
+    type('/');
+    expect(component.isSkillMenuVisible()).toBe(true);
+  });
+
+  it('filters as the slug is typed', () => {
+    type('/brand-v');
+    expect(component.skillResults().map((c) => c.slug)).toEqual(['brand-voice']);
+  });
+
+  it.each(['and/or', 'open 24/7', 'see https://example.com', 'edit src/app/foo'])(
+    'leaves `/` as punctuation in %j',
+    (text) => {
+      type(text);
+      expect(component.isSkillMenuVisible()).toBe(false);
+    },
+  );
+
+  it('closes once a second `/` makes the token a path', () => {
+    type('/usr');
+    expect(component.isSkillMenuVisible()).toBe(true);
+
+    type('/usr/');
+    expect(component.isSkillMenuVisible()).toBe(false);
+  });
+
+  it('walks the list and commits on Enter rather than sending the message', () => {
+    let submitted = false;
+    component.messageSubmitted.subscribe(() => (submitted = true));
+
+    type('/');
+    pressKey('ArrowDown');
+    pressKey('Enter');
+
+    expect(submitted).toBe(false);
+    expect(component.userInput()).toBe('/brand-voice ');
+  });
+
+  it('yields the keyboard to the `@` menu when both tokens would match', () => {
+    // `@` is the narrower token; two menus claiming the arrow keys would make neither
+    // usable.
+    type('@');
+    expect(component.isMentionMenuOpen()).toBe(true);
+    expect(component.isSkillMenuVisible()).toBe(false);
+  });
+
+  it('derives the invoked skills from the text, so a typed command counts', () => {
+    type('use /web-research to check this');
+    expect(component.invokedSkills().map((c) => c.skillId)).toEqual(['s3']);
+  });
+
+  it('ignores a slug the user has not turned on', () => {
+    type('run /not-a-skill please');
+    expect(component.invokedSkills()).toEqual([]);
+  });
+
+  it('de-duplicates a slug repeated in one message', () => {
+    type('/brand-deck and again /brand-deck');
+    expect(component.invokedSkills().map((c) => c.slug)).toEqual(['brand-deck']);
+  });
+
+  it('sends the derived ids with the message', () => {
+    let payload: { invokedSkillIds?: string[] } | undefined;
+    component.messageSubmitted.subscribe((event) => (payload = event));
+
+    type('/brand-deck /web-research make me a deck');
+    component.submitChatRequest();
+
+    expect(payload?.invokedSkillIds).toEqual(['s1', 's3']);
+  });
+
+  it('omits the field entirely when no command was used', () => {
+    let payload: { invokedSkillIds?: string[] } | undefined;
+    component.messageSubmitted.subscribe((event) => (payload = event));
+
+    type('just a normal message');
+    component.submitChatRequest();
+
+    expect(payload?.invokedSkillIds).toBeUndefined();
+  });
+
+  it('clearing a chip edits the text, because the text is the binding', () => {
+    type('/brand-deck make me a deck');
+    const command = component.invokedSkills()[0];
+
+    component.clearSkillCommand(command);
+
+    expect(component.userInput()).toBe('make me a deck');
+    expect(component.invokedSkills()).toEqual([]);
+  });
+});
+
+/**
  * Queue-instead-of-interrupt (kaizen 2026-08-28 #5).
  *
  * Enter used to route to Stop while a response was streaming, so a follow-up
@@ -209,6 +401,7 @@ describe('ChatInputComponent — queueing a follow-up mid-stream', () => {
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -420,6 +613,7 @@ describe('ChatInputComponent — mid-turn steering (PR-5)', () => {
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -651,6 +845,7 @@ describe('ChatInputComponent — a queue held behind a paused turn (PR-6)', () =
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {

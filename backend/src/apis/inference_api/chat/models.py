@@ -185,6 +185,17 @@ class InvocationRequest(BaseModel):
     # — client input can narrow the set, never grant. An empty (or fully
     # inaccessible) list yields zero skills, so the turn is plain chat.
     enabled_skills: Optional[List[str]] = None
+    # Skills the user named with a `/` slash command in the composer, for this
+    # turn only. A strict subset of the turn's effective skills — it is
+    # intersected server-side exactly like ``enabled_skills``, so it can never
+    # widen the set and an id that is not already active is simply dropped.
+    #
+    # It changes nothing about what is *disclosed*: the same skills are in
+    # ``<available_skills>`` either way, so the cacheable prefix is untouched.
+    # All it adds is a short directive on the user message telling the model to
+    # activate the named skill before answering, which is what makes a slash
+    # command deterministic rather than a hint the model may ignore.
+    invoked_skills: Optional[List[str]] = None
     # User-selected custom system prompt ("conversation mode") for this
     # turn. The frontend forwards the active selection on every submit so
     # the inference path doesn't have to round-trip session metadata to

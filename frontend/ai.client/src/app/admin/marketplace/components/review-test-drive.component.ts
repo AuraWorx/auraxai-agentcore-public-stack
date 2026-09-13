@@ -143,6 +143,7 @@ import { PreviewSessionService } from '../../../shared/preview/preview-session.s
               [showVoiceControl]="false"
               [autoFocus]="false"
               [showAgentMentions]="false"
+              [showSkillCommands]="false"
               [showAnnouncements]="false"
               (messageSubmitted)="onMessageSubmitted($event)"
               (messageCancelled)="onMessageCancelled()"

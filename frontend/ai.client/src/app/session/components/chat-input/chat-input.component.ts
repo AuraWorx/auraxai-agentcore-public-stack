@@ -47,6 +47,13 @@ import {
   MentionableAgent,
 } from '../../../agents/services/agent-mention.service';
 import { AgentMentionMenuComponent } from './agent-mention-menu.component';
+import {
+  SkillCommand,
+  SkillCommandService,
+  findSkillCommands,
+  removeSkillCommand,
+} from '../../../services/skill/skill-command.service';
+import { SkillCommandMenuComponent } from './skill-command-menu.component';
 import { SteeringService } from '../../services/chat/steering.service';
 
 // Must stay in sync with the inline min-height/max-height on the textarea in
@@ -63,6 +70,11 @@ interface Message {
    * not bound to it — the next message with no mention is plain chat again.
    */
   mentionAgentId?: string;
+  /**
+   * Skills the user invoked with a `/` slash command in this message. Derived from the
+   * message text, so it is always exactly what the thread will show.
+   */
+  invokedSkillIds?: string[];
 }
 
 /**
@@ -82,6 +94,7 @@ interface QueuedMessage {
   content: string;
   fileUploadIds?: string[];
   mentionAgentId?: string;
+  invokedSkillIds?: string[];
   /**
    * True once the backend has confirmed this entry is armed against the
    * running turn, so it may land at the agent's next tool boundary rather than
@@ -97,7 +110,7 @@ interface QueuedMessage {
   armed?: boolean;
 }
 
-/** The `@…` the caret is currently sitting in, and where it starts in the text. */
+/** The `@…` or `/…` the caret is currently sitting in, and where it starts in the text. */
 interface MentionToken {
   query: string;
   start: number;
@@ -105,7 +118,7 @@ interface MentionToken {
 
 @Component({
   selector: 'app-chat-input',
-  imports: [AnnouncementBannerComponent, FormsModule, ModelDropdownComponent, NgIcon, QuotaWarningBannerComponent, StorageQuotaBannerComponent, TooltipDirective, FileCardComponent, AgentMentionMenuComponent, SpinnerComponent],
+  imports: [AnnouncementBannerComponent, FormsModule, ModelDropdownComponent, NgIcon, QuotaWarningBannerComponent, StorageQuotaBannerComponent, TooltipDirective, FileCardComponent, AgentMentionMenuComponent, SkillCommandMenuComponent, SpinnerComponent],
   // `relative` is the anchor the announcement banner floats against — it sits
   // `bottom-full` of this host, above the quota tabs and clear of the composer.
   host: { class: 'relative block' },
@@ -154,6 +167,12 @@ export class ChatInputComponent {
   // another Agent makes no sense — the Agent editor's own preview, which is already
   // running the Agent being edited.
   readonly showAgentMentions = input<boolean>(true);
+
+  // Input: offer the `/` skill-command menu (defaults to true). Off in the embedded
+  // previews for the same reason as `@`-mentions — those panes exercise one Agent whose
+  // skills the Agent itself dictates, so a menu built from the *user's* enabled skills
+  // would offer commands the previewed turn does not disclose.
+  readonly showSkillCommands = input<boolean>(true);
 
   /**
    * Whether an announcement banner may float above this composer.
@@ -363,6 +382,73 @@ export class ChatInputComponent {
 
   readonly mentionQuery = computed(() => this.mentionToken()?.query ?? '');
 
+  // =========================================================================
+  // `/` skill commands
+  //
+  // Typing `/pdf-workflows` invokes that skill for **this message**. The scope is
+  // deliberately the skills the user already has switched on, so the command changes
+  // nothing about what the turn discloses to the model — the same `<available_skills>`
+  // block ships either way and the cacheable prefix is untouched. All the backend adds is
+  // a one-line directive telling the model to activate the named skill before answering.
+  //
+  // **The text is the state.** Unlike the `@` menu, there is no remembered pick: the
+  // invoked set is derived from what is in the composer, because a slug is a single
+  // unambiguous token and reading it back is exact. That makes a hand-typed command work
+  // identically to a menu pick, and it removes the whole class of bugs where a chip and
+  // the message text disagree about what is about to happen.
+  // =========================================================================
+  private readonly skillCommandService = inject(SkillCommandService);
+
+  /** The `/…` token under the caret, or null when the caret is not in one. */
+  private readonly skillToken = signal<MentionToken | null>(null);
+
+  readonly skillActiveIndex = signal(0);
+
+  readonly skillResults = computed(() => {
+    const token = this.skillToken();
+    return token ? this.skillCommandService.search(token.query) : [];
+  });
+
+  /**
+   * The menu opens only when there is something to offer.
+   *
+   * `/` is far more common in prose than `@` — dates, fractions, "and/or", paths, URLs —
+   * so the token rule below is what does the real work; this only stops an empty menu
+   * appearing for a user who has no skills switched on.
+   */
+  readonly isSkillMenuOpen = computed(
+    () =>
+      this.showSkillCommands() &&
+      this.skillToken() !== null &&
+      this.skillCommandService.commands().length > 0,
+  );
+
+  readonly skillQuery = computed(() => this.skillToken()?.query ?? '');
+
+  /** The skills this message will invoke, read straight out of the composer text. */
+  readonly invokedSkills = computed<SkillCommand[]>(() => {
+    if (!this.showSkillCommands()) return [];
+    const commands = this.skillCommandService.commands();
+    return findSkillCommands(
+      this.userInput(),
+      commands.map((command) => command.slug),
+    )
+      .map((slug) => commands.find((command) => command.slug === slug))
+      .filter((command): command is SkillCommand => command !== undefined);
+  });
+
+  private invokedSkillIds(): string[] | undefined {
+    const ids = this.invokedSkills().map((command) => command.skillId);
+    return ids.length > 0 ? ids : undefined;
+  }
+
+  /**
+   * Only one of the two menus is ever open. `@` wins a tie because it is the narrower
+   * token (a `@` cannot also be the start of a `/` command), and because both menus
+   * claiming the arrow keys would make neither usable.
+   */
+  readonly isSkillMenuVisible = computed(() => this.isSkillMenuOpen() && !this.isMentionMenuOpen());
+
   constructor() {
     // Focus the textarea on first mount...
     afterNextRender(() => this.focusInput());
@@ -519,6 +605,7 @@ export class ChatInputComponent {
       content,
       fileUploadIds: fileUploadIds.length > 0 ? [...fileUploadIds] : undefined,
       mentionAgentId: this.mentionedAgent()?.agentId,
+      invokedSkillIds: this.invokedSkillIds(),
     };
     this.queuedMessages.update(queue => [...queue, entry]);
 
@@ -534,6 +621,7 @@ export class ChatInputComponent {
     this.userInput.set('');
     this.mentionedAgent.set(null);
     this.closeMentionMenu();
+    this.closeSkillMenu();
     this.resetTextareaHeight();
     this.fileUploadService.clearReadyUploads();
   }
@@ -542,16 +630,21 @@ export class ChatInputComponent {
    * Ask the backend to inject this follow-up at the running turn's next tool
    * boundary. See docs/specs/mid-turn-steering.md.
    *
-   * Text only, and no `@`-mention. An injection is a text block appended to the
-   * tool-result message, so it cannot carry file attachments; and a mention
-   * picks the Agent that runs a *turn*, which a mid-turn injection cannot
-   * change. Both must go as a normal turn, and skipping the round trip here is
+   * Text only, no `@`-mention and no `/` skill command. An injection is a text block
+   * appended to the tool-result message, so it cannot carry file attachments; a mention
+   * picks the Agent that runs a *turn*, which a mid-turn injection cannot change; and a
+   * slash command's directive rides the turn's user message, which by then is already
+   * sent. All three must go as a normal turn, and skipping the round trip here is
    * what makes that automatic rather than a backend rejection.
    */
   private async armSteering(entry: QueuedMessage): Promise<void> {
     const sessionId = this.sessionId();
     if (!sessionId) return;
     if (entry.fileUploadIds?.length || entry.mentionAgentId) return;
+    // A slash command has to go as a normal turn too: the directive it produces is
+    // appended to the turn's *user message*, and a mid-turn injection lands as a text
+    // block on the tool-result message of a turn whose skills were already resolved.
+    if (entry.invokedSkillIds?.length) return;
     // A paused turn released its lease when the stream closed, so there is no
     // inbox to arm against. This entry rides the resume request instead.
     if (this.queueHeld()) return;
@@ -601,13 +694,16 @@ export class ChatInputComponent {
       timestamp: new Date(),
       fileUploadIds: fileUploadIds.length > 0 ? fileUploadIds : undefined,
       mentionAgentId: this.mentionedAgent()?.agentId,
+      invokedSkillIds: this.invokedSkillIds(),
     });
 
     // Clear input and pending uploads. The mention clears with them: it belongs to the
-    // turn that was just sent, not to the composer (D11).
+    // turn that was just sent, not to the composer (D11). Invoked skills need no clearing
+    // — they are derived from the text, so emptying the text un-invokes them.
     this.userInput.set('');
     this.mentionedAgent.set(null);
     this.closeMentionMenu();
+    this.closeSkillMenu();
     this.resetTextareaHeight();
     this.fileUploadService.clearReadyUploads();
   }
@@ -674,6 +770,7 @@ export class ChatInputComponent {
     this.userInput.set(textarea.value);
     this.autoResize(textarea);
     this.syncMentionToken(textarea);
+    this.syncSkillToken(textarea);
   }
 
   // ---------------------------------------------------------------- mentions (D11)
@@ -715,7 +812,9 @@ export class ChatInputComponent {
 
   /** Caret moves that are not edits — a click or an arrow key — also open or close the menu. */
   onTextareaCaretMove(event: Event): void {
-    this.syncMentionToken(event.target as HTMLTextAreaElement);
+    const textarea = event.target as HTMLTextAreaElement;
+    this.syncMentionToken(textarea);
+    this.syncSkillToken(textarea);
   }
 
   /**
@@ -778,6 +877,122 @@ export class ChatInputComponent {
     }
   }
 
+  // ---------------------------------------------------------------- `/` skill commands
+
+  /**
+   * Recompute the `/…` token from the text before the caret.
+   *
+   * Matched rather than tracked, for the same reason as the `@` token: the caret can move
+   * by click, arrow key, undo or paste, and a state machine that only listens to typing
+   * gets out of step with all four.
+   *
+   * The token rule is what keeps `/` usable as ordinary punctuation. It must start a word,
+   * so `and/or`, `24/7`, `https://x` and `src/app/foo` never open the menu; it ends at
+   * whitespace or a second `/`, so a path that *does* start a word (`/usr/bin`) closes the
+   * menu the moment the second slash arrives; and the body is restricted to slug
+   * characters, so `/what?` is prose.
+   */
+  private syncSkillToken(textarea: HTMLTextAreaElement): void {
+    if (!this.showSkillCommands()) {
+      return;
+    }
+    const caret = textarea.selectionStart ?? textarea.value.length;
+    const before = textarea.value.slice(0, caret);
+    const match = /(?:^|\s)\/([a-zA-Z0-9-]*)$/.exec(before);
+
+    if (!match) {
+      this.skillToken.set(null);
+      return;
+    }
+
+    void this.skillCommandService.load();
+    const next: MentionToken = { query: match[1], start: caret - match[1].length - 1 };
+
+    // Reset the highlight only when the token itself changed — same reason as the `@`
+    // menu: this runs on `keyup`, and an unconditional reset would drag the selection
+    // back to the first row on the keyup of every ArrowDown.
+    const current = this.skillToken();
+    if (!current || current.query !== next.query || current.start !== next.start) {
+      this.skillActiveIndex.set(0);
+    }
+    this.skillToken.set(next);
+  }
+
+  /**
+   * Commit a pick: replace the typed `/query` with the skill's full command.
+   *
+   * The literal `/slug` stays in the message. It is what the user typed, it is what the
+   * thread will show them tomorrow when they wonder why one answer followed a recipe, and
+   * — because the invoked set is derived from the text — it is also the binding itself.
+   */
+  onSkillPicked(command: SkillCommand): void {
+    const token = this.skillToken();
+    const textarea = this.messageInput()?.nativeElement;
+    if (!token || !textarea) {
+      return;
+    }
+
+    const caret = textarea.selectionStart ?? textarea.value.length;
+    const replacement = `/${command.slug} `;
+    const next =
+      textarea.value.slice(0, token.start) + replacement + textarea.value.slice(caret);
+
+    this.userInput.set(next);
+    this.skillToken.set(null);
+
+    // Write through to the element and restore the caret: the textarea is not bound to
+    // the signal (it uses `[value]` + an input handler), so the DOM is authoritative for
+    // the caret and would otherwise sit at the end of the replaced text.
+    textarea.value = next;
+    const caretAfter = token.start + replacement.length;
+    textarea.setSelectionRange(caretAfter, caretAfter);
+    textarea.focus();
+    this.autoResize(textarea);
+  }
+
+  /**
+   * Clear one invoked skill.
+   *
+   * The command lives in the text, so un-invoking edits the text — there is no separate
+   * binding to drop. That is the point of deriving the set from the message: the chip and
+   * what gets sent cannot disagree.
+   */
+  clearSkillCommand(command: SkillCommand): void {
+    const textarea = this.messageInput()?.nativeElement;
+    const next = removeSkillCommand(this.userInput(), command.slug);
+    this.userInput.set(next);
+    if (textarea) {
+      textarea.value = next;
+      this.autoResize(textarea);
+    }
+    this.focusInput();
+  }
+
+  private closeSkillMenu(): void {
+    this.skillToken.set(null);
+  }
+
+  private moveSkillSelection(delta: number): void {
+    const count = this.skillResults().length;
+    if (count === 0) {
+      return;
+    }
+    this.skillActiveIndex.set((this.skillActiveIndex() + delta + count) % count);
+  }
+
+  private commitActiveSkill(): void {
+    const command = this.skillResults()[this.skillActiveIndex()];
+    if (command) {
+      this.onSkillPicked(command);
+    }
+  }
+
+  /** The menu's last row: Customize → Skills, which is where turning one on belongs. */
+  onSkillBrowseAll(): void {
+    this.closeSkillMenu();
+    void this.router.navigate(['/customize/skills']);
+  }
+
   /**
    * Grow the textarea with its content up to MAX_TEXTAREA_HEIGHT_PX, past which
    * it scrolls internally (the template sets overflow-y-auto). Without the clamp
@@ -829,6 +1044,33 @@ export class ChatInputComponent {
       }
     }
 
+    // The `/` menu owns the keyboard on exactly the same terms, and only when the `@`
+    // menu is not already claiming it (`isSkillMenuVisible`).
+    if (this.isSkillMenuVisible()) {
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          this.moveSkillSelection(1);
+          return;
+        case 'ArrowUp':
+          event.preventDefault();
+          this.moveSkillSelection(-1);
+          return;
+        case 'Enter':
+        case 'Tab':
+          if (this.skillResults().length > 0) {
+            event.preventDefault();
+            this.commitActiveSkill();
+            return;
+          }
+          break;
+        case 'Escape':
+          event.preventDefault();
+          this.closeSkillMenu();
+          return;
+      }
+    }
+
     // Submit on Enter (without Shift)
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -843,14 +1085,19 @@ export class ChatInputComponent {
     if (this.showAgentMentions()) {
       void this.mentionService.load();
     }
+    if (this.showSkillCommands()) {
+      void this.skillCommandService.load();
+    }
   }
 
   onBlur() {
     this.isFocused.set(false);
     // The menu's own rows commit on `mousedown` and preventDefault, so reaching here
     // means the user went somewhere else entirely — close it. The *selected* Agent
-    // survives: it belongs to the pending turn, not to the menu.
+    // survives: it belongs to the pending turn, not to the menu. So do the skill
+    // commands, which live in the message text rather than in the menu.
     this.closeMentionMenu();
+    this.closeSkillMenu();
   }
 
   /** The menu's last row: the store, which is where a search over everything belongs (D11). */

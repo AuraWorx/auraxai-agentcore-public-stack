@@ -579,7 +579,7 @@ export class ConversationPage implements OnDestroy {
       });
   }
 
-  onMessageSubmitted(message: { content: string, timestamp: Date, fileUploadIds?: string[], mentionAgentId?: string }) {
+  onMessageSubmitted(message: { content: string, timestamp: Date, fileUploadIds?: string[], mentionAgentId?: string, invokedSkillIds?: string[] }) {
     // Use the effective session ID (route sessionId or staged sessionId)
     const sessionIdToUse = this.effectiveSessionId();
 
@@ -605,7 +605,8 @@ export class ConversationPage implements OnDestroy {
       sessionIdToUse,
       message.fileUploadIds,
       assistantIdToUse,
-      message.mentionAgentId
+      message.mentionAgentId,
+      message.invokedSkillIds
     ).catch((error) => {
       console.error('Error sending chat request:', error);
     });

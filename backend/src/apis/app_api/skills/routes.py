@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 
 from apis.shared.auth import User, get_current_user_from_session
 from apis.shared.skills.access import resolve_accessible_skill_ids
+from apis.shared.skills.bundle import slugify_skill_name
 from apis.shared.skills.models import (
     SkillDefinition,
     SkillResourceRef,
@@ -76,6 +77,13 @@ class UserSkillResponse(BaseModel):
     category: Optional[str] = None
     user_enabled: Optional[bool] = Field(None, alias="userEnabled")
     is_enabled: bool = Field(..., alias="isEnabled")
+    # The runtime's activation key for this skill — the same slug the
+    # ``AgentSkills`` plugin injects as ``Skill.name`` and accepts on its
+    # ``skills`` tool. Served rather than re-derived client-side so the token
+    # the composer's `/` menu writes into a message is byte-identical to the
+    # one the model reads in ``<available_skills>``; a slug rule that drifted
+    # between the two would show the user a command the model cannot resolve.
+    slug: str
 
     model_config = {"populate_by_name": True}
 
@@ -128,6 +136,7 @@ async def get_user_skills(
             # the two must agree or the UI would show skills as active that the
             # turn never loads.
             is_enabled=preferences.get(record.skill_id, False),
+            slug=slugify_skill_name(record.skill_id),
         )
         for record in records
         if record.status == SkillStatus.ACTIVE
