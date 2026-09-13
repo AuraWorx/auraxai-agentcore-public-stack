@@ -87,9 +87,9 @@ export type SkillRoleDialogResult = string[] | undefined;
                 <label
                   class="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-200 p-3 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/50"
                   [class.border-primary-500]="selectedRoleIds().has(role.roleId)"
-                  [class.bg-primary-50]="selectedRoleIds().has(role.roleId)"
+                  [class.bg-gray-100]="selectedRoleIds().has(role.roleId)"
                   [class.dark:border-primary-400]="selectedRoleIds().has(role.roleId)"
-                  [class.dark:bg-primary-900/20]="selectedRoleIds().has(role.roleId)"
+                  [class.dark:bg-gray-700]="selectedRoleIds().has(role.roleId)"
                 >
                   <input
                     type="checkbox"
@@ -99,7 +99,7 @@ export type SkillRoleDialogResult = string[] | undefined;
                   />
                   <div class="min-w-0 flex-1">
                     <div class="text-sm/6 font-medium text-gray-900 dark:text-white">{{ role.displayName }}</div>
-                    <div class="truncate font-mono text-xs/5 text-gray-500 dark:text-gray-400">{{ role.roleId }}</div>
+                    <div class="truncate font-mono text-xs/5 text-gray-600 dark:text-gray-300">{{ role.roleId }}</div>
                   </div>
                   @if (currentAssignments().has(role.roleId)) {
                     <span class="shrink-0 text-xs/5 text-gray-400 dark:text-gray-500">

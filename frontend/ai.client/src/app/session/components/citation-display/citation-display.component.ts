@@ -23,8 +23,8 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
         <button
           type="button"
           class="inline-flex min-h-7 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium
-                 bg-primary-100 text-primary-accessible hover:bg-primary-200
-                 dark:bg-primary-900/30 dark:text-primary-accessible-dark dark:hover:bg-primary-900/50
+                 bg-gray-100 text-primary-accessible hover:bg-gray-200
+                 dark:bg-gray-700 dark:text-primary-50 dark:hover:bg-gray-600 dark:hover:text-white
                  transition-colors motion-reduce:transition-none
                  focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
           [attr.aria-expanded]="isExpanded()"
@@ -69,7 +69,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
                   <div class="flex items-start gap-3">
                     <!-- Citation Number -->
                     <span
-                      class="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-100 text-xs font-semibold text-primary-accessible dark:bg-primary-900/50 dark:text-primary-accessible-dark"
+                      class="flex size-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-primary-accessible dark:bg-gray-700 dark:text-primary-50"
                       aria-hidden="true"
                     >
                       {{ i + 1 }}

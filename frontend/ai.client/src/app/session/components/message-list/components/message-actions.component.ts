@@ -44,7 +44,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
         </span>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-950/40"
+          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
           appTooltip="Resume response"
           appTooltipPosition="top"
           aria-label="Continue the truncated response"
@@ -59,7 +59,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
         </span>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-950/40"
+          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
           appTooltip="Resume response"
           appTooltipPosition="top"
           aria-label="Continue the interrupted response"

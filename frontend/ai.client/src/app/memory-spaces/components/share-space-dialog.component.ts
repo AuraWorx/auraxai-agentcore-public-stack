@@ -68,8 +68,8 @@ interface GrantRow {
         </div>
 
         <div class="sm:flex sm:items-start">
-          <div class="mx-auto flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary-100 sm:mx-0 sm:size-10 dark:bg-primary-500/10">
-            <ng-icon name="heroShare" class="size-6 text-primary-accessible dark:text-primary-accessible-dark" aria-hidden="true" />
+          <div class="mx-auto flex size-12 shrink-0 items-center justify-center rounded-2xl bg-gray-100 sm:mx-0 sm:size-10 dark:bg-gray-700">
+            <ng-icon name="heroShare" class="size-6 text-primary-accessible dark:text-primary-50" aria-hidden="true" />
           </div>
           <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
             <h3 id="share-space-title" class="text-base/7 font-semibold text-gray-900 dark:text-white">

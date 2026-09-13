@@ -190,10 +190,10 @@ type SortDirection = 'asc' | 'desc';
                 <td class="px-4 py-3 whitespace-nowrap">
                   <div class="flex items-center gap-3">
                     <div
-                      class="size-8 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center shrink-0"
+                      class="size-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center shrink-0"
                     >
                       <span
-                        class="text-sm font-medium text-primary-accessible dark:text-primary-accessible-dark"
+                        class="text-sm font-medium text-primary-accessible dark:text-primary-50"
                       >
                         {{ getAvatarInitial(user) }}
                       </span>

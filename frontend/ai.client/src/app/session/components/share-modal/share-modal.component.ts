@@ -80,7 +80,7 @@ type AccessLevel = 'public' | 'specific';
             <label
               class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors"
               [class]="selectedAccess() === option.value
-                ? 'border-primary-500 bg-primary-50 dark:border-primary-400 dark:bg-primary-500/10'
+                ? 'border-primary-500 bg-gray-100 dark:border-primary-400 dark:bg-gray-700'
                 : 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-white/5'"
             >
               <input
@@ -93,7 +93,7 @@ type AccessLevel = 'public' | 'specific';
               />
               <div>
                 <span class="text-sm font-medium text-gray-900 dark:text-white">{{ option.label }}</span>
-                <p class="text-xs text-gray-500 dark:text-gray-400">{{ option.description }}</p>
+                <p class="text-xs text-gray-600 dark:text-gray-300">{{ option.description }}</p>
               </div>
             </label>
           }
@@ -109,7 +109,7 @@ type AccessLevel = 'public' | 'specific';
             <!-- Email chips -->
             <div class="flex flex-wrap gap-1.5 mb-2">
               <!-- Owner chip (non-removable) -->
-              <span class="inline-flex items-center gap-1 rounded-full bg-primary-100 px-2.5 py-0.5 text-xs font-medium text-primary-700 dark:bg-primary-500/20 dark:text-primary-300">
+              <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-primary-accessible dark:bg-gray-700 dark:text-primary-50">
                 {{ data.ownerEmail }} (you)
               </span>
 

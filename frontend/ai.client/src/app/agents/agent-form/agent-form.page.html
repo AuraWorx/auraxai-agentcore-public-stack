@@ -371,8 +371,8 @@
               7 of canvas_faculty's 44 — and the ones it doesn't take sit in the model's
               toolConfig on every turn.
             -->
-            <span class="inline-flex items-stretch rounded-full border transition" [class.border-primary-500]="isToolSelected(t.ref)" [class.bg-primary-50]="isToolSelected(t.ref)" [class.dark:bg-primary-900/30]="isToolSelected(t.ref)" [class.border-gray-200]="!isToolSelected(t.ref)" [class.dark:border-gray-700]="!isToolSelected(t.ref)">
-              <button type="button" (click)="toggleTool(t.ref)" class="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm" [class.text-primary-accessible]="isToolSelected(t.ref)" [class.dark:text-primary-accessible-dark]="isToolSelected(t.ref)" [class.text-gray-700]="!isToolSelected(t.ref)" [class.dark:text-gray-300]="!isToolSelected(t.ref)" [appTooltip]="t.description" appTooltipPosition="top">
+            <span class="inline-flex items-stretch rounded-full border transition" [class.border-primary-500]="isToolSelected(t.ref)" [class.bg-gray-100]="isToolSelected(t.ref)" [class.dark:bg-gray-700]="isToolSelected(t.ref)" [class.border-gray-200]="!isToolSelected(t.ref)" [class.dark:border-gray-700]="!isToolSelected(t.ref)">
+              <button type="button" (click)="toggleTool(t.ref)" class="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm" [class.text-primary-accessible]="isToolSelected(t.ref)" [class.dark:text-primary-50]="isToolSelected(t.ref)" [class.text-gray-700]="!isToolSelected(t.ref)" [class.dark:text-gray-300]="!isToolSelected(t.ref)" [appTooltip]="t.description" appTooltipPosition="top">
                 @if (isToolSelected(t.ref)) { <ng-icon name="heroCheck" class="size-3.5" /> }
                 {{ t.label }}
                 @if (isToolSelected(t.ref) && canScopeTool(t) && !isWholeServerSelected(t)) {

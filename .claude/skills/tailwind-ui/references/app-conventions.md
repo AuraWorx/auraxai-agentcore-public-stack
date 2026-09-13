@@ -17,6 +17,7 @@ older boxed-card style in `model-form.page.html`.
 | Section heading (`h2`) | `text-base/7 font-semibold` |
 | Accent color | brand `primary-*` — never raw `blue-*` for an affordance, never `indigo` |
 | Solid brand fill / brand text | `primary-accessible` (+ `dark:*-accessible-dark` for text) |
+| Chip / badge / icon tile / selected-row fill | `bg-gray-100` + `text-primary-accessible`, `dark:bg-gray-700` + `dark:text-primary-50` |
 | Focus ring (inputs) | `focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500` |
 | Focus ring (buttons/links) | `focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500` |
 
@@ -32,6 +33,37 @@ alias for solid fills with white text and for brand-coloured text; use
 (`#2563eb` vs `#0033a0`) and does not follow a rebrand. The code agrees — zero
 files use `focus:ring-blue-500` or `focus-visible:outline-blue-500`, against 74
 and 94 respectively for the `primary` equivalents.
+
+**`primary` is not a tint ramp — never `bg-primary-50/100/200` as a fill.** The
+scale is generated from the brand hex by lightness offset alone and keeps full
+chroma at every step, so `primary-50` is not the pale wash its name implies: at
+`#0033a0` it resolves to `rgb(118, 179, 255)`, a saturated mid-blue. Used as a
+chip, badge, icon tile or selected-row background it reads as a blue blob behind
+small text, and it fails AA — `text-primary-accessible` on `bg-primary-100` is
+4.13:1, and `hover:bg-primary-200` drops it to 3.52:1. `text-gray-500` sub-labels
+on `bg-primary-50` are 2.23:1. The `state-*` scales *are* real tints
+(`state-success-50` = `rgb(240, 253, 244)`), which is exactly why the pattern
+looks safe by analogy and isn't.
+
+Use a neutral surface and put the brand in the text instead:
+
+```html
+<!-- chip -->
+<span class="rounded-full border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium
+             text-primary-accessible dark:border-gray-500 dark:bg-gray-700 dark:text-primary-50">
+
+<!-- icon tile / selected row -->
+<div class="rounded-lg bg-gray-100 text-primary-accessible dark:bg-gray-700 dark:text-primary-50">
+```
+
+Two traps that follow from this:
+
+- **`dark:text-primary-accessible-dark` is guaranteed against the page, not against a
+  tinted fill.** On `dark:bg-primary-900/30` it measures 4.15:1 and fails. On a neutral
+  `dark:bg-gray-700` use `dark:text-primary-50` (4.74:1).
+- **A fraction is a different thing.** `bg-primary-50/40` composites to
+  `rgb(200, 225, 255)` — an actual pale wash, and fine for a large transient surface
+  such as a drag-and-drop target. The ban is on the opaque steps.
 
 The one sanctioned exception is *decorative* colour that isn't standing in for the
 brand — e.g. the agent-detail hero's `bg-linear-to-br from-blue-700 to-sky-500`
