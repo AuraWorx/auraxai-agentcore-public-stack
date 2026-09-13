@@ -195,7 +195,7 @@ import {
                         </span>
                         @if (v.version === latestVersion()) {
                           <span
-                            class="shrink-0 rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-accessible dark:bg-primary-500/15 dark:text-primary-accessible-dark"
+                            class="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-accessible dark:bg-gray-700 dark:text-primary-50"
                             >Latest</span
                           >
                         }

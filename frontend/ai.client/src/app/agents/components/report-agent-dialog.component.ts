@@ -127,7 +127,7 @@ export type ReportAgentDialogResult =
                   class="flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 text-sm/6"
                   [class]="
                     reason() === option.value
-                      ? 'border-primary-500 bg-primary-50 dark:border-primary-400 dark:bg-primary-900/20'
+                      ? 'border-primary-500 bg-gray-100 dark:border-primary-400 dark:bg-gray-700'
                       : 'border-gray-300 bg-white hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700'
                  "
                 >
@@ -143,7 +143,7 @@ export type ReportAgentDialogResult =
                     <span class="block font-medium text-gray-900 dark:text-white">
                       {{ option.label }}
                     </span>
-                    <span class="block text-gray-500 dark:text-gray-400">{{ option.hint }}</span>
+                    <span class="block text-gray-600 dark:text-gray-300">{{ option.hint }}</span>
                   </span>
                 </label>
               }

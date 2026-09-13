@@ -138,17 +138,33 @@ Utilities: `primary-*`, `secondary-*`, `tertiary-*`. Generated into `src/styles/
 | Solid fill with white text | `bg-primary-accessible` plus `hover:brightness-95` |
 | Colored text or icon on a light surface | `text-primary-accessible` |
 | Colored text or icon on a dark surface | `dark:text-primary-accessible-dark` |
-| Decorative tint (badge or panel background) | `bg-primary-50`, `dark:bg-primary-900/30` |
+| Badge, chip, icon tile or selected-row fill | `bg-gray-100` + `text-primary-accessible`, `dark:bg-gray-700` + `dark:text-primary-50` |
 | Focus ring | `ring-primary-accessible/50` |
 
 The two `accessible` variants exist because a numbered step is not safe for arbitrary brand colors. A bright configured color at step 500 or 600 can leave white label text unreadable. The build picks a darker or lighter variant automatically, adjusting only lightness so the configured hue is preserved, and leaves the color untouched when it already has enough contrast.
 
-Two consequences worth knowing:
+A few consequences worth knowing:
 
 - **Solid fills need no `dark:` override.** What matters is the contrast between the fill and its white text, which does not change between light and dark mode. Lightening the fill in dark mode would only reduce it.
 - **Hover uses a brightness filter, not a darker step.** For a light configured color, the accessible variant can already be darker than step 700, so `hover:bg-primary-700` would brighten the button on hover and lose the contrast guarantee.
 
-Numbered steps are still fine for decorative tints, where nothing needs to stay legible against the color. If text sits on the tint, check it.
+- **The numbered scale is not a tint ramp.** Each step moves lightness only and keeps
+  the configured chroma, so `primary-50` is not the pale wash its name suggests. At the
+  Boise State blue it resolves to `rgb(118, 179, 255)` — a saturated mid-blue. Never use
+  `bg-primary-50`, `bg-primary-100` or `bg-primary-200` as a fill: `text-primary-accessible`
+  on `bg-primary-100` measures 4.13:1 and fails AA, and even where a pair passes it reads
+  as a blue blob behind small text. Use a neutral surface and put the brand in the text.
+  The `state-*` scales *are* real tints (`state-success-50` = `rgb(240, 253, 244)`), which
+  is why this looks safe by analogy and is not.
+
+  A fraction is a different thing: `bg-primary-50/40` composites to `rgb(200, 225, 255)`,
+  an actual pale wash. Those are fine for large transient surfaces such as a drag-and-drop
+  target.
+
+- **Pick the dark text from the dark surface.** `dark:text-primary-accessible-dark` is
+  guaranteed against the *page*, not against a tinted fill — on `dark:bg-primary-900/30`
+  it measures 4.15:1 and fails. On a neutral `dark:bg-gray-700` chip, use
+  `dark:text-primary-50` (4.74:1).
 
 ### Status
 

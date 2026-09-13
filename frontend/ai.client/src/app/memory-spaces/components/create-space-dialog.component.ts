@@ -56,8 +56,8 @@ export type CreateSpaceDialogResult = MemorySpaceSummary | undefined;
         </div>
 
         <div class="sm:flex sm:items-start">
-          <div class="mx-auto flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary-100 sm:mx-0 sm:size-10 dark:bg-primary-500/10">
-            <ng-icon name="heroCircleStack" class="size-6 text-primary-accessible dark:text-primary-accessible-dark" aria-hidden="true" />
+          <div class="mx-auto flex size-12 shrink-0 items-center justify-center rounded-2xl bg-gray-100 sm:mx-0 sm:size-10 dark:bg-gray-700">
+            <ng-icon name="heroCircleStack" class="size-6 text-primary-accessible dark:text-primary-50" aria-hidden="true" />
           </div>
           <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
             <h3 id="create-space-title" class="text-base/7 font-semibold text-gray-900 dark:text-white">
@@ -94,11 +94,11 @@ export type CreateSpaceDialogResult = MemorySpaceSummary | undefined;
                   role="radio"
                   [attr.aria-checked]="template() === tmpl.templateId"
                   (click)="template.set(tmpl.templateId)"
-                  class="flex w-full flex-col items-start rounded-2xl border px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 aria-checked:border-primary-500 aria-checked:bg-primary-50 dark:aria-checked:border-primary-400 dark:aria-checked:bg-primary-500/10 border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700/40"
+                  class="flex w-full flex-col items-start rounded-2xl border px-4 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 aria-checked:border-primary-500 aria-checked:bg-gray-100 dark:aria-checked:border-primary-400 dark:aria-checked:bg-gray-700 border-gray-300 hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700/40"
                 >
                   <span class="text-sm/6 font-medium text-gray-900 dark:text-white">{{ tmpl.name }}</span>
                   @if (tmpl.description) {
-                    <span class="mt-0.5 text-xs/5 text-gray-500 dark:text-gray-400">{{ tmpl.description }}</span>
+                    <span class="mt-0.5 text-xs/5 text-gray-600 dark:text-gray-300">{{ tmpl.description }}</span>
                   }
                 </button>
               }

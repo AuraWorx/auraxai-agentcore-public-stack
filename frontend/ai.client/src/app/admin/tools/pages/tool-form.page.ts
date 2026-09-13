@@ -298,14 +298,14 @@ import {
                         type="button"
                         (click)="discoverMcpTools()"
                         [disabled]="discovering() || !form.get('mcpServerUrl')?.value"
-                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-primary-50 hover:brightness-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-primary-900/20"
+                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
                       >
                         {{ discovering() ? 'Discovering…' : 'Discover from server' }}
                       </button>
                       <button
                         type="button"
                         (click)="addMcpTool()"
-                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-primary-50 hover:brightness-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-900/20"
+                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
                       >
                         <ng-icon name="heroPlus" class="size-4" aria-hidden="true" />
                         Add Tool
@@ -706,14 +706,14 @@ import {
                         type="button"
                         (click)="discoverGatewayTools()"
                         [disabled]="discovering() || !form.get('gwEndpointUrl')?.value"
-                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-primary-50 hover:brightness-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-primary-900/20"
+                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
                       >
                         {{ discovering() ? 'Discovering…' : 'Discover from server' }}
                       </button>
                       <button
                         type="button"
                         (click)="addGwTool()"
-                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-primary-50 hover:brightness-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-900/20"
+                        class="inline-flex items-center gap-1 rounded-2xl px-2.5 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
                       >
                         <ng-icon name="heroPlus" class="size-4" aria-hidden="true" />
                         Add Tool

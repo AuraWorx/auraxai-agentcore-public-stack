@@ -186,7 +186,7 @@ const FORMAT_LABELS: Record<ExportFormat, string> = {
                 <label
                   class="flex cursor-pointer items-center gap-3 rounded-2xl border p-3 transition-colors"
                   [class]="selectedConnectorId() === target.providerId
-                    ? 'border-primary-500 bg-primary-50 dark:border-primary-400 dark:bg-primary-500/10'
+                    ? 'border-primary-500 bg-gray-100 dark:border-primary-400 dark:bg-gray-700'
                     : 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-white/5'"
                 >
                   <input
@@ -199,7 +199,7 @@ const FORMAT_LABELS: Record<ExportFormat, string> = {
                   />
                   <span class="flex-1 text-sm/6 font-medium text-gray-900 dark:text-white">{{ target.displayName }}</span>
                   @if (!target.connected) {
-                    <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs/5 font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                    <span class="rounded-full bg-gray-200 px-2 py-0.5 text-xs/5 font-medium text-gray-700 dark:bg-gray-600 dark:text-gray-200">
                       Not connected
                     </span>
                   }
@@ -243,7 +243,7 @@ const FORMAT_LABELS: Record<ExportFormat, string> = {
                   <button
                     type="button"
                     (click)="chooseFolder()"
-                    class="shrink-0 rounded-2xl px-2 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-500/10"
+                    class="shrink-0 rounded-2xl px-2 py-1 text-sm/6 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
                   >
                     Choose…
                   </button>

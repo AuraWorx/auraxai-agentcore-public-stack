@@ -152,7 +152,7 @@ export type ArtifactShareModalResult = ArtifactShare[] | undefined;
                 class="flex cursor-pointer items-start gap-3 rounded-2xl border p-3 transition-colors"
                 [class]="
                   selectedAccess() === option.value
-                    ? 'border-primary-500 bg-primary-50 dark:border-primary-400 dark:bg-primary-500/10'
+                    ? 'border-primary-500 bg-gray-100 dark:border-primary-400 dark:bg-gray-700'
                     : 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/40'
                 "
               >
@@ -170,7 +170,7 @@ export type ArtifactShareModalResult = ArtifactShare[] | undefined;
                     >{{ option.label }}</span
                   >
                   <span
-                    class="block text-xs/5 text-gray-500 dark:text-gray-400"
+                    class="block text-xs/5 text-gray-600 dark:text-gray-300"
                     >{{ option.description }}</span
                   >
                 </span>
@@ -192,7 +192,7 @@ export type ArtifactShareModalResult = ArtifactShare[] | undefined;
                 <!-- Owner chip: the backend keeps the owner on every
                      allowlist, so it isn't removable here either. -->
                 <span
-                  class="inline-flex items-center gap-1 rounded-2xl bg-primary-100 px-2.5 py-0.5 text-xs/5 font-medium text-primary-700 dark:bg-primary-500/20 dark:text-primary-300"
+                  class="inline-flex items-center gap-1 rounded-2xl bg-gray-100 px-2.5 py-0.5 text-xs/5 font-medium text-primary-accessible dark:bg-gray-700 dark:text-primary-50"
                 >
                   {{ data.ownerEmail }} (you)
                 </span>

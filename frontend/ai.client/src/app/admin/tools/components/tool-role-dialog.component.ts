@@ -70,8 +70,8 @@ export type ToolRoleDialogResult = string[] | undefined;
 
         <!-- Header with Icon -->
         <div class="sm:flex sm:items-start">
-          <div class="mx-auto flex size-12 shrink-0 items-center justify-center rounded-full bg-primary-100 sm:mx-0 sm:size-10 dark:bg-primary-500/10">
-            <ng-icon name="heroUserGroup" class="size-6 text-primary-accessible dark:text-primary-accessible-dark" aria-hidden="true" />
+          <div class="mx-auto flex size-12 shrink-0 items-center justify-center rounded-full bg-gray-100 sm:mx-0 sm:size-10 dark:bg-gray-700">
+            <ng-icon name="heroUserGroup" class="size-6 text-primary-accessible dark:text-primary-50" aria-hidden="true" />
           </div>
           <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
             <h3 id="dialog-title" class="text-base font-semibold text-gray-900 dark:text-white">
@@ -106,8 +106,8 @@ export type ToolRoleDialogResult = string[] | undefined;
                   class="flex items-center gap-3 p-3 border rounded-md hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors dark:border-gray-600"
                   [class.border-primary-500]="selectedRoleIds().has(role.roleId)"
                   [class.dark:border-primary-400]="selectedRoleIds().has(role.roleId)"
-                  [class.bg-primary-50]="selectedRoleIds().has(role.roleId)"
-                  [class.dark:bg-primary-900/20]="selectedRoleIds().has(role.roleId)"
+                  [class.bg-gray-100]="selectedRoleIds().has(role.roleId)"
+                  [class.dark:bg-gray-700]="selectedRoleIds().has(role.roleId)"
                 >
                   <input
                     type="checkbox"
@@ -117,7 +117,7 @@ export type ToolRoleDialogResult = string[] | undefined;
                   />
                   <div class="flex-1 min-w-0">
                     <div class="font-medium text-gray-900 dark:text-white">{{ role.displayName }}</div>
-                    <div class="text-sm text-gray-500 dark:text-gray-400 truncate">{{ role.roleId }}</div>
+                    <div class="text-sm text-gray-600 dark:text-gray-300 truncate">{{ role.roleId }}</div>
                   </div>
                   @if (currentAssignments().has(role.roleId)) {
                     <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0">
