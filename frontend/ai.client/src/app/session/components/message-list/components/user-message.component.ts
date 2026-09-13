@@ -65,7 +65,7 @@ const MAX_HEIGHT_PX = 200;
             object, which it isn't.
           -->
           <div
-            class="max-w-[80%] rounded-2xl bg-primary-500 px-4 py-3 text-base/6 text-white/90"
+            class="max-w-[80%] rounded-2xl bg-primary-accessible px-4 py-3 text-base/6 text-white/90"
           >
             <div class="relative">
               <div

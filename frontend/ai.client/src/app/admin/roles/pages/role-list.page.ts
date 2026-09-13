@@ -57,7 +57,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
       </div>
       <a
         routerLink="/admin/roles/new"
-        class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
+        class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
       >
         <ng-icon name="heroPlus" class="size-5" />
         Create Role
@@ -312,7 +312,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
             <p class="text-sm/6 mb-4">Create your first application role to get started</p>
             <a
               routerLink="/admin/roles/new"
-              class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95"
+              class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95"
             >
               <ng-icon name="heroPlus" class="size-5" />
               Create Role

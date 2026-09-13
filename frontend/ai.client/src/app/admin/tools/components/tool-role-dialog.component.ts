@@ -147,14 +147,14 @@ export type ToolRoleDialogResult = string[] | undefined;
             type="button"
             (click)="save()"
             [disabled]="saving() || loading()"
-            class="inline-flex w-full justify-center rounded-md bg-primary-600 px-3 py-2 text-sm font-semibold text-white shadow-xs hover:bg-primary-500 sm:ml-3 sm:w-auto dark:bg-primary-500 dark:shadow-none dark:hover:bg-primary-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="inline-flex w-full justify-center rounded-2xl bg-primary-accessible px-3 py-2 text-sm font-semibold text-white shadow-xs hover:brightness-95 sm:ml-3 sm:w-auto dark:shadow-none disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {{ saving() ? 'Saving...' : 'Save Changes' }}
           </button>
           <button
             type="button"
             (click)="onCancel()"
-            class="mt-3 inline-flex w-full justify-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-xs inset-ring-1 inset-ring-gray-300 hover:bg-gray-50 sm:mt-0 sm:w-auto dark:bg-white/10 dark:text-white dark:shadow-none dark:inset-ring-white/5 dark:hover:bg-white/20"
+            class="mt-3 inline-flex w-full justify-center rounded-2xl bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-xs inset-ring-1 inset-ring-gray-300 hover:bg-gray-50 sm:mt-0 sm:w-auto dark:bg-white/10 dark:text-white dark:shadow-none dark:inset-ring-white/5 dark:hover:bg-white/20"
           >
             Cancel
           </button>

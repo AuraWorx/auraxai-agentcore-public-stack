@@ -177,7 +177,7 @@ export class ParsePreferencePipe implements PipeTransform {
             <button
               type="button"
               (click)="performSearch()"
-              class="rounded-lg bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white transition-colors hover:brightness-95"
+              class="rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white transition-colors hover:brightness-95"
             >
               Search
             </button>

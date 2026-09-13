@@ -92,7 +92,7 @@ import { parseIso } from '../../../../utils/date';
                     </h3>
                     @if (item.pill) {
                       <span
-                        class="rounded-full bg-primary-600 px-2 py-0.5 text-xs/5 font-medium text-white"
+                        class="rounded-full bg-primary-accessible px-2 py-0.5 text-xs/5 font-medium text-white"
                       >
                         {{ item.pill }}
                       </span>

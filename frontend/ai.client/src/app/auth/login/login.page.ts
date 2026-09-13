@@ -90,7 +90,7 @@ interface AuthProviderPublicListResponse {
                 type="button"
                 (click)="handleCognitoLogin()"
                 [disabled]="isLoading()"
-                class="w-full px-4 py-3 text-white font-medium rounded-lg transition-all duration-200 flex items-center justify-center gap-3 bg-primary-500 hover:bg-primary-600 shadow-lg shadow-primary-500/20 disabled:opacity-60"
+                class="w-full px-4 py-3 text-white font-medium rounded-2xl transition-all duration-200 flex items-center justify-center gap-3 bg-primary-accessible hover:brightness-95 shadow-lg shadow-primary-500/20 disabled:opacity-60"
               >
                 @if (isLoading() && !activeProviderId()) {
                   <app-spinner size="md" variant="on-solid" label="Connecting" />

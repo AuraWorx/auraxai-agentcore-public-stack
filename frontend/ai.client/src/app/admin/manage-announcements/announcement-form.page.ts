@@ -424,7 +424,7 @@ function byteLength(value: string): number {
             <button
               type="submit"
               [disabled]="!canSubmit()"
-              class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               @if (isSubmitting()) {
                 <app-spinner size="sm" variant="on-solid" label="Saving" />
@@ -619,7 +619,7 @@ export class AnnouncementFormPage implements OnInit {
 
   protected roleChipClass(roleId: string): string {
     return this.isRoleSelected(roleId)
-      ? 'border-primary-600 bg-primary-600 text-white'
+      ? 'border-primary-accessible bg-primary-accessible text-white'
       : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600';
   }
 

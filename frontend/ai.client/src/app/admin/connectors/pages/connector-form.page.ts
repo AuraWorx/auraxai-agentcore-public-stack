@@ -188,7 +188,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
               <button
                 type="button"
                 (click)="goBack()"
-                class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
               >
                 Done
               </button>
@@ -644,7 +644,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
               <button
                 type="submit"
                 [disabled]="isSubmitting() || connectorForm.invalid || !!credentialPairError()"
-                class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 @if (isSubmitting()) {
                   <app-spinner size="sm" variant="on-solid" label="Saving" />

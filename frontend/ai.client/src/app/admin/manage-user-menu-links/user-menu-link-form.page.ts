@@ -170,7 +170,7 @@ const URL_PATTERN = /^https?:\/\/.+/i;
             <button
               type="submit"
               [disabled]="form.invalid || isSubmitting()"
-              class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               @if (isSubmitting()) {
                 <app-spinner size="sm" variant="on-solid" label="Saving" />

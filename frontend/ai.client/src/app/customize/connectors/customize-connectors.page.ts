@@ -175,7 +175,7 @@ type ConnectState =
                       type="button"
                       (click)="connect(connector.providerId)"
                       [disabled]="state === 'initiating' || state === 'awaiting'"
-                      class="inline-flex items-center gap-1.5 rounded-xl bg-primary-accessible px-3 py-1.5 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      class="inline-flex items-center gap-1.5 rounded-2xl bg-primary-accessible px-3 py-1.5 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       @if (state === 'initiating') {
                         <app-spinner size="sm" variant="on-solid" label="Starting" />

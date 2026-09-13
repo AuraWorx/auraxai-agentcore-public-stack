@@ -143,7 +143,7 @@ type AccessLevel = 'public' | 'specific';
                 type="button"
                 (click)="addEmail()"
                 [disabled]="!emailInput().trim()"
-                class="rounded-md bg-primary-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-500 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:hover:bg-primary-400"
+                class="rounded-2xl bg-primary-accessible px-3 py-1.5 text-sm font-medium text-white hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Add
               </button>
@@ -177,7 +177,7 @@ type AccessLevel = 'public' | 'specific';
               <button
                 type="button"
                 (click)="copyLink()"
-                class="inline-flex items-center gap-1 rounded-md bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 dark:bg-gray-700 dark:text-gray-300 dark:ring-gray-600 dark:hover:bg-gray-600"
+                class="inline-flex items-center gap-1 rounded-2xl bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 dark:bg-gray-700 dark:text-gray-300 dark:ring-gray-600 dark:hover:bg-gray-600"
               >
                 <ng-icon [name]="copied() ? 'heroCheck' : 'heroClipboard'" class="size-3.5" aria-hidden="true" />
                 {{ copied() ? 'Copied' : 'Copy link' }}
@@ -198,7 +198,7 @@ type AccessLevel = 'public' | 'specific';
           <button
             type="button"
             (click)="onClose()"
-            class="rounded-md bg-white px-3 py-2 text-sm/6 font-semibold text-gray-900 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 dark:bg-white/10 dark:text-white dark:shadow-none dark:ring-white/5 dark:hover:bg-white/20"
+            class="rounded-2xl bg-white px-3 py-2 text-sm/6 font-semibold text-gray-900 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 dark:bg-white/10 dark:text-white dark:shadow-none dark:ring-white/5 dark:hover:bg-white/20"
           >
             {{ shareResult() ? 'Done' : 'Cancel' }}
           </button>
@@ -208,7 +208,7 @@ type AccessLevel = 'public' | 'specific';
               type="button"
               (click)="onShare()"
               [disabled]="isSubmitting() || !canSubmit()"
-              class="inline-flex items-center gap-1.5 rounded-md bg-primary-600 px-3 py-2 text-sm/6 font-semibold text-white shadow-xs hover:bg-primary-500 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-primary-500 dark:shadow-none dark:hover:bg-primary-400"
+              class="inline-flex items-center gap-1.5 rounded-2xl bg-primary-accessible px-3 py-2 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed dark:shadow-none"
             >
               @if (isSubmitting()) {
                 <app-spinner size="sm" variant="on-solid" label="Creating share link" />

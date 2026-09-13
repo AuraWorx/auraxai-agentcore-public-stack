@@ -135,7 +135,7 @@ export type SkillRoleDialogResult = string[] | undefined;
             type="button"
             (click)="save()"
             [disabled]="saving() || loading()"
-            class="inline-flex items-center gap-2 rounded-lg bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:brightness-110"
+            class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:brightness-110"
           >
             {{ saving() ? 'Saving…' : 'Save Changes' }}
           </button>

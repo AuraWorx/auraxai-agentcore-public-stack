@@ -89,7 +89,7 @@ import { SpinnerComponent } from '../components/spinner/spinner.component';
             type="button"
             (click)="onExport()"
             [disabled]="isExporting()"
-            class="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-primary-500 px-6 py-3 text-sm font-semibold text-white shadow-lg ring-1 ring-primary-500 transition-all hover:bg-primary-400 hover:shadow-xl hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 dark:bg-primary-400 dark:ring-primary-400 dark:hover:bg-primary-300"
+            class="pointer-events-auto inline-flex items-center gap-2 rounded-full bg-primary-accessible px-6 py-3 text-sm font-semibold text-white shadow-lg ring-1 ring-primary-accessible transition-all hover:brightness-95 hover:shadow-xl hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
             @if (isExporting()) {
               <app-spinner size="md" variant="on-solid" label="Exporting" />

@@ -84,7 +84,7 @@ import { SpinnerComponent } from '../../components/spinner/spinner.component';
             </p>
             <a
               routerLink="/agents/discover"
-              class="mt-4 inline-flex items-center gap-2 rounded-xl bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+              class="mt-4 inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
             >
               Browse agents
             </a>

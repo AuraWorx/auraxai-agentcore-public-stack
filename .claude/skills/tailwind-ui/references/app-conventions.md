@@ -81,8 +81,8 @@ tables above. These are destinations, not records-management screens, and the
 | `h1` | `text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl dark:text-white` |
 | Subtitle | `mt-1.5 max-w-2xl text-sm/6 text-gray-600 dark:text-gray-400` |
 | Card grid | `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3` (`gap-4` for the denser Customize toggle cards) |
-| Primary button | `inline-flex items-center gap-2 rounded-xl bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500` |
-| Secondary button | same shell, `rounded-xl border border-gray-200 bg-white px-3.5 py-1.5 text-sm/6 font-medium text-gray-700` |
+| Primary button | `inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2.5 text-sm/6 font-semibold text-white shadow-xs transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500` |
+| Secondary button | same shell, `rounded-2xl border border-gray-200 bg-white px-3.5 py-1.5 text-sm/6 font-medium text-gray-700` |
 | Search field | `block w-full rounded-full border border-gray-300 bg-white py-2.5 pl-10 pr-4 text-sm/6 …` in a `relative max-w-md` wrapper, with the `heroMagnifyingGlass` icon at `left-4` |
 | Filter chip | `rounded-full border px-3.5 py-1 text-sm/6 font-medium`; active `border-gray-900 bg-gray-900 text-white dark:border-white dark:bg-white dark:text-gray-900` |
 
@@ -111,11 +111,17 @@ segmented control over the whole page instead of as N choices.
 The grid/list view toggle is the same idiom one size down — `rounded-xl` shell,
 `grid size-8 place-items-center rounded-lg` buttons, same raised-active classes —
 and is a `role="radiogroup"` of `role="radio"` buttons, since it is one setting
-with two values rather than two independent toggles. `rounded-lg` is correct
-*there* and nowhere else on these pages: it reads as a segment inside a shell,
-not as a button. Standalone buttons are `rounded-xl`, so they sit between the
-`rounded-2xl` cards and the `rounded-full` chips and search field rather than
-looking squared-off against both.
+with two values rather than two independent toggles. The smaller radii are
+correct *there* because the control reads as segments inside a shell, not as
+buttons.
+
+**Standalone buttons are `rounded-2xl` everywhere in the app** — user-facing
+pages, admin lists and forms, and dialogs alike. There is deliberately no
+per-surface exception: the earlier split between a user-facing radius and an
+admin radius is what let `rounded-sm`/`rounded-md`/`rounded-lg` buttons drift in
+between them. The only radii that are not `rounded-2xl` on a clickable element
+are the segment children described above and the `rounded-full` chips, search
+field and floating pill CTA.
 
 ## Form pages
 
