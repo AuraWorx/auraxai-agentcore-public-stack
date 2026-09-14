@@ -403,6 +403,22 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
         "forwardAuthToken": False,
     },
     {
+        "toolId": "ask_user_question",
+        "displayName": "Clarifying Questions",
+        "description": (
+            "Pause and ask the user multiple-choice questions when a request "
+            "is ambiguous, then continue with their answer."
+        ),
+        "category": "utility",
+        # Opt-in for now. The tool is only useful where the client can render
+        # the picker, and a paused turn is a worse failure than a guessed
+        # assumption — flip this on once the SPA prompt ships (PR-2).
+        "enabledByDefault": False,
+        "protocol": "local",
+        "isPublic": False,
+        "forwardAuthToken": False,
+    },
+    {
         "toolId": "browse_web",
         "displayName": "Web Browser",
         "description": (
