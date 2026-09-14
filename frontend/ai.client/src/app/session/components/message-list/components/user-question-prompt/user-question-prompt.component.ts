@@ -256,8 +256,16 @@ import { SpinnerComponent } from '../../../../../components/spinner/spinner.comp
       box-shadow: inset 0 0 0 1px var(--color-gray-300);
     }
 
-    .option:focus-visible,
-    .option:focus-within:not(:has(:focus-visible)) {
+    .option:focus-visible {
+      outline: 2px solid var(--color-secondary-500);
+      outline-offset: 2px;
+    }
+
+    /* Only the "Other" row needs this: it is a <label>, so the thing that
+       actually takes focus is the input inside it. Applying it to every
+       option also matched a plain MOUSE click on a button (:focus-within is
+       true after one), stacking an outline outside the row. */
+    .option--other:focus-within {
       outline: 2px solid var(--color-secondary-500);
       outline-offset: 2px;
     }
@@ -267,9 +275,15 @@ import { SpinnerComponent } from '../../../../../components/spinner/spinner.comp
       cursor: default;
     }
 
+    /* Selection is a fill change, never an added stroke. Every row carries
+       exactly one hairline whatever its state, so a selected row cannot read
+       as a double stroke — which is what stacking a coloured ring under the
+       focus outline produced. The warm tint and the filled marker carry the
+       state together, so it is never colour alone. */
     .option--on {
-      background: var(--color-gray-100);
-      box-shadow: inset 0 0 0 1.5px var(--color-secondary-500);
+      background: color-mix(in oklab, var(--color-secondary-500) 10%, var(--color-white));
+      box-shadow: inset 0 0 0 1px
+        color-mix(in oklab, var(--color-secondary-500) 38%, transparent);
     }
 
     .option--other {
@@ -287,8 +301,9 @@ import { SpinnerComponent } from '../../../../../components/spinner/spinner.comp
     }
 
     :host-context(.dark) .option--on {
-      background: rgb(255 255 255 / 0.09);
-      box-shadow: inset 0 0 0 1.5px var(--color-secondary-500);
+      background: color-mix(in oklab, var(--color-secondary-500) 20%, transparent);
+      box-shadow: inset 0 0 0 1px
+        color-mix(in oklab, var(--color-secondary-500) 52%, transparent);
     }
 
     /* ---- selection marker ---- */
