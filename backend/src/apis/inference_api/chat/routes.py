@@ -2001,7 +2001,10 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 if await bump_last_used_at(input_data.rag_assistant_id):
                     await resume_inactive_policies(input_data.rag_assistant_id)
             except Exception as bump_err:
-                logger.warning(f"lastUsedAt bump failed for assistant {input_data.rag_assistant_id}: {bump_err}")
+                logger.warning(
+                    f"lastUsedAt bump failed for assistant "
+                    f"{scrub_log(input_data.rag_assistant_id)}: {scrub_log(bump_err)}"
+                )
 
         # 2b. Agent Designer Phase 3 — resolve the Agent's governed capabilities
         # for the INVOKING user (D5), before the expensive KB search. v1 blocks
