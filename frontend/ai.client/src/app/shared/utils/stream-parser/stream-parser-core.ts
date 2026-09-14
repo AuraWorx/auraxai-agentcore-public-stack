@@ -41,6 +41,7 @@ import type {
   ConversationalStreamErrorEvent,
   OAuthRequiredEvent,
   ToolApprovalRequiredEvent,
+  UserQuestionRequiredEvent,
   CompactionEvent,
   ArtifactEvent,
   UiResourceEvent,
@@ -91,6 +92,9 @@ export interface StreamParserCallbacks {
 
   // Tool approval required (catalog flagged this MCP tool needs_approval)
   onToolApprovalRequired?: (data: ToolApprovalRequiredEvent) => void;
+
+  // The agent paused to ask the user structured clarifying questions
+  onUserQuestionRequired?: (data: UserQuestionRequiredEvent) => void;
 
   // What the agent is doing right now (model/tool boundaries from the
   // runtime's AgentStatusHook). Drives the live status line and supplies the
@@ -440,6 +444,55 @@ export function validateToolApprovalRequiredEvent(
     event.interruptId.length > 0 &&
     typeof event.toolName === 'string' &&
     event.toolName.length > 0
+  );
+}
+
+/**
+ * Validate UserQuestionRequiredEvent structure.
+ *
+ * Stricter than its siblings because the payload drives a whole interactive
+ * form rather than a fixed two-button prompt: a question with no options, or
+ * an option with no label, would render an unanswerable prompt and leave the
+ * turn paused with no way forward. Rejecting here routes it to `onParseError`
+ * instead, which surfaces as a visible error the user can act on.
+ */
+export function validateUserQuestionRequiredEvent(
+  data: unknown,
+): data is UserQuestionRequiredEvent {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const event = data as Partial<UserQuestionRequiredEvent>;
+
+  if (
+    event.type !== 'user_question_required' ||
+    typeof event.interruptId !== 'string' ||
+    event.interruptId.length === 0 ||
+    typeof event.toolUseId !== 'string' ||
+    !Array.isArray(event.questions) ||
+    event.questions.length === 0
+  ) {
+    return false;
+  }
+
+  return event.questions.every(
+    (question) =>
+      !!question &&
+      typeof question === 'object' &&
+      typeof question.header === 'string' &&
+      question.header.length > 0 &&
+      typeof question.question === 'string' &&
+      question.question.length > 0 &&
+      Array.isArray(question.options) &&
+      question.options.length > 0 &&
+      question.options.every(
+        (option) =>
+          !!option &&
+          typeof option === 'object' &&
+          typeof option.label === 'string' &&
+          option.label.length > 0,
+      ),
   );
 }
 
@@ -826,6 +879,14 @@ export function processStreamEvent(
           callbacks.onToolApprovalRequired?.(data);
         } else {
           callbacks.onParseError?.('tool_approval_required: invalid data structure');
+        }
+        break;
+
+      case 'user_question_required':
+        if (validateUserQuestionRequiredEvent(data)) {
+          callbacks.onUserQuestionRequired?.(data);
+        } else {
+          callbacks.onParseError?.('user_question_required: invalid data structure');
         }
         break;
 

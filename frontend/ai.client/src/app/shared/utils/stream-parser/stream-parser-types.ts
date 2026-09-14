@@ -155,6 +155,47 @@ export interface ToolApprovalRequiredEvent {
   message: string;
 }
 
+/** One selectable answer in a {@link UserQuestion}. */
+export interface QuestionOption {
+  label: string;
+  /** Optional one-line explanation of what the choice means. */
+  description?: string;
+}
+
+/**
+ * One question in an {@link UserQuestionRequiredEvent}.
+ *
+ * `header` is both the short chip label shown above the question AND the key
+ * the answer is correlated by on resume — the backend de-duplicates colliding
+ * headers before emitting, so it is safe to use as a map key.
+ */
+export interface UserQuestion {
+  header: string;
+  question: string;
+  /** More than one option may be chosen. */
+  multiSelect: boolean;
+  options: QuestionOption[];
+}
+
+/**
+ * The agent paused to ask the user structured clarifying questions.
+ *
+ * Sibling of {@link ToolApprovalRequiredEvent}, with one difference worth
+ * knowing: that interrupt is raised by a `BeforeToolCall` hook gating someone
+ * else's tool, while this one is raised by the `ask_user_question` tool itself
+ * — so `toolUseId` identifies the prompt's own tool card in the transcript.
+ *
+ * The picker owns the "Other" free-text field and the "Skip" control; the
+ * backend strips any model-supplied lookalike, so `options` never contains
+ * them and the UI must always add them itself.
+ */
+export interface UserQuestionRequiredEvent {
+  type: 'user_question_required';
+  interruptId: string;
+  toolUseId: string;
+  questions: UserQuestion[];
+}
+
 /**
  * Compaction event — emitted after the final `metadata` event (so the badge
  * updates first) and before `done` when the backend rolls older turns into
