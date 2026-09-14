@@ -32,9 +32,12 @@ Design notes
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger(__name__)
 
 # Bounds mirror the rendered UI: the SPA paginates questions ("1 of 4") and
 # lays options out vertically. Beyond these the picker stops being a quick
@@ -49,6 +52,29 @@ MAX_DESCRIPTION_CHARS = 240
 # Free-text ("Other") answers are user-authored and land in the prompt. Bounded
 # for the same reason every other per-turn payload is (CLAUDE.md token tenet).
 MAX_FREE_TEXT_CHARS = 2000
+
+# The picker always renders its own "Other" (with a free-text field) and
+# "Skip". A model-supplied lookalike is worse than a duplicate: picking it
+# records the bare string "Other" as the answer with no way to say what, so the
+# model learns nothing and the user cannot tell the two chips apart. The tool
+# description says not to emit these; measured against real models it is not
+# reliably obeyed (Haiku 4.5 added "Other" on roughly half of sampled turns),
+# so they are stripped here rather than trusted away.
+BANNED_OPTION_LABELS = frozenset(
+    {
+        "other",
+        "other (please specify)",
+        "something else",
+        "skip",
+        "skip this",
+        "none",
+        "none of the above",
+        "no preference",
+        "not sure",
+        "let you decide",
+        "you decide",
+    }
+)
 
 
 class UserQuestionError(ValueError):
@@ -140,10 +166,16 @@ def _clean(value: Any, limit: int) -> str:
 
 
 def _normalize_options(raw: Any) -> List[QuestionOption]:
-    """Build the option list, dropping blanks and duplicate labels.
+    """Build the option list, dropping blanks, duplicates and Other/Skip clones.
 
     Duplicate labels are dropped rather than renamed: two identical choices are
     indistinguishable to the user, and the answer payload correlates by label.
+
+    Options that restate the picker's own Other/Skip affordances are dropped
+    too — see :data:`BANNED_OPTION_LABELS`. A question that falls below
+    ``MIN_OPTIONS`` as a result is discarded by the caller: the model padded a
+    binary choice with an escape hatch the interface already provides, and the
+    real question is one the picker can still express.
     """
     if not isinstance(raw, list):
         return []
@@ -159,9 +191,15 @@ def _normalize_options(raw: Any) -> List[QuestionOption]:
         else:
             continue
 
-        if not label or label.casefold() in seen:
+        if not label:
             continue
-        seen.add(label.casefold())
+        folded = label.casefold()
+        if folded in seen:
+            continue
+        if folded.rstrip(".!") in BANNED_OPTION_LABELS:
+            logger.debug("Dropped model-supplied escape-hatch option: %r", label)
+            continue
+        seen.add(folded)
         options.append(QuestionOption(label=label, description=description))
         if len(options) == MAX_OPTIONS:
             break

@@ -191,3 +191,64 @@ class TestPersistenceRoundTrip:
     @pytest.mark.parametrize("encoded", [None, "", "not json", "{}"])
     def test_undecodable_payload_yields_no_questions(self, encoded):
         assert decode_questions(encoded) == []
+
+
+class TestEscapeHatchOptionsAreStripped:
+    """Req: the picker owns Other/Skip; a model-supplied lookalike is dropped.
+
+    Measured against real models, the tool description alone does not hold —
+    Haiku 4.5 added an "Other" option on roughly half of sampled turns. A
+    supplied "Other" is worse than a duplicate: selecting it records the bare
+    string with no free text, so the model learns nothing from the answer.
+    """
+
+    @pytest.mark.parametrize(
+        "label",
+        ["Other", "other", "Other (please specify)", "Skip", "None of the above",
+         "Something else", "No preference", "Not sure", "You decide"],
+    )
+    def test_escape_hatch_labels_are_dropped(self, label):
+        [question] = normalize_questions(
+            [
+                {
+                    "header": "Fmt",
+                    "question": "Which format?",
+                    "options": ["json", "yaml", "toml", label],
+                }
+            ]
+        )
+        assert [o.label for o in question.options] == ["json", "yaml", "toml"]
+
+    def test_real_options_named_like_a_hatch_are_kept(self):
+        """Only exact matches are dropped — "No preference shown" is a real
+        answer to a real question and must survive."""
+        [question] = normalize_questions(
+            [
+                {
+                    "header": "Sort",
+                    "question": "Which order?",
+                    "options": ["Other repositories first", "No preference shown"],
+                }
+            ]
+        )
+        assert len(question.options) == 2
+
+    def test_a_question_padded_down_below_the_minimum_is_dropped(self):
+        """The model turned a binary choice into "A or Other". The picker
+        already expresses that, so the question is not worth a round trip."""
+        with pytest.raises(UserQuestionError):
+            normalize_questions(
+                [{"header": "Go", "question": "Proceed?", "options": ["Yes", "Other"]}]
+            )
+
+    def test_stripping_does_not_starve_a_full_question(self):
+        [question] = normalize_questions(
+            [
+                {
+                    "header": "Scope",
+                    "question": "How much?",
+                    "options": ["Just the API", "Everything", "Skip"],
+                }
+            ]
+        )
+        assert [o.label for o in question.options] == ["Just the API", "Everything"]

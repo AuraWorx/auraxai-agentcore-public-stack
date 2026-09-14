@@ -157,8 +157,14 @@ def ask_user_question(
     right.
 
     The interface adds an "Other" free-text field and a "Skip" control to every
-    question, so never include those as options. If the user skips, proceed on
-    your best judgement and say what you assumed.
+    question, so never include those as options — an "Other" you supply
+    yourself records no free text and tells you nothing. If the user skips,
+    proceed on your best judgement and say what you assumed.
+
+    Ask once. Put everything you need in this one call, then do the work with
+    what you get back. Do not call this tool again in the same turn to refine
+    an answer you just received: a second round reads as an interrogation, and
+    the user came here for the work, not the questionnaire.
 
     Args:
         questions: The questions to ask. Each needs a short `header`, the full
