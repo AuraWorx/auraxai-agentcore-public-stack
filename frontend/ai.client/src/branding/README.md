@@ -33,8 +33,9 @@ src/branding/brand.config.ts
 1. **`App_Name`** — edit the `appName` field. This string is used as the accessible alt text on every logo image in the sidenav and the chat greeting block, so set it to your organization or product name (e.g. `"Acme Corp Logo"`).
 2. **`Greeting_Templates`** — edit the `greetingTemplates` array. Each entry is a greeting shown on a new/empty chat when the current user's first name is known. Use the `{name}` placeholder anywhere you want the user's first name inserted (see [Greeting behavior](#3-greeting-text-and-the-name-placeholder) below).
 3. **`Fallback_Greetings`** — edit the `fallbackGreetings` array. Each entry is a greeting shown on a new/empty chat when the current user's first name is not available. These strings should not rely on a name.
-4. **`Brand_Color`** — edit the `colors.primary`, `colors.secondary`, and `colors.tertiary` hex values. Each one is a single hex color that drives that role's entire color scale across both light and dark themes (see [Brand colors](#5-brand-colors-and-color-scale-regeneration) below).
-5. **`Brand_Surface`** — edit the `surfaces.light`, `surfaces.dark`, and `surfaces.raised` hex values. These drive the app's page background and raised-surface colors in both themes (see [Surface colors](#4-surface-colors-page-background-dark-background-raised-surfaces) below).
+4. **`Time_Of_Day_Greetings`** — edit the `timeOfDayGreetings` and `timeOfDayFallbackGreetings` objects. Each has a `morning`, `afternoon`, `evening`, and `night` bucket, shown only during that part of the viewer's own day. They are pooled *with* the two arrays above rather than replacing them, so if you edit `greetingTemplates` and leave these alone, roughly half the greetings your users see will still be the stock ones. Set a bucket to `[]` to say nothing special at that hour.
+5. **`Brand_Color`** — edit the `colors.primary`, `colors.secondary`, and `colors.tertiary` hex values. Each one is a single hex color that drives that role's entire color scale across both light and dark themes (see [Brand colors](#5-brand-colors-and-color-scale-regeneration) below).
+6. **`Brand_Surface`** — edit the `surfaces.light`, `surfaces.dark`, and `surfaces.raised` hex values. These drive the app's page background and raised-surface colors in both themes (see [Surface colors](#4-surface-colors-page-background-dark-background-raised-surfaces) below).
 
 ### A worked example
 
@@ -56,6 +57,24 @@ Greeting templates support a `{name}` placeholder. At runtime, every occurrence 
 - If the current user's first name **is not available**, a `Fallback_Greetings` entry is shown instead (no substitution is performed, since there is no name to insert).
 - If `Greeting_Templates` is empty or unreadable, the fallback chain also applies — a `Fallback_Greetings` entry is shown.
 - If both `Greeting_Templates` and `Fallback_Greetings` are empty or unreadable, a built-in default greeting is shown instead (a fixed string containing no `{name}` placeholder), so the chat greeting is never blank.
+
+### Time-of-day greetings
+
+`Time_Of_Day_Greetings` adds a second pool that only applies during its own part of the day:
+
+| Bucket | Hours (viewer's local clock) |
+|---|---|
+| `morning` | 05:00–11:59 |
+| `afternoon` | 12:00–16:59 |
+| `evening` | 17:00–21:59 |
+| `night` | 22:00–04:59 |
+
+The pool a greeting is drawn from is **this hour's bucket plus the any-time array**, so a morning visitor may see "Good morning, {name}!" or "What can I do for you, {name}?" — the time-aware lines add variety rather than taking it away. The hour comes from the browser, so it always matches where the user is, and it is read once when the page loads: the heading will not re-write itself from "Good afternoon" to "Good evening" while someone is reading it.
+
+Each bucket follows the same rules as the flat arrays (1–50 entries, 1–500 characters each, `{name}` substituted in `timeOfDayGreetings` only). Two differences are worth knowing:
+
+- Both objects are **optional**. Omit either one, or any single bucket, and the built-in defaults apply for what you left out.
+- An **explicitly empty** bucket (`night: []`) is honoured as "stay quiet at that hour" rather than replaced with the defaults — it is the only way to turn a bucket off.
 
 ## 4. Surface colors (page background, dark background, raised surfaces)
 

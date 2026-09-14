@@ -19,6 +19,8 @@ import {
   DEFAULT_APP_NAME,
   DEFAULT_GREETING_TEMPLATES,
   DEFAULT_FALLBACK_GREETINGS,
+  DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+  DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS,
   DEFAULT_COLORS,
   DEFAULT_PAGE_TITLE,
   DEFAULT_SURFACES
@@ -37,6 +39,23 @@ export const BRAND_CONFIG: BrandConfig = {
   appName: DEFAULT_APP_NAME,
   greetingTemplates: [...DEFAULT_GREETING_TEMPLATES],
   fallbackGreetings: [...DEFAULT_FALLBACK_GREETINGS],
+
+  // Greetings that only make sense at their own time of day. They are pooled
+  // *with* the two lists above rather than replacing them, so a rebrand that
+  // edits only `greetingTemplates` will still show the stock time-of-day lines
+  // half the time — edit these too, or set a bucket to `[]` to stay quiet at that hour.
+  timeOfDayGreetings: {
+    morning: [...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.morning],
+    afternoon: [...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.afternoon],
+    evening: [...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.evening],
+    night: [...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.night],
+  },
+  timeOfDayFallbackGreetings: {
+    morning: [...DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS.morning],
+    afternoon: [...DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS.afternoon],
+    evening: [...DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS.evening],
+    night: [...DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS.night],
+  },
   colors: DEFAULT_COLORS,
   pageTitle: DEFAULT_PAGE_TITLE,
   

@@ -61,6 +61,23 @@ import { SteeringService } from '../../services/chat/steering.service';
 const MIN_TEXTAREA_HEIGHT_PX = 60;
 const MAX_TEXTAREA_HEIGHT_PX = 200;
 
+/** The composer's resting placeholder, and the string the rotation settles back on. */
+const IDLE_PLACEHOLDER = 'How can I help you today?';
+
+/** Dwell per rotating hint. Long enough to read a short line without hurrying. */
+const HINT_ROTATION_MS = 4500;
+
+/**
+ * How many times the hints cycle before the composer comes to rest.
+ *
+ * One pass was not enough to be worth building: at three hints it was over
+ * thirteen seconds after mount, most of which is page load and the user
+ * reading the greeting above the composer — so the thing they were meant to
+ * discover had finished before they looked down. Three passes is about forty
+ * seconds of an empty composer, and the first keystroke ends it early.
+ */
+const HINT_PASSES = 3;
+
 interface Message {
   content: string;
   timestamp: Date;
@@ -264,7 +281,7 @@ export class ChatInputComponent {
     if (this.queueHeld()) {
       return 'Send a follow-up — it goes in when you answer above';
     }
-    if (!this.isLoading()) return 'How can I help you today?';
+    if (!this.isLoading()) return IDLE_PLACEHOLDER;
     return this.canSteer()
       ? 'Send a follow-up — it goes in at the next step'
       : 'Send a follow-up — it goes out when this response finishes';
@@ -278,6 +295,113 @@ export class ChatInputComponent {
   protected readonly queueHeld = computed(() =>
     this.steering.shouldHoldQueue(this.sessionId()),
   );
+
+  // =========================================================================
+  // Rotating discovery hints
+  //
+  // `@` and `/` are the two shortcuts nothing on the page advertises: each one
+  // only reveals itself once you have already typed the character that opens
+  // its menu. The empty composer is where a user looks when they do not yet
+  // know what to type, so it is where the hint belongs.
+  //
+  // Three rules keep this from being the kind of animation people file bugs
+  // about:
+  //
+  // 1. **It is decoration, not information.** The native `placeholder`
+  //    attribute never rotates — assistive tech reads one stable string. The
+  //    visible line is an `aria-hidden` overlay painted over a placeholder
+  //    that is transparent but still there. A placeholder that re-announced
+  //    itself every few seconds would be a screen-reader defect, not a
+  //    feature.
+  // 2. **It stops.** One pass through the list, then it settles on the idle
+  //    string for good, and the first keystroke settles it on the spot. Since
+  //    nothing auto-updates indefinitely, WCAG 2.2.2 asks for no pause control
+  //    that we would then have to fit into the composer's chrome.
+  // 3. **It honours `prefers-reduced-motion`.** Reduce means no rotation at
+  //    all — a plain static placeholder — not the same rotation with the fade
+  //    taken off.
+  //
+  // Hints are offered only for surfaces this composer actually has: an
+  // environment with Agents switched off, or a user with no skills enabled, is
+  // never told to type a character that opens an empty menu.
+  // =========================================================================
+
+  /** How many times the hint has advanced since the composer last came alive. */
+  private readonly hintStep = signal(0);
+
+  /** Set once the rotation is over — by finishing its passes, or by the user typing. */
+  private readonly hintsSettled = signal(false);
+
+  /**
+   * Read once at construction. A preference change mid-session lands on the
+   * next load, which is acceptable for something that stops after one pass;
+   * `matchMedia` is guarded because the specs run in jsdom, which has none.
+   */
+  private readonly prefersReducedMotion =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false;
+
+  protected readonly composerHints = computed<string[]>(() => {
+    const hints = [IDLE_PLACEHOLDER];
+    if (this.showAgentMentions() && this.mentionService.mentionable().length > 0) {
+      hints.push('Type @ to hand this turn to one of your agents');
+    }
+    if (this.showSkillCommands() && this.skillCommandService.commands().length > 0) {
+      hints.push('Type / to run one of your skills');
+    }
+    return hints;
+  });
+
+  /**
+   * Whether the overlay is painting — and so also the gate on the textarea's
+   * placeholder colour, because the two must never both be visible.
+   *
+   * Deliberately **not** gated on `hintsSettled`. The overlay stays up when the
+   * rotation ends, resting on the idle line, so coming to rest is a cross-fade
+   * onto a string rather than an unmount. Unmounting would exit-animate a copy
+   * of the idle line straight off the native placeholder underneath, which
+   * spells the same words — a ghost double-image on the one transition every
+   * user sees.
+   */
+  protected readonly showHintOverlay = computed(
+    () =>
+      !this.prefersReducedMotion &&
+      this.userInput().length === 0 &&
+      !this.isLoading() &&
+      !this.queueHeld() &&
+      this.composerHints().length > 1,
+  );
+
+  /** Whether the hint is still advancing, as opposed to resting on the idle line. */
+  protected readonly rotateHints = computed(
+    () => this.showHintOverlay() && !this.hintsSettled(),
+  );
+
+  /**
+   * The hint to paint, as a single-item list.
+   *
+   * A list rather than a string because `@for`'s `track` is what swaps the
+   * node on each rotation, and the node is what carries `animate.enter` /
+   * `animate.leave`: a reused element with a new interpolation animates
+   * nothing. Both nodes are absolutely positioned in the same spot, so the
+   * outgoing line rises out while the incoming one rises in.
+   */
+  protected readonly visibleHint = computed<string[]>(() => {
+    if (!this.showHintOverlay()) return [];
+    const hints = this.composerHints();
+    return [hints[this.hintStep() % hints.length]];
+  });
+
+  /**
+   * Come to rest on the idle line. Called when the passes run out, and on the
+   * first keystroke — a user who is typing has stopped needing to be told how
+   * to start.
+   */
+  private settleHints(): void {
+    this.hintsSettled.set(true);
+    this.hintStep.set(0);
+  }
 
   // Computed: can submit (has content or ready files)
   readonly canSubmit = computed(() => {
@@ -450,14 +574,44 @@ export class ChatInputComponent {
   readonly isSkillMenuVisible = computed(() => this.isSkillMenuOpen() && !this.isMentionMenuOpen());
 
   constructor() {
+    // Walk the rotating hints once, then stop for good. The interval is torn
+    // down the moment `rotateHints` goes false — the user typed, a turn
+    // started, or the pass finished — so nothing ticks behind an idle tab's
+    // composer for the life of the session.
+    effect((onCleanup) => {
+      if (!this.rotateHints()) return;
+      // A whole number of passes, so the last advance lands back on the idle
+      // line — the rotation always comes to rest on the string the composer
+      // would have shown anyway.
+      const steps = this.composerHints().length * HINT_PASSES;
+      const timer = setInterval(() => {
+        const step = untracked(this.hintStep) + 1;
+        if (step > steps) {
+          this.settleHints();
+          return;
+        }
+        this.hintStep.set(step);
+      }, HINT_ROTATION_MS);
+      onCleanup(() => clearInterval(timer));
+    });
+
     // Focus the textarea on first mount...
     afterNextRender(() => this.focusInput());
     // ...and whenever the session changes (new or existing). When switching
     // between sessions in the messages view the component instance is reused,
     // so afterNextRender alone would not refocus.
     effect(() => {
-      this.sessionId();
+      const sessionId = this.sessionId();
       this.focusInput();
+      // A brand-new conversation is the one moment the hints are worth showing
+      // again: the composer is empty, the user has not committed to anything,
+      // and this instance is reused across sessions so nothing else would
+      // reset them. Opening an *existing* conversation deliberately does not
+      // restart them — that would turn a hint into a tic.
+      if (sessionId === null) {
+        this.hintStep.set(0);
+        this.hintsSettled.set(false);
+      }
     });
 
     // Mirror the queue into SteeringService so the resume path can carry it
@@ -766,6 +920,7 @@ export class ChatInputComponent {
   }
 
   onTextareaInput(event: Event) {
+    this.settleHints();
     const textarea = event.target as HTMLTextAreaElement;
     this.userInput.set(textarea.value);
     this.autoResize(textarea);
@@ -1016,6 +1171,10 @@ export class ChatInputComponent {
   }
 
   onKeyDown(event: KeyboardEvent) {
+    // Any key at all — including the arrows and Escape a menu consumes below —
+    // means the user is working, not reading hints.
+    this.settleHints();
+
     // The `@` menu owns the keyboard while it is open (D11). Enter must pick an Agent
     // rather than send the half-typed message — a send that fires out from under an open
     // menu is the single most annoying way to get an autocomplete wrong.

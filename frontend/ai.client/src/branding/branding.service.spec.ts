@@ -59,14 +59,23 @@ describe('BrandingService', () => {
     expect(service.configErrors).toEqual([]);
   });
 
-  it('never exposes BRAND_CONFIG or brand.defaults directly to consumers — only the five normalized properties plus configErrors', () => {
+  it('never exposes BRAND_CONFIG or brand.defaults directly to consumers — only the normalized properties plus configErrors', () => {
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({ providers: [BrandingService] });
     const service = TestBed.inject(BrandingService);
 
     const exposedKeys = Object.keys(service).sort();
     expect(exposedKeys).toEqual(
-      ['appName', 'configErrors', 'fallbackGreetings', 'greetingTemplates', 'logo', 'pageTitle'].sort(),
+      [
+        'appName',
+        'configErrors',
+        'fallbackGreetings',
+        'greetingTemplates',
+        'logo',
+        'pageTitle',
+        'timeOfDayFallbackGreetings',
+        'timeOfDayGreetings',
+      ].sort(),
     );
   });
 });
