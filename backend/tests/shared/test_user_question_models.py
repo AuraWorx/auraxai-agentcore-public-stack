@@ -252,3 +252,36 @@ class TestEscapeHatchOptionsAreStripped:
             ]
         )
         assert [o.label for o in question.options] == ["Just the API", "Everything"]
+
+
+class TestHeaderTrimming:
+    """Req: the chip is a label the user reads — never a severed word.
+
+    Found in the browser: the model wrote "Dashboard Purpose" and a hard
+    12-char slice rendered "DASHBOARD PU", which reads as a rendering bug.
+    """
+
+    def test_long_header_trims_on_a_word_boundary(self):
+        [q] = normalize_questions(
+            [{"header": "Dashboard Purpose", "question": "Which?", "options": ["a", "b"]}]
+        )
+        assert q.header == "Dashboard"
+
+    def test_header_within_budget_is_untouched(self):
+        [q] = normalize_questions(
+            [{"header": "Scope", "question": "Which?", "options": ["a", "b"]}]
+        )
+        assert q.header == "Scope"
+
+    def test_single_overlong_word_still_falls_back_to_a_hard_cut(self):
+        [q] = normalize_questions(
+            [{"header": "Internationalization", "question": "Which?", "options": ["a", "b"]}]
+        )
+        assert q.header == "Internationa"
+        assert len(q.header) == 12
+
+    def test_multi_word_header_keeps_as_many_whole_words_as_fit(self):
+        [q] = normalize_questions(
+            [{"header": "Key Data Points", "question": "Which?", "options": ["a", "b"]}]
+        )
+        assert q.header == "Key Data"

@@ -202,6 +202,15 @@
     </div>
   }
 
+  <!-- Clarifying questions the agent paused to ask (ask_user_question).
+       Same lifetime as the approval prompts above: tied to the live SSE turn,
+       so a refresh during the prompt orphans it (rehydration is PR-3). -->
+  @for (request of pendingUserQuestions(); track request.interruptId) {
+    <div class="flex justify-start">
+      <app-user-question-prompt [request]="request" />
+    </div>
+  }
+
   <!-- Loading indicator -->
   @if (isChatLoading()) {
     <div class="py-4">

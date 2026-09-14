@@ -10,6 +10,7 @@ import { CitationDisplayComponent } from '../citation-display/citation-display.c
 import { PulsatingLoaderComponent } from '../../../components/pulsating-loader.component';
 import { OAuthConsentPromptComponent } from './components/oauth-consent-prompt/oauth-consent-prompt.component';
 import { ToolApprovalPromptComponent } from './components/tool-approval-prompt/tool-approval-prompt.component';
+import { UserQuestionPromptComponent } from './components/user-question-prompt/user-question-prompt.component';
 import { CompactionSummaryComponent } from './components/compaction-summary/compaction-summary.component';
 import { ArtifactCardComponent } from './components/artifact/artifact-card.component';
 import { ArtifactPanelComponent } from './components/artifact/artifact-panel.component';
@@ -31,6 +32,10 @@ import {
   ToolApprovalRequest,
   ToolApprovalService,
 } from '../../../services/tool-approval/tool-approval.service';
+import {
+  UserQuestionRequest,
+  UserQuestionService,
+} from '../../../services/user-question/user-question.service';
 import { CompactionSummaryService } from '../../services/chat/compaction-summary.service';
 import { ChatStateService } from '../../services/chat/chat-state.service';
 import { ToolInsightService } from '../../services/chat/tool-insight.service';
@@ -116,6 +121,7 @@ function segmentTurn(messages: readonly Message[]): TurnSegment[] {
     PulsatingLoaderComponent,
     OAuthConsentPromptComponent,
     ToolApprovalPromptComponent,
+    UserQuestionPromptComponent,
     CompactionSummaryComponent,
     ArtifactCardComponent,
     ArtifactPanelComponent,
@@ -192,6 +198,7 @@ export class MessageListComponent {
 
   private consentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
+  private userQuestionService = inject(UserQuestionService);
   private compactionSummary = inject(CompactionSummaryService);
   private artifactState = inject(ArtifactStateService);
   private mcpAppCardState = inject(McpAppCardStateService);
@@ -576,6 +583,17 @@ export class MessageListComponent {
     const sessionId = this.sessionId();
     if (!sessionId) return [];
     return this.toolApprovalService.pending().filter((r) => r.sessionId === sessionId);
+  });
+
+  /** Clarifying-question prompts for THIS list's session, for the same reason
+   *  the approvals above are filtered: the service queue is global, and the
+   *  agent-designer preview and marketplace review pane stream through the
+   *  same interrupt protocol. Answering one pane's prompt in another pane's
+   *  transcript would resume a turn the reader isn't looking at. */
+  protected pendingUserQuestions = computed<UserQuestionRequest[]>(() => {
+    const sessionId = this.sessionId();
+    if (!sessionId) return [];
+    return this.userQuestionService.pending().filter((r) => r.sessionId === sessionId);
   });
 
   /** Messages grouped into turns: each user message starts a group and the

@@ -18,6 +18,7 @@ import {
 } from '../../../services/quota/quota-warning.service';
 import { OAuthConsentService } from '../../../services/oauth-consent/oauth-consent.service';
 import { ToolApprovalService } from '../../../services/tool-approval/tool-approval.service';
+import { UserQuestionService } from '../../../services/user-question/user-question.service';
 import { CompactionSummaryService } from './compaction-summary.service';
 import { SteeringService } from './steering.service';
 import { buildSteeringMessage } from './steering';
@@ -28,6 +29,7 @@ import { SessionService } from '../session/session.service';
 import type {
   OAuthRequiredEvent,
   ToolApprovalRequiredEvent,
+  UserQuestionRequiredEvent,
   CompactionEvent,
   ArtifactEvent,
   UiResourceEvent,
@@ -162,6 +164,7 @@ export class StreamParserService {
   private quotaWarningService = inject(QuotaWarningService);
   private oauthConsentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
+  private userQuestionService = inject(UserQuestionService);
   private compactionSummary = inject(CompactionSummaryService);
   private steering = inject(SteeringService);
   private artifactState = inject(ArtifactStateService);
@@ -641,6 +644,17 @@ export class StreamParserService {
           toolName: data.toolName,
           toolInput: data.toolInput ?? undefined,
           message: data.message,
+          messageId: lastAssistantId,
+          sessionId: state.sessionId,
+        });
+      },
+
+      onUserQuestionRequired: (data: UserQuestionRequiredEvent) => {
+        const lastAssistantId = this.findLastAssistantId(state);
+        this.userQuestionService.requestAnswers({
+          interruptId: data.interruptId,
+          toolUseId: data.toolUseId,
+          questions: data.questions,
           messageId: lastAssistantId,
           sessionId: state.sessionId,
         });

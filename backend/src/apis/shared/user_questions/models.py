@@ -165,6 +165,29 @@ def _clean(value: Any, limit: int) -> str:
     return text[:limit]
 
 
+def _clean_header(value: Any) -> str:
+    """Trim a header to the chip budget without cutting mid-word.
+
+    A hard slice is what shipped "DASHBOARD PU" to the UI when the model wrote
+    "Dashboard Purpose" — the chip is a label the user reads, and a severed
+    word reads as a rendering bug. Drop whole trailing words instead, and fall
+    back to the hard slice only when the very first word is itself over budget.
+    """
+    text = str(value).strip() if value is not None else ""
+    if not text or len(text) <= MAX_HEADER_CHARS:
+        return text
+
+    words = text.split()
+    kept: List[str] = []
+    for word in words:
+        candidate = " ".join([*kept, word])
+        if len(candidate) > MAX_HEADER_CHARS:
+            break
+        kept.append(word)
+
+    return " ".join(kept) if kept else text[:MAX_HEADER_CHARS]
+
+
 def _normalize_options(raw: Any) -> List[QuestionOption]:
     """Build the option list, dropping blanks, duplicates and Other/Skip clones.
 
@@ -243,7 +266,7 @@ def normalize_questions(raw: Any) -> List[UserQuestion]:
 
         # Header is a display convenience; fall back to a positional label so a
         # model that omits it still gets a renderable (and correlatable) prompt.
-        header = _clean(entry.get("header"), MAX_HEADER_CHARS)
+        header = _clean_header(entry.get("header"))
         if not header:
             header = f"Q{len(questions) + 1}"
         # Answers correlate by header, so collisions must not survive.
