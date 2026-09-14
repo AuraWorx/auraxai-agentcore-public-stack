@@ -363,18 +363,43 @@ aws dynamodb describe-table --table-name <prefix>-app-roles \
 Populates `GSI5PK`/`GSI5SK` on tool rows written before the keys existed. **Dry-run by default; idempotent; guarded by `attribute_not_exists(GSI5PK)` and `attribute_exists(SK)`, so it never resurrects a deleted row and never overwrites one the writer has since stamped.** It touches only tool metadata rows — `CAPABILITIES` snapshots, skills, roles and user preferences are left alone.
 
 ```bash
-AWS_PROFILE=<env> python backend/scripts/backfill_tool_catalog_index.py \
+AWS_PROFILE=<env> backend/.venv/bin/python backend/scripts/backfill_tool_catalog_index.py \
     --table <prefix>-app-roles --region us-west-2
 ```
+
+> Use the backend venv's interpreter, not the system `python` — the script needs `boto3`
+> and a bare `python` fails with `ModuleNotFoundError: No module named 'boto3'`.
+> `uv run --project backend python …` works equally well.
 
 Then, once the dry run looks right:
 
 ```bash
-AWS_PROFILE=<env> python backend/scripts/backfill_tool_catalog_index.py \
+AWS_PROFILE=<env> backend/.venv/bin/python backend/scripts/backfill_tool_catalog_index.py \
     --table <prefix>-app-roles --region us-west-2 --apply
 ```
 
-**Verify `skipped=0 failed=0` and that the index item count matches the tool count before considering the deploy complete.** Run against dev first, then prod. If the backfill is skipped, the Query returns zero rows, the zero-result fallback re-reads via Scan and logs an ERROR naming this script — so the catalog still serves, but at Scan cost and with a standing error in the logs.
+**Verify `skipped=0 failed=0`, then confirm the index is populated with a live Query.** Run against dev first, then prod.
+
+```bash
+aws dynamodb query --table-name <prefix>-app-roles --index-name EntityTypeIndex \
+  --key-condition-expression "GSI5PK = :pk" \
+  --expression-attribute-values '{":pk":{"S":"ENTITY#TOOL"}}' --select COUNT
+```
+
+> ⚠️ **Do not verify with `describe-table` `ItemCount`.** DynamoDB refreshes table and index
+> item counts roughly every **six hours**, so immediately after a successful backfill it still
+> reads `0` and looks like a failure. A Query is the only live check.
+
+Pair it with a scan for rows the backfill missed — a **partial** backfill is the one case the
+read path's zero-result fallback deliberately does not cover, so it is silent:
+
+```bash
+aws dynamodb scan --table-name <prefix>-app-roles \
+  --filter-expression "begins_with(PK, :p) AND SK = :s AND attribute_not_exists(GSI5PK)" \
+  --expression-attribute-values '{":p":{"S":"TOOL#"},":s":{"S":"METADATA"}}' --select COUNT
+```
+
+That must return `Count: 0`. If the backfill is skipped, the Query returns zero rows, the zero-result fallback re-reads via Scan and logs an ERROR naming this script — so the catalog still serves, but at Scan cost and with a standing error in the logs.
 
 ### 4. Decide on the Conversation Mode regression
 
