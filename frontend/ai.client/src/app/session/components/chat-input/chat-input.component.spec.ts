@@ -1,7 +1,7 @@
 import { NO_ERRORS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentMentionService, MentionableAgent } from '../../../agents/services/agent-mention.service';
 import { SkillCommand, SkillCommandService } from '../../../services/skill/skill-command.service';
 import { FileUploadService } from '../../../services/file-upload';
@@ -1042,5 +1042,199 @@ describe('ChatInputComponent — a queue held behind a paused turn (PR-6)', () =
     setStreaming(false);
 
     expect(submitted.map((m) => m.content)).toEqual(['ordinary follow-up']);
+  });
+});
+
+
+/**
+ * The rotating discovery hints in the empty composer.
+ *
+ * The contract worth pinning is the accessibility one: the *visible* line
+ * cycles, the *accessible* placeholder never does. Everything else here exists
+ * so the rotation cannot quietly turn into something that runs forever.
+ */
+describe('ChatInputComponent — rotating discovery hints', () => {
+  let fixture: ComponentFixture<ChatInputComponent>;
+  let textarea: HTMLTextAreaElement;
+  let mentions: MentionServiceStub;
+  let skills: SkillCommandServiceStub;
+
+  /**
+   * The line the overlay is painting, or null when the composer has handed the
+   * placeholder back to the textarea. Excludes a node still playing its exit
+   * animation, which briefly shares the DOM with its replacement.
+   */
+  function hint(): HTMLElement | null {
+    const nodes = fixture.nativeElement.querySelectorAll(
+      '.composer-hint:not(.composer-hint-leave)',
+    );
+    return (nodes[nodes.length - 1] as HTMLElement | undefined) ?? null;
+  }
+
+  function hintText(): string | null {
+    return hint()?.textContent?.trim() ?? null;
+  }
+
+  function tick(): void {
+    vi.advanceTimersByTime(4500);
+    fixture.detectChanges();
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    await TestBed.configureTestingModule({
+      imports: [ChatInputComponent],
+      providers: [
+        { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
+        {
+          provide: FileUploadService,
+          useValue: {
+            pendingUploadsList: signal([]),
+            hasActivePendingUploads: signal(false),
+            readyUploadIds: signal([]),
+            clearReadyUploads: () => undefined,
+            clearPendingUpload: () => undefined,
+          },
+        },
+        { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
+        { provide: ToolService, useValue: {} },
+        {
+          provide: VoiceChatService,
+          useValue: {
+            status: signal('idle'),
+            isVoiceActive: signal(false),
+            agentTranscript: signal(''),
+          },
+        },
+        { provide: SystemPromptsService, useValue: { activePrompt: signal(null) } },
+        { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
+        { provide: SteeringService, useClass: SteeringServiceStub },
+      ],
+    })
+      .overrideComponent(ChatInputComponent, {
+        set: { imports: [], schemas: [NO_ERRORS_SCHEMA] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(ChatInputComponent);
+    mentions = TestBed.inject(AgentMentionService) as unknown as MentionServiceStub;
+    skills = TestBed.inject(SkillCommandService) as unknown as SkillCommandServiceStub;
+    fixture.componentRef.setInput('showFileControls', false);
+    fixture.componentRef.setInput('showVoiceControl', false);
+    fixture.componentRef.setInput('autoFocus', false);
+    fixture.detectChanges();
+
+    textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('paints the idle line first, hidden from assistive tech', () => {
+    expect(hintText()).toBe('How can I help you today?');
+    expect(hint()?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('cycles through the shortcuts a user cannot otherwise discover', () => {
+    tick();
+    expect(hintText()).toContain('Type @');
+
+    tick();
+    expect(hintText()).toContain('Type /');
+  });
+
+  it('leaves the accessible placeholder alone while the pixels change', () => {
+    tick();
+    // The overlay is decoration. A placeholder that rotated with it would
+    // re-announce the field every few seconds.
+    expect(textarea.getAttribute('placeholder')).toBe('How can I help you today?');
+  });
+
+  it('cycles more than once — a single pass is over before anyone looks', () => {
+    // 3 hints x 3 passes. Sampling the head of the second pass is what would
+    // catch a regression back to stopping after one.
+    for (let i = 0; i < 3; i++) tick();
+    expect(hintText()).toBe('How can I help you today?');
+
+    tick();
+    expect(hintText()).toContain('Type @');
+  });
+
+  it('comes to rest on the idle line instead of looping forever', () => {
+    // Nothing on screen may auto-update indefinitely without a pause control,
+    // so the passes run out and the composer settles.
+    for (let i = 0; i < 9; i++) tick();
+    expect(hintText()).toBe('How can I help you today?');
+
+    for (let i = 0; i < 4; i++) tick();
+    expect(hintText()).toBe('How can I help you today?');
+  });
+
+  it('rests in the overlay rather than handing back to the placeholder', () => {
+    for (let i = 0; i < 10; i++) tick();
+
+    // Unmounting at rest would exit-animate a copy of the idle line straight
+    // off the native placeholder, which spells the same words.
+    expect(hint()).not.toBeNull();
+    expect(textarea.className).toContain('placeholder:text-transparent');
+  });
+
+  it('stops the moment the user starts typing', () => {
+    textarea.value = 'h';
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', bubbles: true }));
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    expect(hint()).toBeNull();
+
+    // And it does not pick back up where it left off if the box is emptied —
+    // a hint that returned every time would be pestering, not teaching.
+    textarea.value = '';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    tick();
+    expect(hintText()).toBe('How can I help you today?');
+  });
+
+  it('starts over on a brand-new conversation', () => {
+    textarea.value = 'h';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    textarea.value = '';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    fixture.componentRef.setInput('sessionId', 'sess-1');
+    fixture.detectChanges();
+    fixture.componentRef.setInput('sessionId', null);
+    fixture.detectChanges();
+
+    // An empty composer on a new conversation is the one moment the hints are
+    // worth showing again.
+    tick();
+    expect(hintText()).toContain('Type @');
+  });
+
+  it('never advertises a shortcut this composer does not offer', () => {
+    mentions.mentionable.set([]);
+    skills.commands.set([]);
+    fixture.detectChanges();
+
+    // With nothing left to teach, the idle string alone is not worth animating
+    // — and a `/` hint for a user with no skills opens an empty menu.
+    expect(hint()).toBeNull();
+    expect(textarea.getAttribute('placeholder')).toBe('How can I help you today?');
+  });
+
+  it('yields to the mid-stream placeholder while a turn is running', () => {
+    fixture.componentRef.setInput('isChatLoading', true);
+    fixture.detectChanges();
+
+    // The streaming placeholder says where a follow-up will land. That is
+    // state, and it outranks a discovery hint.
+    expect(hint()).toBeNull();
+    expect(textarea.getAttribute('placeholder')).toContain('when this response finishes');
   });
 });
