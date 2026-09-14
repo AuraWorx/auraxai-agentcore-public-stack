@@ -2,6 +2,7 @@ import { Injectable, inject, signal, computed } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '../config.service';
+import { ToggleOptions } from '../toggle-options';
 
 /**
  * One skill the user can reach (catalog-granted ∪ authored), as returned by
@@ -16,6 +17,17 @@ export interface UserSkill {
   category: string | null;
   userEnabled: boolean | null;
   isEnabled: boolean;
+  /**
+   * The runtime's activation key — the name the model sees in
+   * `<available_skills>` and the token the composer's `/` menu writes into a
+   * message. Served by the backend rather than derived here so the two can
+   * never disagree about the slug rule.
+   *
+   * Optional because the SPA and the backend deploy independently (and in no
+   * enforced order): a client that lands ahead of the backend that serves this
+   * field must degrade to "no slash commands", not to a menu of `/undefined`.
+   */
+  slug?: string;
 }
 
 /** Response from GET /skills/ */
@@ -164,10 +176,17 @@ export class SkillService {
     }
   }
 
-  /** Toggle a skill's enabled state (optimistic, reverts on save failure). */
-  async toggleSkill(skillId: string): Promise<void> {
+  /**
+   * Toggle a skill's enabled state (optimistic, reverts on save failure).
+   *
+   * `respectAgentLock` defaults to true — the conversation-scoped behaviour the
+   * composer drawer depends on. Global surfaces (Customize) pass `false`; see
+   * `services/toggle-options.ts` and `docs/specs/customize-surface.md`
+   * §"The agent-lock seam" for why.
+   */
+  async toggleSkill(skillId: string, options?: ToggleOptions): Promise<void> {
     // Agent-locked: the skill set is dictated by the Agent; ignore toggles.
-    if (this._agentLockedSkillIds() !== null) return;
+    if ((options?.respectAgentLock ?? true) && this._agentLockedSkillIds() !== null) return;
     const skill = this._skills().find(s => s.skillId === skillId);
     if (!skill) return;
 

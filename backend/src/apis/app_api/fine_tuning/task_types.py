@@ -298,7 +298,13 @@ TASK_SPECS: Dict[str, TaskSpec] = {
             # literal batch of 16 OOMs on any instance we offer.
             "per_device_train_batch_size": "1",
             "gradient_accumulation_steps": "8",
-            "context_length": "1024",
+            # Generous on purpose. A VLM spends most of its sequence on the
+            # image — SmolVLM-Instruct measures 1377 tokens for one image, so
+            # the old 1024 default could not fit the image, let alone the
+            # prompt. The collator pads to the longest item in the batch, not
+            # to this value, so headroom here costs nothing; too little is a
+            # failed job on a billed GPU.
+            "context_length": "2048",
             "load_in_4bit": "true",
             "lora_r": "16",
             "lora_alpha": "32",
@@ -327,6 +333,22 @@ ARCHIVE_TASK_TYPES: Tuple[str, ...] = tuple(
 GENERATIVE_TASK_TYPES: Tuple[str, ...] = tuple(
     t for t in TASK_TYPES if TASK_SPECS[t].is_generative
 )
+
+
+def str2bool(value) -> bool:
+    """Parse a boolean hyperparameter.
+
+    Lives here because both sides need it and this is the only module they
+    share: app-api validates a submission before billing a GPU, and the
+    training script parses the same value inside the container.
+
+    ``bool("false")`` is True, which is the trap this exists to avoid —
+    SageMaker passes every hyperparameter as a string, and JSON-parses some of
+    them back into Python-style ``"False"`` on the command line.
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_task_spec(task_type: Optional[str]) -> TaskSpec:

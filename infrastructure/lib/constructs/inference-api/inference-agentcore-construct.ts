@@ -730,6 +730,52 @@ export class InferenceAgentCoreConstruct extends Construct {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
+    // Cost, not capacity. Runtime bills memory for a session's whole lifetime
+    // rather than for compute time, and AWS still exposes no API to list or
+    // force-terminate an active runtime session
+    // (aws/bedrock-agentcore-starter-toolkit#498 reports one runaway session
+    // burning $72.67 in 58 minutes) — the DynamoDB lease plus
+    // `cancelRequestedFor` are the only kill switch there is. So the thing worth
+    // watching is sessions *accumulating*, which is precisely what the #338
+    // `/ping` reaper bug did, undetected, for three months at 73% of the
+    // platform bill. This is the leading indicator that was missing then.
+    //
+    // Deliberately NOT thresholded as a fraction of the account quota (5,000
+    // concurrent sessions in us-west-2): quota exhaustion already has a signal
+    // in `agentcore-throttles`, and #1016 is the standing lesson about an
+    // account-wide roll-up compared against a number that does not denominate it.
+    //
+    // Account-level gauge — only a `Service` dimension, so no `Resource` here,
+    // matching `agentcore-code-interpreter-active-sessions`.
+    alarms.alarm('AgentCoreActiveSessionAlarm', {
+      name: 'agentcore-runtime-active-sessions',
+      alarmDescription:
+        'Concurrent AgentCore Runtime sessions have stayed high for a full hour. Runtime '
+        + 'bills memory for the full session lifetime, so this is a cost signal before it '
+        + 'is a capacity one, and there is no AWS API to terminate a session — check that '
+        + 'idle reaping is still working (mean microVM life should be 20-50 min, not hours) '
+        + 'before assuming it is real traffic. A load test is the most likely benign cause, '
+        + 'but the one-hour window means a burst alone should not have reached you.',
+      metric: activeSessionsMetric,
+      threshold: config.observability.agentCoreActiveSessionThreshold,
+      // Twelve 5-minute periods = one hour SUSTAINED above threshold, and that
+      // window is the whole point: it is what separates this alarm's target from
+      // a load test. Measured on 7 days of real prod ActiveSessionCount, a week
+      // containing three nightly load tests that peaked at 241, 608 and 1404 —
+      // the shipped 200/15-min config fired on all three, and no threshold fixes
+      // that (still fires at 500; only quiet near 1500, which is above the ~99
+      // regime of #338 this exists to catch). The longest continuous run above
+      // 75 was 45 min, so an hour clears every observed burst with margin, while
+      // the #338 regression — sustained for three months — trips it in one hour.
+      //
+      // All 12 datapoints must breach (no datapointsToAlarm), so a single
+      // dip below threshold resets the count. That is deliberate: accumulation
+      // that reaps itself is not the failure mode being watched.
+      evaluationPeriods: 12,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     alarms.alarm('AgentCoreHighLatencyAlarm', {
       name: 'agentcore-high-latency',
       alarmDescription: 'AgentCore Runtime p99 latency exceeded threshold',

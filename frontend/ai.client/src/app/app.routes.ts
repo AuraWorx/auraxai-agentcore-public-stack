@@ -145,20 +145,100 @@ export const routes: Routes = [
         loadComponent: () => import('./schedules/schedules.page').then(m => m.SchedulesPage),
         canActivate: [authGuard],
     },
+    // `/my-skills` was absorbed into `/customize/skills` — one noun, one place.
+    // Redirects rather than deletions: the paths are in bookmarks, and the skill
+    // detail page linked out to `/my-skills/:id/edit` for its whole life.
     {
         path: 'my-skills/new',
-        loadComponent: () => import('./my-skills/my-skill-form.page').then(m => m.MySkillFormPage),
-        canActivate: [authGuard],
+        redirectTo: 'customize/skills/new',
+        pathMatch: 'full',
     },
     {
         path: 'my-skills/:skillId/edit',
-        loadComponent: () => import('./my-skills/my-skill-form.page').then(m => m.MySkillFormPage),
-        canActivate: [authGuard],
+        redirectTo: 'customize/skills/:skillId/edit',
+        pathMatch: 'full',
     },
     {
         path: 'my-skills',
-        loadComponent: () => import('./my-skills/my-skills.page').then(m => m.MySkillsPage),
+        redirectTo: 'customize/skills',
+        pathMatch: 'full',
+    },
+    // ── Customize ───────────────────────────────────────────────────────────────
+    // The capabilities hub: what the user adds to their assistant. Tools and
+    // Skills in PR-1; Connectors folds in from `Settings → Connectors` in step 2.
+    // Deliberately NOT the Agent Marketplace — an Agent is something you talk to,
+    // not a capability you toggle, and splitting that noun across two surfaces is
+    // the failure Marketplace D1 exists to prevent.
+    // See `docs/specs/customize-surface.md`.
+    {
+        path: 'customize/tools',
+        loadComponent: () =>
+            import('./customize/tools/customize-tools.page').then(m => m.CustomizeToolsPage),
         canActivate: [authGuard],
+    },
+    // One tool: its sub-tools, prompts, resources and catalog facts. The id is
+    // bound straight to the page's `toolId` input by `withComponentInputBinding()`.
+    {
+        path: 'customize/tools/:toolId',
+        loadComponent: () =>
+            import('./customize/tools/customize-tool-detail.page').then(
+                m => m.CustomizeToolDetailPage,
+            ),
+        canActivate: [authGuard],
+    },
+    {
+        path: 'customize/skills',
+        loadComponent: () =>
+            import('./customize/skills/customize-skills.page').then(m => m.CustomizeSkillsPage),
+        canActivate: [authGuard],
+    },
+    // ⚠️ ORDER: `new` must stay ABOVE `:skillId`. The router matches in
+    // declaration order, so a `:skillId` route declared first swallows this one
+    // and the create form renders as "skill not found" for an id of "new".
+    {
+        path: 'customize/skills/new',
+        loadComponent: () =>
+            import('./customize/skills/skill-form.page').then(m => m.SkillFormPage),
+        canActivate: [authGuard],
+    },
+    {
+        path: 'customize/skills/:skillId/edit',
+        loadComponent: () =>
+            import('./customize/skills/skill-form.page').then(m => m.SkillFormPage),
+        canActivate: [authGuard],
+    },
+    // One skill: its SKILL.md body, supporting files and catalog facts. The id
+    // is bound straight to the page's `skillId` input by
+    // `withComponentInputBinding()`.
+    {
+        path: 'customize/skills/:skillId',
+        loadComponent: () =>
+            import('./customize/skills/customize-skill-detail.page').then(
+                m => m.CustomizeSkillDetailPage,
+            ),
+        canActivate: [authGuard],
+    },
+    {
+        path: 'customize/connectors',
+        loadComponent: () =>
+            import('./customize/connectors/customize-connectors.page').then(
+                m => m.CustomizeConnectorsPage,
+            ),
+        canActivate: [authGuard],
+    },
+    {
+        path: 'customize',
+        redirectTo: 'customize/tools',
+        pathMatch: 'full',
+    },
+    // Connectors moved out of Settings and into Customize (spec step 2):
+    // connecting an account and enabling the tools that need it are one intent.
+    // The old deep link stays as a redirect rather than a deletion — it is in
+    // bookmarks, and `schedules` linked users straight to it for years.
+    {
+        path: 'settings/connectors',
+        redirectTo: 'customize/connectors',
+        pathMatch: 'full',
     },
     {
         path: 'memories',

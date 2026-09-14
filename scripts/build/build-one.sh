@@ -124,6 +124,9 @@ case "$SERVICE" in
             # cleanup_service.py reads records.resolve_engine and calls
             # ManagedKbBackend to delete from a promoted knowledge base.
             "backend/src/apis/shared/kb_backend"
+            # observability/ — reached via kb_backend/metrics.py when
+            # document_service releases a managed-KB byte reservation.
+            "backend/src/apis/shared/observability"
             "backend/src/apis/app_api/file_sources"
             "backend/src/apis/app_api/documents"
             "backend/src/apis/app_api/web_sources"
@@ -131,6 +134,9 @@ case "$SERVICE" in
             "backend/src/apis/shared/oauth"
             "backend/src/apis/shared/embeddings"
             "backend/src/apis/shared/assistants"
+            # caching/ — oauth/provider_repository.py memoizes its provider
+            # list in the process-wide config cache.
+            "backend/src/apis/shared/caching"
         )
         # Single-file COPYs hashed as manifests (same as rag-ingestion);
         # kb_sync/requirements.txt lives inside the first source dir.
@@ -138,6 +144,7 @@ case "$SERVICE" in
             "backend/src/apis/shared/__init__.py"
             "backend/src/apis/shared/timestamps.py"
             "backend/src/apis/shared/dynamo_errors.py"
+            "backend/src/apis/shared/feature_flags.py"
         )
         # Both kb-sync Lambdas are arm64 (see the kb-sync CDK construct).
         PLATFORM="linux/arm64"

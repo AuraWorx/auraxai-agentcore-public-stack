@@ -125,6 +125,21 @@
       />
     }
 
+    <!--
+      `/` skill-command menu. Same anchoring as the `@` menu, and mutually exclusive with
+      it — `isSkillMenuVisible` already subtracts the case where both tokens would match,
+      so the two can never both claim the arrow keys.
+    -->
+    @if (isSkillMenuVisible()) {
+      <app-skill-command-menu
+        [items]="skillResults()"
+        [activeIndex]="skillActiveIndex()"
+        [query]="skillQuery()"
+        (picked)="onSkillPicked($event)"
+        (browseAll)="onSkillBrowseAll()"
+      />
+    }
+
     <!-- Main Input Area -->
     <div class="relative">
       <label for="user-message" class="sr-only">How can I help you today?</label>
@@ -143,14 +158,50 @@
         [attr.placeholder]="placeholder()"
         role="combobox"
         aria-autocomplete="list"
-        [attr.aria-expanded]="isMentionMenuOpen()"
-        [attr.aria-controls]="isMentionMenuOpen() ? 'agent-mention-listbox' : null"
-        [attr.aria-activedescendant]="
-          isMentionMenuOpen() ? 'agent-mention-option-' + mentionActiveIndex() : null
+        [attr.aria-expanded]="isMentionMenuOpen() || isSkillMenuVisible()"
+        [attr.aria-controls]="
+          isMentionMenuOpen()
+            ? 'agent-mention-listbox'
+            : isSkillMenuVisible()
+              ? 'skill-command-listbox'
+              : null
         "
-        class="block w-full resize-none bg-transparent px-6 py-4 text-base text-gray-900 placeholder:text-gray-500 dark:text-gray-100 dark:placeholder:text-gray-400 focus:outline-hidden overflow-y-auto"
+        [attr.aria-activedescendant]="
+          isMentionMenuOpen()
+            ? 'agent-mention-option-' + mentionActiveIndex()
+            : isSkillMenuVisible()
+              ? 'skill-command-option-' + skillActiveIndex()
+              : null
+        "
+        class="block w-full resize-none bg-transparent px-6 py-4 text-base text-gray-900 dark:text-gray-100 focus:outline-hidden overflow-y-auto"
+        [class]="
+          showHintOverlay()
+            ? 'placeholder:text-transparent'
+            : 'placeholder:text-gray-500 dark:placeholder:text-gray-400'
+        "
         style="min-height: 60px; max-height: 200px;"
       ></textarea>
+
+      <!--
+        Rotating discovery hints (see `composerHints` in the component).
+
+        Decoration, deliberately: `aria-hidden`, painted over a placeholder that
+        stays present and unchanging underneath — only its colour goes
+        transparent — so assistive tech reads one stable string while the pixels
+        cycle. `pointer-events-none` keeps a click on the hint landing in the
+        textarea. Padding and type scale must stay in step with the textarea's
+        or the line will not sit where the placeholder did.
+      -->
+      @for (hint of visibleHint(); track hint) {
+        <div
+          aria-hidden="true"
+          animate.enter="composer-hint-enter"
+          animate.leave="composer-hint-leave"
+          class="composer-hint pointer-events-none absolute inset-x-0 top-0 truncate px-6 py-4 text-base text-gray-500 dark:text-gray-400"
+        >
+          {{ hint }}
+        </div>
+      }
 
       <!-- Bottom Controls Bar -->
       <div class="flex items-center justify-between px-4 pb-3">
@@ -176,20 +227,6 @@
                 <ng-icon name="heroPlus" class="size-5" aria-hidden="true" />
               </label>
             </div>
-          }
-
-          @if (showSettingsControl()) {
-            <!-- Settings Button -->
-            <button
-              type="button"
-              (click)="toggleSettings()"
-              class="flex size-10 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-gray-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]"
-              aria-label="Open settings"
-              appTooltip="Settings"
-              appTooltipPosition="top"
-            >
-              <ng-icon name="heroAdjustmentsHorizontal" class="size-5" aria-hidden="true" />
-            </button>
           }
 
           @if (showVoiceControl()) {
@@ -248,24 +285,35 @@
             </div>
           }
 
-          <!-- Active Conversation Mode Chip -->
-          @if (systemPromptsService.activePrompt()) {
+          <!--
+            Invoked-skill chips. Says which skills this message will run, and gives the way
+            back out. Unlike the mention chip these are not a separate binding — they are
+            a read of the `/slug` tokens in the text, so clearing one edits the text.
+
+            Neutral surface, brand blue only in the label. `bg-primary-50` looks like a
+            pale tint by its name but is not one: the primary scale is generated from
+            #0033a0 by lightness offset alone and keeps full chroma, so `primary-50`
+            resolves to rgb(118,179,255) — a saturated mid-blue that reads as a filled
+            blob behind small text. The `state-*` scales ARE real tints; `primary` is not.
+          -->
+          @for (command of invokedSkills(); track command.skillId) {
             <div
-              class="flex items-center gap-1 rounded-full border border-primary-200 bg-primary-50 pl-2.5 pr-1 py-1 text-xs font-medium text-primary-700 dark:border-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+              class="flex items-center gap-1 rounded-full border border-gray-300 bg-white pl-2.5 pr-1 py-1 text-xs font-medium text-primary-accessible dark:border-gray-500 dark:bg-gray-700 dark:text-primary-50"
               role="status"
-              [attr.aria-label]="'Active mode: ' + systemPromptsService.activePrompt()?.name"
+              [attr.aria-label]="'This message runs the ' + command.name + ' skill'"
             >
-              <span class="max-w-28 truncate">{{ systemPromptsService.activePrompt()?.name }}</span>
+              <span class="max-w-40 truncate">{{ command.name }}</span>
               <button
                 type="button"
-                (click)="dismissActivePrompt()"
-                class="flex size-4 shrink-0 items-center justify-center rounded-full text-primary-500 transition-colors hover:bg-primary-200 hover:text-primary-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary-500 dark:text-primary-400 dark:hover:bg-primary-700 dark:hover:text-primary-200"
-                aria-label="Clear conversation mode"
+                (click)="clearSkillCommand(command)"
+                class="flex size-4 shrink-0 items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:bg-gray-600 dark:hover:text-gray-200"
+                [attr.aria-label]="'Do not run the ' + command.name + ' skill'"
               >
                 <ng-icon name="heroXMark" class="size-3" aria-hidden="true" />
               </button>
             </div>
           }
+
         </div>
 
         <!-- Right Controls -->

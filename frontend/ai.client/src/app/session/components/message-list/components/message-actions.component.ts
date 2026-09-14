@@ -44,7 +44,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
         </span>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-950/40"
+          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
           appTooltip="Resume response"
           appTooltipPosition="top"
           aria-label="Continue the truncated response"
@@ -59,7 +59,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
         </span>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-primary-950/40"
+          class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
           appTooltip="Resume response"
           appTooltipPosition="top"
           aria-label="Continue the interrupted response"
@@ -93,7 +93,15 @@ export class MessageActionsComponent {
   private isBrowser = isPlatformBrowser(this.platformId);
   private markdown = inject(MarkdownService);
 
-  message = input.required<Message>();
+  /**
+   * The assistant messages of one run (see AssistantMessageComponent).
+   *
+   * A run rather than a message because the agent loop emits a separate
+   * Bedrock message per tool round trip, and Copy must yield the whole
+   * response — text the model wrote before a tool call is still part of what
+   * the user is reading. Taking only the final message would silently drop it.
+   */
+  messages = input.required<Message[]>();
 
   /** Show a "Continue" button when this is the last assistant message of a
    *  recoverable max_tokens-truncated turn. */
@@ -112,8 +120,8 @@ export class MessageActionsComponent {
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
 
   protected copyableText = computed(() =>
-    this.message()
-      .content.filter(isTextContentBlock)
+    this.messages()
+      .flatMap((message) => message.content.filter(isTextContentBlock))
       .map((block) => block.text)
       .join('\n\n')
       .trim(),

@@ -270,7 +270,7 @@ import { SpinnerComponent } from '../../../../components/spinner/spinner.compone
       <div class="flex gap-4 mt-6">
         <button
           (click)="createOverride()"
-          class="px-4 py-2 bg-primary-accessible text-white rounded-sm hover:brightness-95"
+          class="px-4 py-2 bg-primary-accessible text-white rounded-2xl hover:brightness-95"
         >
           Create Override
         </button>

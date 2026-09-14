@@ -998,7 +998,7 @@ rather than restating the checks.
   ([`chat/routes.py:1319`](../../backend/src/apis/inference_api/chat/routes.py)) resolves against the
   caller, and there is no author-side lookup anywhere on the invocation path. Cost rows land on the
   same person: `PK = USER#{user_id}`
-  ([`sessions/services/metadata.py:157`](../../backend/src/apis/app_api/sessions/services/metadata.py)).
+  ([`shared/sessions/metadata.py:269`](../../backend/src/apis/shared/sessions/metadata.py)).
   So spend and quota agree, and a published Agent does not bill its author for a stranger's run.
 - **Review SLA** — committed, and split by queue. See the table in D2: two business days for
   submissions, same day for an `inappropriate` report, weekly for the rest.

@@ -79,7 +79,7 @@ import {
             <div>
               <label
                 for="skillImport"
-                class="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                class="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-gray-300 bg-white px-4 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
               >
                 <ng-icon name="heroArrowUpTray" class="size-4" aria-hidden="true" />
                 Import SKILL.md
@@ -229,7 +229,7 @@ import {
               <div class="flex flex-wrap items-center gap-2">
                 <label
                   for="refUpload"
-                  class="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                  class="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
                   [class.opacity-50]="resourceBusy()"
                 >
                   <ng-icon name="heroArrowUpTray" class="size-4" aria-hidden="true" />
@@ -247,7 +247,7 @@ import {
                 <button
                   type="button"
                   (click)="toggleNewFile()"
-                  class="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                  class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm/6 font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
                 >
                   <ng-icon name="heroPlus" class="size-4" aria-hidden="true" />
                   New file
@@ -283,7 +283,7 @@ import {
                       type="button"
                       (click)="addNewFile()"
                       [disabled]="resourceBusy() || !newFileName().trim() || !newFileContent()"
-                      class="rounded-lg bg-primary-accessible px-3 py-1.5 text-sm/6 font-medium text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:brightness-110"
+                      class="rounded-2xl bg-primary-accessible px-3 py-1.5 text-sm/6 font-medium text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:brightness-110"
                     >
                       Add file
                     </button>
@@ -381,7 +381,7 @@ import {
               <button
                 type="submit"
                 [disabled]="saving() || form.invalid"
-                class="inline-flex items-center gap-2 rounded-lg bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:brightness-110"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:brightness-110"
               >
                 {{ saving() ? 'Saving…' : (isEditMode() ? 'Update Skill' : 'Create Skill') }}
               </button>

@@ -48,7 +48,7 @@
             <div class="flex items-start justify-between gap-2">
               <span class="text-sm/6 font-medium text-gray-900 dark:text-white">{{ task.display_name }}</span>
               @if (selectedTaskType() === task.task_type) {
-                <ng-icon name="heroCheck" class="size-5 shrink-0 text-primary-600 dark:text-primary-400" />
+                <ng-icon name="heroCheck" class="size-5 shrink-0 text-primary-accessible dark:text-primary-accessible-dark" />
               }
             </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ task.description }}</p>
@@ -215,15 +215,15 @@
           (click)="selectCustomModel()"
           [class]="'flex w-full items-center gap-4 rounded-sm border-2 p-4 text-left transition-all ' +
             (useCustomModel()
-              ? 'border-primary-500 bg-primary-50 ring-2 ring-primary-500 dark:border-primary-400 dark:bg-primary-900/20 dark:ring-primary-400'
+              ? 'border-primary-500 bg-gray-100 ring-2 ring-primary-500 dark:border-primary-400 dark:bg-gray-800 dark:ring-primary-400'
               : 'border-gray-200 bg-white hover:border-primary-300 hover:bg-primary-50/30 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-primary-500/50 dark:hover:bg-primary-900/10')"
         >
-          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-100 text-primary-accessible dark:bg-primary-900/40 dark:text-primary-accessible-dark">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-primary-accessible dark:bg-gray-700 dark:text-primary-50">
             <ng-icon name="heroMagnifyingGlass" class="size-5" />
           </div>
           <div class="flex-1">
             <span class="text-sm/6 font-semibold text-gray-900 dark:text-white">Use a Custom HuggingFace Model</span>
-            <span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+            <span class="mt-0.5 block text-xs text-gray-600 dark:text-gray-300">
               Search the HuggingFace Hub for any model — multilingual, domain-specific, or experimental.
             </span>
           </div>
@@ -235,7 +235,7 @@
       @if (useCustomModel()) {
         @if (selectedHfModel(); as hfModel) {
           <!-- Selected model detail card -->
-          <div class="mb-4 rounded-sm border-2 border-primary-500 bg-primary-50 p-4 dark:border-primary-400 dark:bg-primary-900/20">
+          <div class="mb-4 rounded-sm border-2 border-primary-500 bg-gray-100 p-4 dark:border-primary-400 dark:bg-gray-800">
             <div class="flex items-start justify-between gap-4">
               <div class="flex-1">
                 <div class="flex items-center gap-2">
@@ -283,7 +283,7 @@
               <button
                 type="button"
                 (click)="clearHfModel()"
-                class="inline-flex items-center gap-1 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-500 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+                class="inline-flex items-center gap-1 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-500 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
               >
                 <ng-icon name="heroArrowPath" class="size-3.5" />
                 Change
@@ -383,11 +383,11 @@
             (click)="selectModel(model)"
             [class]="'flex flex-col rounded-sm border p-4 text-left transition-all ' +
               (selectedModel()?.model_id === model.model_id
-                ? 'border-primary-500 bg-primary-50 ring-2 ring-primary-500 dark:border-primary-400 dark:bg-primary-900/20 dark:ring-primary-400'
+                ? 'border-primary-500 bg-gray-100 ring-2 ring-primary-500 dark:border-primary-400 dark:bg-gray-800 dark:ring-primary-400'
                 : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-gray-600 dark:hover:bg-gray-800')"
           >
             <span class="text-sm/6 font-semibold text-gray-900 dark:text-white">{{ model.model_name }}</span>
-            <span class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ model.description }}</span>
+            <span class="mt-1 text-xs text-gray-600 dark:text-gray-300">{{ model.description }}</span>
             <span class="mt-3 text-xs font-medium text-gray-600 dark:text-gray-300">
               Instance: {{ model.default_instance_type }}
             </span>
@@ -526,7 +526,26 @@
             />
           </div>
 
-          <!-- Max Runtime -->
+                    <!-- Managed spot — opt-in -->
+          <div class="sm:col-span-2">
+            <label class="flex items-start gap-3 rounded-sm border border-gray-300 p-3 dark:border-gray-600">
+              <input
+                type="checkbox"
+                formControlName="useSpot"
+                class="mt-0.5 size-4 rounded-sm border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-gray-600"
+              />
+              <span class="text-sm/6">
+                <span class="font-medium text-gray-700 dark:text-gray-300">Use spot capacity</span>
+                <span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+                  Much cheaper, but the job waits longer to start and can be interrupted.
+                  It saves checkpoints and resumes where it left off, so nothing is lost —
+                  only the finish time is less predictable. Leave off if you need a result soon.
+                </span>
+              </span>
+            </label>
+          </div>
+
+<!-- Max Runtime -->
           <div>
             <label for="hp-runtime" class="block text-sm/6 font-medium text-gray-700 dark:text-gray-300">Max Runtime (hours)</label>
             <input
@@ -570,7 +589,7 @@
     </button>
     <a
       routerLink="/fine-tuning"
-      class="inline-flex items-center rounded-sm border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+      class="inline-flex items-center rounded-2xl border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
     >
       Cancel
     </a>

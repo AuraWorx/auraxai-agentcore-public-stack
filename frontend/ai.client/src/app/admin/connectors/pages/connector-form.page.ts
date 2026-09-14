@@ -176,7 +176,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                 <button
                   type="button"
                   (click)="copyCallbackUrl(created.callbackUrl || '')"
-                  class="inline-flex items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                  class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                   [appTooltip]="callbackCopied() ? 'Copied!' : 'Copy to clipboard'"
                 >
                   <ng-icon [name]="callbackCopied() ? 'heroClipboardDocumentCheck' : 'heroClipboard'" class="size-5" />
@@ -188,7 +188,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
               <button
                 type="button"
                 (click)="goBack()"
-                class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50"
               >
                 Done
               </button>
@@ -294,7 +294,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                       <label
-                        class="inline-flex cursor-pointer items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus-within:outline-hidden focus-within:ring-3 focus-within:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                        class="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus-within:outline-hidden focus-within:ring-3 focus-within:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                       >
                         {{ connectorForm.controls.iconData.value ? 'Replace' : 'Upload' }}
                         <input
@@ -308,7 +308,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                         <button
                           type="button"
                           (click)="removeUploadedIcon()"
-                          class="inline-flex items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                          class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                         >
                           Remove
                         </button>
@@ -352,7 +352,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                       <button
                         type="button"
                         (click)="copyCallbackUrl(loaded.callbackUrl || '')"
-                        class="inline-flex items-center gap-2 rounded-sm border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                        class="inline-flex items-center gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                         [appTooltip]="callbackCopied() ? 'Copied!' : 'Copy to clipboard'"
                       >
                         <ng-icon [name]="callbackCopied() ? 'heroClipboardDocumentCheck' : 'heroClipboard'" class="size-5" />
@@ -644,7 +644,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
               <button
                 type="submit"
                 [disabled]="isSubmitting() || connectorForm.invalid || !!credentialPairError()"
-                class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50"
+                class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-6 py-2.5 text-sm/6 font-semibold text-white shadow-xs hover:brightness-95 focus:outline-hidden focus:ring-3 focus:ring-primary-500/50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 @if (isSubmitting()) {
                   <app-spinner size="sm" variant="on-solid" label="Saving" />
@@ -658,7 +658,7 @@ const ICON_ACCEPTED_MIME_TYPES = [
                 type="button"
                 (click)="goBack()"
                 [disabled]="isSubmitting()"
-                class="rounded-sm border border-gray-300 bg-white px-6 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                class="rounded-2xl border border-gray-300 bg-white px-6 py-2.5 text-sm/6 font-semibold text-gray-700 hover:bg-gray-50 focus:outline-hidden focus:ring-3 focus:ring-gray-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
               >
                 Cancel
               </button>
@@ -775,6 +775,15 @@ export class ConnectorFormPage implements OnInit {
 
   /** Same tri-state tracking for the export-target mapping. */
   private readonly exportAdapterLoadedFromServer = signal<string>('');
+
+  /**
+   * The discovery URL loaded from the server. Update only sends the field
+   * when it actually changed: the backend treats a discovery change as a
+   * credential-rotation event, and the admin cannot rotate (the client
+   * secret is never readable back), so resending an unchanged URL would
+   * block every metadata-only edit on a discovery-URL connector.
+   */
+  private readonly discoveryLoadedFromServer = signal<string>('');
 
   /** Every file-source adapter shipped in the backend registry. */
   readonly fileSourceAdapters = computed(() =>
@@ -970,6 +979,7 @@ export class ConnectorFormPage implements OnInit {
       this.iconLoadedFromServer.set(connector.iconData ?? null);
       this.adapterLoadedFromServer.set(connector.fileSourceAdapterId ?? '');
       this.exportAdapterLoadedFromServer.set(connector.exportTargetAdapterId ?? '');
+      this.discoveryLoadedFromServer.set(connector.oauthDiscoveryUrl ?? '');
       this.selectedRoles.set(connector.allowedRoles.length > 0 ? connector.allowedRoles : ['*']);
       this.applyDiscoveryValidator();
     } catch (error) {
@@ -1118,8 +1128,16 @@ export class ConnectorFormPage implements OnInit {
           updates.clientId = formValue.clientId;
           updates.clientSecret = formValue.clientSecret;
         }
-        if (this.needsDiscovery() && formValue.oauthDiscoveryUrl) {
-          updates.oauthDiscoveryUrl = formValue.oauthDiscoveryUrl;
+        // Only send the discovery URL when the admin actually changed it —
+        // the backend requires a credential rotation alongside a discovery
+        // change, so an unchanged value would reject the whole save.
+        const currentDiscovery = formValue.oauthDiscoveryUrl || '';
+        if (
+          this.needsDiscovery() &&
+          currentDiscovery &&
+          currentDiscovery !== this.discoveryLoadedFromServer()
+        ) {
+          updates.oauthDiscoveryUrl = currentDiscovery;
         }
         await this.connectorsService.updateConnector(this.providerId()!, updates);
         this.router.navigate(['/admin/connectors']);

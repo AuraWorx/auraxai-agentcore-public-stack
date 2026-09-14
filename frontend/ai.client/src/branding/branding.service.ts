@@ -28,8 +28,16 @@ import {
   DEFAULT_GREETING_TEMPLATES,
   DEFAULT_LOGO,
   DEFAULT_PAGE_TITLE,
+  DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS,
+  DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
 } from './brand.defaults';
-import type { BrandConfig, BrandConfigError, BrandLogoAssets } from './brand.types';
+import type {
+  BrandConfig,
+  BrandConfigError,
+  BrandLogoAssets,
+  PartOfDay,
+  TimeOfDayGreetings,
+} from './brand.types';
 
 /** The normalized values `BrandingService` exposes, read once at construction. */
 interface ResolvedBranding {
@@ -37,6 +45,8 @@ interface ResolvedBranding {
   appName: string;
   greetingTemplates: readonly string[];
   fallbackGreetings: readonly string[];
+  timeOfDayGreetings: Readonly<Record<PartOfDay, readonly string[]>>;
+  timeOfDayFallbackGreetings: Readonly<Record<PartOfDay, readonly string[]>>;
   pageTitle: string;
   errors: BrandConfigError[];
 }
@@ -51,6 +61,10 @@ export class BrandingService {
   readonly greetingTemplates: readonly string[];
   /** Normalized fallback greeting list (>= 1 entry, or empty if none valid). */
   readonly fallbackGreetings: readonly string[];
+  /** Normalized part-of-day greeting pools, pooled with `greetingTemplates` at resolve time. */
+  readonly timeOfDayGreetings: Readonly<Record<PartOfDay, readonly string[]>>;
+  /** Normalized part-of-day fallback pools, pooled with `fallbackGreetings`. */
+  readonly timeOfDayFallbackGreetings: Readonly<Record<PartOfDay, readonly string[]>>;
   /** Normalized browser page title. */
   readonly pageTitle: string;
   /** Non-fatal problems found while reading Brand_Config (for surfacing/logging). */
@@ -62,6 +76,8 @@ export class BrandingService {
     this.appName = resolved.appName;
     this.greetingTemplates = resolved.greetingTemplates;
     this.fallbackGreetings = resolved.fallbackGreetings;
+    this.timeOfDayGreetings = resolved.timeOfDayGreetings;
+    this.timeOfDayFallbackGreetings = resolved.timeOfDayFallbackGreetings;
     this.pageTitle = resolved.pageTitle;
     this.configErrors = resolved.errors;
 
@@ -93,11 +109,27 @@ export class BrandingService {
         throw new Error('BRAND_CONFIG is absent or not an object');
       }
 
-      const { logo, appName, greetingTemplates, fallbackGreetings, pageTitle, errors } = normalizeBrandConfig(
-        raw as Partial<BrandConfig>,
-      );
+      const {
+        logo,
+        appName,
+        greetingTemplates,
+        fallbackGreetings,
+        timeOfDayGreetings,
+        timeOfDayFallbackGreetings,
+        pageTitle,
+        errors,
+      } = normalizeBrandConfig(raw as Partial<BrandConfig>);
 
-      return { logo, appName, greetingTemplates, fallbackGreetings, pageTitle, errors };
+      return {
+        logo,
+        appName,
+        greetingTemplates,
+        fallbackGreetings,
+        timeOfDayGreetings,
+        timeOfDayFallbackGreetings,
+        pageTitle,
+        errors,
+      };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       return {
@@ -105,6 +137,8 @@ export class BrandingService {
         appName: DEFAULT_APP_NAME,
         greetingTemplates: DEFAULT_GREETING_TEMPLATES,
         fallbackGreetings: DEFAULT_FALLBACK_GREETINGS,
+        timeOfDayGreetings: DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+        timeOfDayFallbackGreetings: DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS,
         pageTitle: DEFAULT_PAGE_TITLE,
         errors: [
           {

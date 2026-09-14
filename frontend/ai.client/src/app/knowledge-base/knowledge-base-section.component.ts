@@ -18,6 +18,7 @@ import {
   heroExclamationTriangle,
   heroGlobeAlt,
   heroLink,
+  heroMagnifyingGlass,
   heroPlus,
   heroSparkles,
   heroTrash,
@@ -40,6 +41,10 @@ import {
   WebSourceDialogComponent,
   WebSourceDialogData,
 } from '../assistants/components/web-source-dialog.component';
+import {
+  ExtractedContentDialogComponent,
+  ExtractedContentDialogData,
+} from '../assistants/components/extracted-content-dialog.component';
 import { FileSourceService } from '../assistants/services/file-source.service';
 import { WebSourceService } from '../assistants/services/web-source.service';
 import { SyncPolicyService } from '../assistants/services/sync-policy.service';
@@ -93,6 +98,7 @@ import { parseIso } from '../utils/date';
       heroExclamationTriangle,
       heroGlobeAlt,
       heroLink,
+      heroMagnifyingGlass,
       heroPlus,
       heroSparkles,
       heroTrash,
@@ -253,8 +259,18 @@ export class KnowledgeBaseSectionComponent implements OnDestroy {
    * reads `uploading → processing → ready` (+ `failed`); legacy assistants keep
    * the finer-grained words they still emit. The word "vector" appears nowhere,
    * per Requirement 23.6.
+   *
+   * `provisioning` is checked before the engine split and reads the same either
+   * way. A born-managed first upload sets it in the same request that declares the
+   * knowledge base managed, but the engine here comes from the upgrade-status
+   * poll — which may not have caught up yet — so keying this label on the engine
+   * would show a first-time author "Uploading" for the minutes their knowledge
+   * base is being built. The status itself is unambiguous, so it answers alone.
    */
   statusLabel(docStatus: DocumentStatus): string {
+    if (docStatus === 'provisioning') {
+      return 'Provisioning knowledge base…';
+    }
     if (this.isManagedEngine()) {
       switch (docStatus) {
         case 'complete':
@@ -1051,8 +1067,30 @@ export class KnowledgeBaseSectionComponent implements OnDestroy {
     }
   }
 
-  async downloadDocument(documentId: string): Promise<void> {
+  /**
+   * Open the extracted-content panel for a document (§5.41, task 16.2).
+   *
+   * The assistant answers from what the knowledge base extracted, not from the file's
+   * original layout, and on the managed engine those can differ badly — a
+   * column-structured flowchart is flattened at ingestion. This is where an owner sees
+   * the difference instead of inferring it from a wrong answer.
+   */
+  async viewExtractedContent(doc: Document): Promise<void> {
     const recordId = this.id();
+    if (!recordId) {
+      return;
+    }
+    this.dialog.open<void, ExtractedContentDialogData>(ExtractedContentDialogComponent, {
+      data: {
+        assistantId: recordId,
+        documentId: doc.documentId,
+        filename: doc.filename,
+      },
+      hasBackdrop: false,
+    });
+  }
+
+  async downloadDocument(documentId: string): Promise<void> {    const recordId = this.id();
     if (!recordId) {
       return;
     }

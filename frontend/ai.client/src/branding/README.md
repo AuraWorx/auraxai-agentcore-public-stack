@@ -33,8 +33,9 @@ src/branding/brand.config.ts
 1. **`App_Name`** — edit the `appName` field. This string is used as the accessible alt text on every logo image in the sidenav and the chat greeting block, so set it to your organization or product name (e.g. `"Acme Corp Logo"`).
 2. **`Greeting_Templates`** — edit the `greetingTemplates` array. Each entry is a greeting shown on a new/empty chat when the current user's first name is known. Use the `{name}` placeholder anywhere you want the user's first name inserted (see [Greeting behavior](#3-greeting-text-and-the-name-placeholder) below).
 3. **`Fallback_Greetings`** — edit the `fallbackGreetings` array. Each entry is a greeting shown on a new/empty chat when the current user's first name is not available. These strings should not rely on a name.
-4. **`Brand_Color`** — edit the `colors.primary`, `colors.secondary`, and `colors.tertiary` hex values. Each one is a single hex color that drives that role's entire color scale across both light and dark themes (see [Brand colors](#5-brand-colors-and-color-scale-regeneration) below).
-5. **`Brand_Surface`** — edit the `surfaces.light`, `surfaces.dark`, and `surfaces.raised` hex values. These drive the app's page background and raised-surface colors in both themes (see [Surface colors](#4-surface-colors-page-background-dark-background-raised-surfaces) below).
+4. **`Time_Of_Day_Greetings`** — edit the `timeOfDayGreetings` and `timeOfDayFallbackGreetings` objects. Each has a `morning`, `afternoon`, `evening`, and `night` bucket, shown only during that part of the viewer's own day. They are pooled *with* the two arrays above rather than replacing them, so if you edit `greetingTemplates` and leave these alone, roughly half the greetings your users see will still be the stock ones. Set a bucket to `[]` to say nothing special at that hour.
+5. **`Brand_Color`** — edit the `colors.primary`, `colors.secondary`, and `colors.tertiary` hex values. Each one is a single hex color that drives that role's entire color scale across both light and dark themes (see [Brand colors](#5-brand-colors-and-color-scale-regeneration) below).
+6. **`Brand_Surface`** — edit the `surfaces.light`, `surfaces.dark`, and `surfaces.raised` hex values. These drive the app's page background and raised-surface colors in both themes (see [Surface colors](#4-surface-colors-page-background-dark-background-raised-surfaces) below).
 
 ### A worked example
 
@@ -56,6 +57,24 @@ Greeting templates support a `{name}` placeholder. At runtime, every occurrence 
 - If the current user's first name **is not available**, a `Fallback_Greetings` entry is shown instead (no substitution is performed, since there is no name to insert).
 - If `Greeting_Templates` is empty or unreadable, the fallback chain also applies — a `Fallback_Greetings` entry is shown.
 - If both `Greeting_Templates` and `Fallback_Greetings` are empty or unreadable, a built-in default greeting is shown instead (a fixed string containing no `{name}` placeholder), so the chat greeting is never blank.
+
+### Time-of-day greetings
+
+`Time_Of_Day_Greetings` adds a second pool that only applies during its own part of the day:
+
+| Bucket | Hours (viewer's local clock) |
+|---|---|
+| `morning` | 05:00–11:59 |
+| `afternoon` | 12:00–16:59 |
+| `evening` | 17:00–21:59 |
+| `night` | 22:00–04:59 |
+
+The pool a greeting is drawn from is **this hour's bucket plus the any-time array**, so a morning visitor may see "Good morning, {name}!" or "What can I do for you, {name}?" — the time-aware lines add variety rather than taking it away. The hour comes from the browser, so it always matches where the user is, and it is read once when the page loads: the heading will not re-write itself from "Good afternoon" to "Good evening" while someone is reading it.
+
+Each bucket follows the same rules as the flat arrays (1–50 entries, 1–500 characters each, `{name}` substituted in `timeOfDayGreetings` only). Two differences are worth knowing:
+
+- Both objects are **optional**. Omit either one, or any single bucket, and the built-in defaults apply for what you left out.
+- An **explicitly empty** bucket (`night: []`) is honoured as "stay quiet at that hour" rather than replaced with the defaults — it is the only way to turn a bucket off.
 
 ## 4. Surface colors (page background, dark background, raised surfaces)
 
@@ -138,17 +157,33 @@ Utilities: `primary-*`, `secondary-*`, `tertiary-*`. Generated into `src/styles/
 | Solid fill with white text | `bg-primary-accessible` plus `hover:brightness-95` |
 | Colored text or icon on a light surface | `text-primary-accessible` |
 | Colored text or icon on a dark surface | `dark:text-primary-accessible-dark` |
-| Decorative tint (badge or panel background) | `bg-primary-50`, `dark:bg-primary-900/30` |
+| Badge, chip, icon tile or selected-row fill | `bg-gray-100` + `text-primary-accessible`, `dark:bg-gray-700` + `dark:text-primary-50` |
 | Focus ring | `ring-primary-accessible/50` |
 
 The two `accessible` variants exist because a numbered step is not safe for arbitrary brand colors. A bright configured color at step 500 or 600 can leave white label text unreadable. The build picks a darker or lighter variant automatically, adjusting only lightness so the configured hue is preserved, and leaves the color untouched when it already has enough contrast.
 
-Two consequences worth knowing:
+A few consequences worth knowing:
 
 - **Solid fills need no `dark:` override.** What matters is the contrast between the fill and its white text, which does not change between light and dark mode. Lightening the fill in dark mode would only reduce it.
 - **Hover uses a brightness filter, not a darker step.** For a light configured color, the accessible variant can already be darker than step 700, so `hover:bg-primary-700` would brighten the button on hover and lose the contrast guarantee.
 
-Numbered steps are still fine for decorative tints, where nothing needs to stay legible against the color. If text sits on the tint, check it.
+- **The numbered scale is not a tint ramp.** Each step moves lightness only and keeps
+  the configured chroma, so `primary-50` is not the pale wash its name suggests. At the
+  Boise State blue it resolves to `rgb(118, 179, 255)` — a saturated mid-blue. Never use
+  `bg-primary-50`, `bg-primary-100` or `bg-primary-200` as a fill: `text-primary-accessible`
+  on `bg-primary-100` measures 4.13:1 and fails AA, and even where a pair passes it reads
+  as a blue blob behind small text. Use a neutral surface and put the brand in the text.
+  The `state-*` scales *are* real tints (`state-success-50` = `rgb(240, 253, 244)`), which
+  is why this looks safe by analogy and is not.
+
+  A fraction is a different thing: `bg-primary-50/40` composites to `rgb(200, 225, 255)`,
+  an actual pale wash. Those are fine for large transient surfaces such as a drag-and-drop
+  target.
+
+- **Pick the dark text from the dark surface.** `dark:text-primary-accessible-dark` is
+  guaranteed against the *page*, not against a tinted fill — on `dark:bg-primary-900/30`
+  it measures 4.15:1 and fails. On a neutral `dark:bg-gray-700` chip, use
+  `dark:text-primary-50` (4.74:1).
 
 ### Status
 

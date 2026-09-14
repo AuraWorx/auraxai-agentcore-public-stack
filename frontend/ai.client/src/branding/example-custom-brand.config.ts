@@ -36,6 +36,23 @@ export const BRAND_CONFIG: BrandConfig = {
   'What can I do for you?',
   "Let's get started!",
   ],
+
+  // Only shown during their own part of the viewer's day, pooled with the two
+  // arrays above. Buckets you omit fall back to the built-in defaults; a
+  // bucket set to [] stays quiet at that hour — here, nobody is at the club at
+  // 3am, so the night bucket says nothing club-specific.
+  timeOfDayGreetings: {
+    morning: ['Good morning, {name}! Ready to train?', 'Early session, {name}?'],
+    afternoon: ['Good afternoon, {name}!', 'Squeezing one in, {name}?'],
+    evening: ['Good evening, {name}!', 'Evening session, {name}?'],
+    night: [],
+  },
+  timeOfDayFallbackGreetings: {
+    morning: ['Good morning! Ready to train?', 'Early session?'],
+    afternoon: ['Good afternoon!', 'Squeezing one in?'],
+    evening: ['Good evening!', 'Evening session?'],
+    night: [],
+  },
   colors: {
     primary: '#009C46',
     secondary: '#8E3CEB',

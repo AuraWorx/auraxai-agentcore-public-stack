@@ -176,7 +176,7 @@ export interface User {
                 <span class="flex-1 truncate">What's New</span>
                 @if (unreadCount() > 0) {
                   <span
-                    class="rounded-full bg-primary-600 px-1.5 py-0.5 text-xs/4 font-medium text-white"
+                    class="rounded-full bg-primary-accessible px-1.5 py-0.5 text-xs/4 font-medium text-white"
                     [attr.aria-label]="unreadLabel()"
                   >
                     {{ unreadCount() }}

@@ -1,10 +1,15 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { AgentMentionService } from '../../../../agents/services/agent-mention.service';
+import { SkillCommandService } from '../../../../services/skill/skill-command.service';
 
-/** One run of message text, flagged as an Agent `@`-mention or as plain prose. */
+/**
+ * One run of message text, flagged as an Agent `@`-mention, a `/` skill command, or as
+ * plain prose.
+ */
 export interface MentionSegment {
   text: string;
   isMention: boolean;
+  isCommand?: boolean;
 }
 
 function escapeRegExp(value: string): string {
@@ -55,16 +60,75 @@ export function splitMentions(text: string, names: readonly string[]): MentionSe
 }
 
 /**
+ * Refine the plain runs of `segments`, marking every `/slug` that names a known skill.
+ *
+ * Runs as a second pass over what {@link splitMentions} left as prose, rather than as one
+ * combined pattern, because the two are matched on different things: a mention is matched
+ * against known Agent *names* (which contain spaces), a command against known skill
+ * *slugs* (which cannot). A mention is never re-examined — `@Brand/Deck` is one address.
+ *
+ * The token rule is the composer's, so what reads back as a command in the thread is
+ * exactly what the composer would have sent as one: `and/or`, `24/7`, `src/app` and
+ * `/usr/bin` stay prose, and an unknown slug stays prose too.
+ */
+export function splitSkillCommands(
+  segments: MentionSegment[],
+  slugs: readonly string[],
+): MentionSegment[] {
+  if (slugs.length === 0) {
+    return segments;
+  }
+
+  const known = new Set(slugs.map((slug) => slug.toLowerCase()));
+  const pattern = /(^|\s)(\/[a-z0-9][a-z0-9-]*)(?![\w\-/])/gi;
+
+  return segments.flatMap((segment) => {
+    if (segment.isMention || !segment.text.includes('/')) {
+      return [segment];
+    }
+
+    const out: MentionSegment[] = [];
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+
+    while ((match = pattern.exec(segment.text)) !== null) {
+      if (!known.has(match[2].slice(1).toLowerCase())) {
+        continue;
+      }
+      const start = match.index + match[1].length;
+      if (start > cursor) {
+        out.push({ text: segment.text.slice(cursor, start), isMention: false });
+      }
+      out.push({ text: match[2], isMention: false, isCommand: true });
+      cursor = start + match[2].length;
+    }
+
+    if (out.length === 0) {
+      return [segment];
+    }
+    if (cursor < segment.text.length) {
+      out.push({ text: segment.text.slice(cursor), isMention: false });
+    }
+    return out;
+  });
+}
+
+/**
  * Renders user message text with `@`-mentions set apart from what the user typed.
  *
  * The literal `@Name` is what the composer left in the message (D11), so the thread reads
  * back exactly as it was sent; this only changes its weight so a mention is legible as an
  * address rather than as prose.
  *
- * Names come from {@link AgentMentionService}, the same list the composer's `@` menu offers.
- * It is session-cached and already warmed by the composer, so this costs nothing on the
- * render path; if it has not loaded yet the text simply renders plain and re-renders bold
- * when the signal fills in.
+ * `/` skill commands get the same treatment for the same reason: the literal `/slug` is
+ * both what the user typed and the binding itself, so a thread that rendered it as prose
+ * would hide why one answer followed a recipe.
+ *
+ * Names come from {@link AgentMentionService} and slugs from {@link SkillCommandService},
+ * the same lists the composer's two menus offer. Both are session-cached and already
+ * warmed by the composer, so this costs nothing on the render path; if either has not
+ * loaded yet the text simply renders plain and re-renders when the signal fills in.
  */
 @Component({
   selector: 'app-mention-text',
@@ -75,6 +139,8 @@ export function splitMentions(text: string, names: readonly string[]): MentionSe
   template: `@for (segment of segments(); track $index) {
     @if (segment.isMention) {
       <span class="font-semibold text-white">{{ segment.text }}</span>
+    } @else if (segment.isCommand) {
+      <span class="font-mono font-semibold text-white">{{ segment.text }}</span>
     } @else {
       <span>{{ segment.text }}</span>
     }
@@ -89,18 +155,24 @@ export class MentionTextComponent {
   readonly text = input.required<string>();
 
   private readonly mentionService = inject(AgentMentionService);
+  private readonly skillCommandService = inject(SkillCommandService);
 
   constructor() {
-    // Warm the candidate list. Reloading straight into a thread renders its messages
-    // before the composer has ever been focused, and without the names every mention
-    // would read back as plain prose. `load()` is idempotent and session-cached.
+    // Warm both candidate lists. Reloading straight into a thread renders its messages
+    // before the composer has ever been focused, and without the names and slugs every
+    // mention and command would read back as plain prose. Both `load()`s are idempotent
+    // and session-cached.
     void this.mentionService.load();
+    void this.skillCommandService.load();
   }
 
   readonly segments = computed(() =>
-    splitMentions(
-      this.text(),
-      this.mentionService.mentionable().map((agent) => agent.name),
+    splitSkillCommands(
+      splitMentions(
+        this.text(),
+        this.mentionService.mentionable().map((agent) => agent.name),
+      ),
+      this.skillCommandService.commands().map((command) => command.slug),
     ),
   );
 }

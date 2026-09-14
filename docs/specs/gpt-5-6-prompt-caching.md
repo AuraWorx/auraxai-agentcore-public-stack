@@ -728,7 +728,7 @@ default, it just becomes selectable).
 
 `Cost Analytics` computes `savings = cacheRead x (inputPrice - cacheReadPrice)`
 per message from the pricing snapshot
-(`app_api/sessions/services/metadata.py:257`). With `cacheReadPricePerMtok`
+(`shared/sessions/metadata.py:710`). With `cacheReadPricePerMtok`
 absent it reads as `0`, so the same missing rate produced two compounding
 errors on `gpt-5.4`:
 

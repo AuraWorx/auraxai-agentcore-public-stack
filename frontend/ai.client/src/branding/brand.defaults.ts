@@ -11,7 +11,7 @@
  * See design.md "Data Models" and "Default_Branding" for details.
  */
 
-import type { BrandColors, BrandLogoAssets, BrandSurfaces } from './brand.types';
+import type { BrandColors, BrandLogoAssets, BrandSurfaces, PartOfDay } from './brand.types';
 
 /** Default light/dark logo paths (served from /public). */
 export const DEFAULT_LOGO: BrandLogoAssets = Object.freeze({
@@ -50,6 +50,85 @@ export const DEFAULT_FALLBACK_GREETINGS: readonly string[] = Object.freeze([
   'What can I do for you?',
   "Let's get started!",
 ]);
+
+/**
+ * Default greetings that only make sense during their own part of the day.
+ *
+ * Pooled *with* `DEFAULT_GREETING_TEMPLATES`, not instead of it: half the draw
+ * is a line that knows what time it is, half is a line that works any time.
+ * Pooling rather than replacing is what keeps the app from feeling like it has
+ * exactly one thing to say each morning.
+ *
+ * The two arrays above are deliberately left alone — they are pinned verbatim
+ * by `brand.defaults.golden.spec.ts` as the pre-branding-refactor greetings,
+ * and that guard is worth more than tidiness.
+ */
+export const DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES: Readonly<
+  Record<PartOfDay, readonly string[]>
+> = Object.freeze({
+  morning: Object.freeze([
+    'Good morning, {name}!',
+    'Bright and early, {name}.',
+    "Morning, {name} — what's first today?",
+    "Coffee's on. What are we working on, {name}?",
+    'Fresh start, {name}. Where do we begin?',
+  ]),
+  afternoon: Object.freeze([
+    'Good afternoon, {name}!',
+    'Afternoon, {name}. What are we working on?',
+    'Back at it, {name}?',
+    "What's next on the list, {name}?",
+    'Afternoon, {name} — where should we pick up?',
+  ]),
+  evening: Object.freeze([
+    'Good evening, {name}!',
+    'Evening, {name}. What can I take off your plate?',
+    'One more thing before you log off, {name}?',
+    'Still going, {name}? What do you need?',
+    'Evening, {name}. Where should we start?',
+  ]),
+  night: Object.freeze([
+    'Burning the midnight oil, {name}?',
+    'Working late tonight, {name}?',
+    'The quiet hours, {name}. What are we tackling?',
+    'Still up, {name}? Let me help.',
+    'Late one, {name}. Where should we start?',
+  ]),
+});
+
+/** Part-of-day counterparts to `DEFAULT_FALLBACK_GREETINGS`, used when no name is known. */
+export const DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS: Readonly<
+  Record<PartOfDay, readonly string[]>
+> = Object.freeze({
+  morning: Object.freeze([
+    'Good morning!',
+    'Bright and early.',
+    "Morning — what's first today?",
+    "Coffee's on. What are we working on?",
+    'Fresh start. Where do we begin?',
+  ]),
+  afternoon: Object.freeze([
+    'Good afternoon!',
+    'What are we working on this afternoon?',
+    'Back at it?',
+    "What's next on the list?",
+    'Afternoon — where should we pick up?',
+  ]),
+  evening: Object.freeze([
+    'Good evening!',
+    'What can I take off your plate tonight?',
+    'One more thing before you log off?',
+    'Still going? What do you need?',
+    'Evening. Where should we start?',
+  ]),
+  night: Object.freeze([
+    'Burning the midnight oil?',
+    'Working late tonight?',
+    'The quiet hours. What are we tackling?',
+    'Still up? Let me help.',
+    'Late one. Where should we start?',
+  ]),
+});
 
 /** Built-in ultimate-default greeting when templates and fallbacks are both empty (Requirement 4.8). */
 export const DEFAULT_GREETING = 'How can I help you today?';

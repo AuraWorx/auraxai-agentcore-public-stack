@@ -275,7 +275,7 @@ AVAILABLE_MODELS: List[AvailableModel] = [
         description="7.6B parameter LLaVA-NeXT on Mistral, higher-resolution tiling than 1.5 and correspondingly slower per record",
         task_type=_VLM,
         default_instance_type="ml.g6e.xlarge",
-        default_hyperparameters=_hyperparameters(_VLM, context_length="2048"),
+        default_hyperparameters=_hyperparameters(_VLM, context_length="4096"),
     ),
     AvailableModel(
         model_id="qwen25-vl-7b-instruct",
@@ -284,7 +284,7 @@ AVAILABLE_MODELS: List[AvailableModel] = [
         description="8.3B parameter vision-language model from Alibaba with dynamic resolution, strong on documents, charts and OCR-heavy images",
         task_type=_VLM,
         default_instance_type="ml.g6e.xlarge",
-        default_hyperparameters=_hyperparameters(_VLM, context_length="2048"),
+        default_hyperparameters=_hyperparameters(_VLM, context_length="4096"),
     ),
     AvailableModel(
         model_id="llava-1.6-34b",
@@ -299,7 +299,7 @@ AVAILABLE_MODELS: List[AvailableModel] = [
         default_instance_type="ml.g6e.4xlarge",
         default_hyperparameters=_hyperparameters(
             _VLM,
-            context_length="2048",
+            context_length="4096",
             gradient_accumulation_steps="16",
             lora_r="8",
             lora_alpha="16",
@@ -343,6 +343,11 @@ class CreateJobRequest(BaseModel):
     hyperparameters: Optional[Dict[str, str]] = None
     max_runtime_seconds: int = Field(default=86400, le=432000, gt=0)
     custom_huggingface_model_id: Optional[str] = None
+    #: Run on managed spot capacity. Opt-in, not default: spot trades a large
+    #: discount for a longer queue, and measured on-demand waits for these GPU
+    #: families already ran 28-58 minutes — a researcher who needs a result
+    #: this afternoon should be able to pay for certainty.
+    use_spot: bool = False
 
 
 class JobResponse(BaseModel):
@@ -369,6 +374,7 @@ class JobResponse(BaseModel):
     error_message: Optional[str] = None
     max_runtime_seconds: int = 86400
     training_progress: Optional[float] = None
+    use_spot: bool = False
 
 
 class JobListResponse(BaseModel):

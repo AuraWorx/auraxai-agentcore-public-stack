@@ -54,15 +54,10 @@ TASK_MODULES = {
 }
 
 
-def str2bool(value):
-    """Parse a boolean hyperparameter.
-
-    SageMaker passes every hyperparameter as a string, so ``bool("false")`` —
-    which is True — is the trap this exists to avoid.
-    """
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
+#: Re-exported so the container script and app-api parse boolean
+#: hyperparameters identically — a disagreement here would let app-api admit a
+#: job the trainer then runs with different settings.
+str2bool = task_types.str2bool
 
 
 def resolve_task_module(task_type):
@@ -103,6 +98,10 @@ def parse_args(argv=None):
     parser.add_argument("--context_length", type=int, default=512)
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    # Kill switch. Checkpointing is what makes a restart — a spot interruption,
+    # or a job killed at the budget-clamped MaxRuntime — resume instead of
+    # starting over, so it is on unless deliberately turned off.
+    parser.add_argument("--checkpointing", type=str2bool, default=True)
 
     # Generative VLM (LoRA) hyperparameters.  Ignored by the classification
     # tasks, which train every weight of a much smaller model.

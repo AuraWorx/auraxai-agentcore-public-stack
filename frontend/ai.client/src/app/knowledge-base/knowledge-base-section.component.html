@@ -27,7 +27,7 @@
       <div class="flex items-start gap-3">
         <ng-icon
           name="heroSparkles"
-          class="mt-0.5 size-5 shrink-0 text-primary-600 dark:text-primary-400"
+          class="mt-0.5 size-5 shrink-0 text-primary-accessible dark:text-primary-accessible-dark"
           aria-hidden="true"
         />
         <div class="min-w-0 flex-1">
@@ -44,7 +44,7 @@
           </p>
           <button
             type="button"
-            class="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary-accessible px-3 py-1.5 text-sm/5 font-medium text-white shadow-xs transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:opacity-60"
+            class="mt-3 inline-flex items-center gap-1.5 rounded-2xl bg-primary-accessible px-3 py-1.5 text-sm/5 font-medium text-white shadow-xs transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:opacity-60"
             [disabled]="upgradeBusy()"
             (click)="startUpgrade()"
           >
@@ -152,7 +152,7 @@
           @if (upgradeStatus()?.canUpgrade) {
             <button
               type="button"
-              class="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm/5 font-medium text-gray-800 shadow-xs hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-state-warning-600 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              class="mt-3 inline-flex items-center gap-1.5 rounded-2xl border border-gray-300 bg-white px-3 py-1.5 text-sm/5 font-medium text-gray-800 shadow-xs hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-state-warning-600 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
               [disabled]="upgradeBusy()"
               (click)="retryUpgrade()"
             >
@@ -478,10 +478,10 @@
                than left readable only in the KB record. -->
           <span
             class="inline-flex items-center rounded-full px-2 py-0.5 text-xs/4 font-medium"
-            [class.bg-primary-50]="isManagedEngine()"
+            [class.bg-gray-100]="isManagedEngine()"
             [class.text-primary-accessible]="isManagedEngine()"
-            [class.dark:bg-primary-500/10]="isManagedEngine()"
-            [class.dark:text-primary-accessible-dark]="isManagedEngine()"
+            [class.dark:bg-gray-700]="isManagedEngine()"
+            [class.dark:text-primary-50]="isManagedEngine()"
             [class.bg-gray-100]="!isManagedEngine()"
             [class.text-gray-600]="!isManagedEngine()"
             [class.dark:bg-gray-700]="!isManagedEngine()"
@@ -568,10 +568,19 @@
             @if (doc.status === 'complete') {
               <button
                 type="button"
+                (click)="viewExtractedContent(doc)"
+                title="View extracted content"
+                [attr.aria-label]="'View the content extracted from ' + doc.filename"
+                class="flex size-8 shrink-0 items-center justify-center rounded-2xl text-gray-400 hover:bg-gray-100 hover:text-primary-accessible focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-primary-50"
+              >
+                <ng-icon name="heroMagnifyingGlass" class="size-4" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
                 (click)="downloadDocument(doc.documentId)"
                 title="Download document"
                 [attr.aria-label]="'Download ' + doc.filename"
-                class="flex size-8 shrink-0 items-center justify-center rounded-2xl text-gray-400 hover:bg-primary-50 hover:text-primary-accessible focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-500 dark:hover:bg-primary-500/10 dark:hover:text-primary-accessible-dark"
+                class="flex size-8 shrink-0 items-center justify-center rounded-2xl text-gray-400 hover:bg-gray-100 hover:text-primary-accessible focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-primary-50"
               >
                 <ng-icon name="heroArrowDownTray" class="size-4" aria-hidden="true" />
               </button>

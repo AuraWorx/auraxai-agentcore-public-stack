@@ -43,6 +43,7 @@ from apis.shared.quota import (
 )
 
 from apis.shared.rbac.service import get_app_role_service
+from apis.shared.skills.bundle import slugify_skill_name
 from apis.inference_api.chat.agent_binding_resolver import (
     AgentBindingBlockedError,
     resolve_agent_invocation,
@@ -1204,6 +1205,55 @@ def _apply_enabled_skills_filter(
         return []
     requested = set(enabled_skills)
     return [sid for sid in accessible_skill_ids if sid in requested]
+
+
+def _resolve_invoked_skill_slugs(
+    effective_skill_ids: Optional[list[str]], invoked_skills: Optional[list[str]]
+) -> list[str]:
+    """Activation slugs for the skills the user named with a `/` command.
+
+    Intersected against the turn's **effective** set — the same narrow-never-grant
+    rule ``_apply_enabled_skills_filter`` applies, re-run here because the effective
+    set can still shrink after that call (an Agent's skill bindings replace it
+    wholesale). A slash command for a skill the turn does not actually disclose is
+    dropped rather than honoured: the directive would name a skill that is absent
+    from ``<available_skills>``, and the model would burn a tool call discovering
+    that.
+
+    Returns slugs, not ids, because the slug is the activation key the ``skills``
+    tool takes — the id never appears in anything the model can see.
+    """
+    if not invoked_skills or not effective_skill_ids:
+        return []
+    requested = set(invoked_skills)
+    # Ordered by the effective set, not by the request: the directive is part of
+    # the persisted message, and a list whose order followed client input would
+    # differ between two turns that named the same skills.
+    return [slugify_skill_name(sid) for sid in effective_skill_ids if sid in requested]
+
+
+def _build_skill_invocation_note(skill_slugs: list[str]) -> str:
+    """Directive appended to a turn whose user invoked skills by slash command.
+
+    A slash command is an explicit instruction, not a hint — the user picked the
+    skill by name from a menu. But the only activation path is the plugin's
+    ``skills`` tool, which the *model* has to call, so "explicit" has to be
+    expressed as a directive rather than enforced by pre-loading the instructions
+    (doing that server-side would duplicate the plugin's response formatting and
+    bypass its activation-state tracking).
+
+    Kept to one line per skill. It rides the user message, so it is paid once as
+    input on this turn and then again as cached history on every later turn of the
+    session; the disclosure block it points at is already in the prefix either way,
+    so this is the whole cost of the feature.
+    """
+    named = ", ".join(f"`{slug}`" for slug in skill_slugs)
+    plural = "s" if len(skill_slugs) > 1 else ""
+    return (
+        f"[The user invoked the {named} skill{plural} with a slash command. "
+        f"Activate {'each' if plural else 'it'} with the `skills` tool before "
+        "answering, and follow the loaded instructions for this message.]"
+    )
 
 
 @router.post("/invocations")
@@ -2629,6 +2679,21 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 if interrupted_turn_reason:
                     final_message = (
                         f"{_build_interruption_note(interrupted_turn_reason)}\n\n{final_message}"
+                    )
+
+                # Slash commands: the user named one or more skills in the
+                # composer. Appended LAST, after every prepended note, so the
+                # directive is the closest thing to the model's first token —
+                # an instruction about what to do with the message it follows.
+                # Narrowed against the effective set here rather than at parse
+                # time because an Agent's skill bindings can still have
+                # replaced that set above.
+                invoked_skill_slugs = _resolve_invoked_skill_slugs(
+                    effective_skill_ids, input_data.invoked_skills
+                )
+                if invoked_skill_slugs:
+                    final_message = (
+                        f"{final_message}\n\n{_build_skill_invocation_note(invoked_skill_slugs)}"
                     )
 
             message_will_be_modified = (

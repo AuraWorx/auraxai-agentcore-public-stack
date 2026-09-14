@@ -1,6 +1,6 @@
 import { Component, computed, effect, input, output, inject, signal, PLATFORM_ID } from '@angular/core';
 import { isPlatformBrowser, NgTemplateOutlet } from '@angular/common';
-import { Message } from '../../services/models/message.model';
+import { Message, ToolUseData } from '../../services/models/message.model';
 import type { Artifact } from '../../services/artifacts/artifact.model';
 import { UserMessageComponent } from './components/user-message.component';
 import { AssistantMessageComponent } from './components/assistant-message.component';
@@ -33,7 +33,76 @@ import {
 } from '../../../services/tool-approval/tool-approval.service';
 import { CompactionSummaryService } from '../../services/chat/compaction-summary.service';
 import { ChatStateService } from '../../services/chat/chat-state.service';
+import { ToolInsightService } from '../../services/chat/tool-insight.service';
 import { StreamParserService } from '../../services/chat/stream-parser.service';
+
+/**
+ * One renderable unit inside a turn: the user's message, or an uninterrupted
+ * run of assistant messages.
+ *
+ * The run is the important half. The agent loop starts a new Bedrock message
+ * at every tool round trip, so a four-tool answer arrives as five assistant
+ * messages. Rendered one card each — with a copy button and metadata row
+ * apiece — a single answer became a column of near-empty boxes, and no tool
+ * rail could ever group two calls because they were never in the same
+ * message. Grouping them into a run gives one card, one set of actions, and
+ * one block stream for `AssistantMessageComponent` to collapse.
+ *
+ * A mid-turn steer (a user message inside a streaming turn) deliberately
+ * BREAKS a run: the user interjected, and the words on either side of that
+ * interjection are answers to different things.
+ */
+interface TurnSegment {
+  key: string;
+  kind: 'user' | 'assistant';
+  messages: Message[];
+  /** Last message of the run — what per-turn affordances anchor to. */
+  last: Message;
+}
+
+interface Turn {
+  key: string;
+  messages: Message[];
+  segments: TurnSegment[];
+}
+
+/**
+ * Whether a message is Bedrock protocol scaffolding rather than something a
+ * person said.
+ *
+ * Tool results come back as USER-role messages carrying nothing but
+ * `toolResult` blocks. They render at zero height — invisible to the reader —
+ * but they sit between every pair of assistant messages in a tool-using turn.
+ * Treated as real user messages they break the assistant run at every single
+ * tool call, which is precisely the grouping this component is trying to do,
+ * and they start a spurious turn group on top of that.
+ *
+ * A mid-turn steer is the case this must NOT catch: that is a real user
+ * message with real text, and the words on either side of it are answers to
+ * different things, so it genuinely should break the run.
+ */
+function isProtocolScaffolding(message: Message): boolean {
+  if (message.role !== 'user') return false;
+  return message.content.every((block) => block.type === 'toolResult');
+}
+
+function segmentTurn(messages: readonly Message[]): TurnSegment[] {
+  const segments: TurnSegment[] = [];
+  for (const message of messages) {
+    // Invisible scaffolding must not break the run it sits inside.
+    if (isProtocolScaffolding(message)) continue;
+
+    const kind = message.role === 'user' ? 'user' : 'assistant';
+    const open = segments[segments.length - 1];
+    if (kind === 'assistant' && open?.kind === 'assistant') {
+      open.messages.push(message);
+      open.last = message;
+      continue;
+    }
+    segments.push({ key: message.id, kind, messages: [message], last: message });
+  }
+  return segments;
+}
 
 @Component({
   selector: 'app-message-list',
@@ -128,6 +197,7 @@ export class MessageListComponent {
   private mcpAppCardState = inject(McpAppCardStateService);
   private mcpAppState = inject(McpAppStateService);
   private chatStateService = inject(ChatStateService);
+  private toolInsight = inject(ToolInsightService);
   private streamParser = inject(StreamParserService);
 
   /**
@@ -206,6 +276,70 @@ export class MessageListComponent {
   protected readonly loaderNotice = computed<string | null>(
     () => this.retryNotice() ?? this.stallNotice(),
   );
+
+  /**
+   * What the agent is doing right now, phrased for the loading indicator.
+   *
+   * Derived from the `agent_status` stream, so it is a fact rather than an
+   * inference — the difference between "waiting on Canvas for 9 seconds" and
+   * "hung" was previously invisible to the user, and both looked like
+   * "Pondering...".
+   *
+   * Returns null once text starts streaming: at that point the loader is gone
+   * anyway, and a lingering "Thinking" under a visible answer would be wrong.
+   */
+  protected readonly loaderStatus = computed<string | null>(() =>
+    this.loaderStatusTool() ? 'Running' : 'Thinking',
+  );
+
+  /**
+   * The tool currently executing, or null.
+   *
+   * Derived from the CONTENT stream — a `toolUse` block on the streaming
+   * message that has no result yet — rather than from `agent_status`, and
+   * that choice is load-bearing.
+   *
+   * `agent_status` transitions are drained by the stream coordinator when the
+   * agent stream yields its next event. During tool execution the agent
+   * stream yields nothing, so a `tool_start` sits in the queue for exactly
+   * the silent stretch it exists to explain, and arrives alongside its own
+   * `tool_end` once the batch finishes. Measured on a three-tool browse turn:
+   * the indicator read "Thinking" for the entire 4.5s the tools were running
+   * and never once showed their name.
+   *
+   * The client does not have that problem. It knows a tool is in flight the
+   * moment the block streams in, first-hand, with no round trip. So this is
+   * both simpler and strictly more current. `agent_status` keeps its real
+   * job: the event-loop-measured durations, which the client genuinely
+   * cannot derive.
+   *
+   * Shown verbatim rather than prettified — `list_assignments` is the thing
+   * that is running, and it is the same identifier the tool rail and the
+   * admin catalog use. Humanising it would invent a second name for one
+   * thing.
+   */
+  protected readonly loaderStatusTool = computed<string | null>(() => {
+    const messages = this.messages();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role !== 'assistant') continue;
+      // Only the newest assistant message can have work in flight; an older
+      // one with an unresolved tool is an abandoned turn, not a running one.
+      for (const block of message.content) {
+        const toolUse = block.toolUse as ToolUseData | undefined | null;
+        if (toolUse?.name && !toolUse.result) return toolUse.name;
+      }
+      return null;
+    }
+    return null;
+  });
+
+  /** Epoch ms the viewed conversation's turn started, for the elapsed timer. */
+  protected readonly loaderStartedAt = computed<number | null>(() => {
+    const sessionId = this.chatStateService.viewedSessionId();
+    if (!sessionId) return null;
+    return this.toolInsight.turnStartedAt(sessionId) ?? null;
+  });
 
   /**
    * Persisted app-initiated tool cards (PR #6) that have nowhere better to
@@ -428,10 +562,21 @@ export class MessageListComponent {
    *  so a mid-prompt refresh rehydrates the prompt rather than orphaning
    *  it. We don't anchor next to the triggering assistant message (the way
    *  OAuth prompts do) because the approval is for the *next* tool call,
-   *  not the assistant text that just streamed. */
-  protected pendingToolApprovals = computed<ToolApprovalRequest[]>(() =>
-    this.toolApprovalService.pending(),
-  );
+   *  not the assistant text that just streamed.
+   *
+   *  Filtered to THIS list's session. The service's queue is global, which was
+   *  invisible while only one message list was ever mounted; the agent
+   *  designer's preview and the marketplace review test drive now stream
+   *  through the same interrupt protocol, so an unfiltered read would render
+   *  one pane's approve/decline prompt in another pane's transcript — and
+   *  resolving it there would resume a turn the reader isn't looking at.
+   *  A null sessionId (a list not bound to a session) shows nothing rather
+   *  than everything. */
+  protected pendingToolApprovals = computed<ToolApprovalRequest[]>(() => {
+    const sessionId = this.sessionId();
+    if (!sessionId) return [];
+    return this.toolApprovalService.pending().filter((r) => r.sessionId === sessionId);
+  });
 
   /** Messages grouped into turns: each user message starts a group and the
    *  assistant messages that follow it belong to that group. Keyed by the
@@ -441,20 +586,29 @@ export class MessageListComponent {
    *  min-height binding on the previously-last group flips off. A leading
    *  assistant message with no preceding user message (pagination cutting
    *  mid-turn) forms a headless first group. */
-  protected readonly turns = computed<{ key: string; messages: Message[] }[]>(() => {
-    const groups: { key: string; messages: Message[] }[] = [];
+  protected readonly turns = computed<Turn[]>(() => {
+    const groups: Turn[] = [];
     for (const m of this.messages()) {
       // A mid-turn steer is a user message that does NOT start a turn: the
       // user sent it *into* the response already streaming, so it belongs to
       // that turn's group. Breaking here instead would split one response into
       // two groups and move the last group's scroll reserve out from under a
       // response still streaming into it. See docs/specs/mid-turn-steering.md.
-      const startsTurn = m.role === 'user' && !m.steering;
+      // Scaffolding is excluded for the same reason as steers: a tool-result
+      // message is not the user starting a new turn, and treating it as one
+      // split a single response into a turn group per tool call — which also
+      // moved the last group's scroll reserve out from under the response
+      // still streaming into it.
+      const startsTurn =
+        m.role === 'user' && !m.steering && !isProtocolScaffolding(m);
       if (startsTurn || groups.length === 0) {
-        groups.push({ key: m.id, messages: [m] });
+        groups.push({ key: m.id, messages: [m], segments: [] });
       } else {
         groups[groups.length - 1].messages.push(m);
       }
+    }
+    for (const turn of groups) {
+      turn.segments = segmentTurn(turn.messages);
     }
     return groups;
   });

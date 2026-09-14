@@ -130,7 +130,7 @@ export interface ConfirmationDialogData {
           <button
             type="button"
             (click)="onCancel()"
-            class="mt-3 inline-flex w-full justify-center rounded-md bg-white px-3 py-2 text-sm/6 font-semibold text-gray-900 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 sm:mt-0 sm:w-auto dark:bg-white/10 dark:text-white dark:shadow-none dark:ring-white/5 dark:hover:bg-white/20"
+            class="mt-3 inline-flex w-full justify-center rounded-2xl bg-white px-3 py-2 text-sm/6 font-semibold text-gray-900 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 sm:mt-0 sm:w-auto dark:bg-white/10 dark:text-white dark:shadow-none dark:ring-white/5 dark:hover:bg-white/20"
           >
             {{ data.cancelText || 'Cancel' }}
           </button>
@@ -182,13 +182,13 @@ export class ConfirmationDialogComponent {
    * this is a destructive action or not.
    */
   protected get confirmButtonClass(): string {
-    const baseClasses = 'inline-flex w-full justify-center rounded-md px-3 py-2 text-sm/6 font-semibold text-white shadow-xs sm:ml-3 sm:w-auto';
+    const baseClasses = 'inline-flex w-full justify-center rounded-2xl px-3 py-2 text-sm/6 font-semibold text-white shadow-xs sm:ml-3 sm:w-auto';
 
     if (this.data.destructive) {
       return `${baseClasses} bg-state-danger-600 hover:bg-state-danger-500 dark:bg-state-danger-500 dark:shadow-none dark:hover:bg-state-danger-400`;
     }
 
-    return `${baseClasses} bg-primary-600 hover:bg-primary-500 dark:bg-primary-500 dark:shadow-none dark:hover:bg-primary-400`;
+    return `${baseClasses} bg-primary-accessible hover:brightness-95 dark:shadow-none`;
   }
 
   /**

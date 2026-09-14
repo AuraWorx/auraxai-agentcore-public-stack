@@ -33,7 +33,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
           [class]="selectedPeriodType() === 'current'
             ? 'bg-primary-accessible text-white border-primary-accessible'
             : 'bg-white text-gray-700 border-gray-300 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600'"
-          class="rounded-sm border px-3 py-1.5 text-sm/6 font-medium transition-colors"
+          class="rounded-2xl border px-3 py-1.5 text-sm/6 font-medium transition-colors"
         >
           Current Month
         </button>
@@ -43,7 +43,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
           [class]="selectedPeriodType() === 'last30'
             ? 'bg-primary-accessible text-white border-primary-accessible'
             : 'bg-white text-gray-700 border-gray-300 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600'"
-          class="rounded-sm border px-3 py-1.5 text-sm/6 font-medium transition-colors"
+          class="rounded-2xl border px-3 py-1.5 text-sm/6 font-medium transition-colors"
         >
           Last 30 Days
         </button>

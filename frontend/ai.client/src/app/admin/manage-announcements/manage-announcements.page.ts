@@ -61,7 +61,7 @@ import { parseIso } from '../../utils/date';
         </div>
         <a
           routerLink="/admin/manage-announcements/new"
-          class="inline-flex items-center gap-2 rounded-sm bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500"
+          class="inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-primary-500"
         >
           <ng-icon name="heroPlus" class="size-5" />
           New announcement
@@ -171,7 +171,7 @@ import { parseIso } from '../../utils/date';
                       type="button"
                       (click)="onPublish(item.announcement)"
                       [disabled]="busyId() !== null"
-                      class="inline-flex items-center gap-1 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                      class="inline-flex items-center gap-1 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                       [attr.aria-label]="'Publish ' + item.announcement.title"
                     >
                       <ng-icon name="heroPaperAirplane" class="size-4" />
@@ -184,7 +184,7 @@ import { parseIso } from '../../utils/date';
                       type="button"
                       (click)="onRevise(item.announcement)"
                       [disabled]="busyId() !== null"
-                      class="inline-flex items-center gap-1 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                      class="inline-flex items-center gap-1 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                       title="Bump the revision so everyone sees this again"
                       [attr.aria-label]="'Show ' + item.announcement.title + ' again'"
                     >
@@ -195,7 +195,7 @@ import { parseIso } from '../../utils/date';
                       type="button"
                       (click)="onArchive(item.announcement)"
                       [disabled]="busyId() !== null"
-                      class="inline-flex items-center gap-1 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                      class="inline-flex items-center gap-1 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                       [attr.aria-label]="'Archive ' + item.announcement.title"
                     >
                       <ng-icon name="heroArchiveBox" class="size-4" />
@@ -205,7 +205,7 @@ import { parseIso } from '../../utils/date';
 
                   <a
                     [routerLink]="['/admin/manage-announcements/edit', item.announcement.announcement_id]"
-                    class="inline-flex items-center gap-1 rounded-sm border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                    class="inline-flex items-center gap-1 rounded-2xl border border-gray-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                     [attr.aria-label]="'Edit ' + item.announcement.title"
                   >
                     <ng-icon name="heroPencil" class="size-4" />
@@ -216,7 +216,7 @@ import { parseIso } from '../../utils/date';
                     type="button"
                     (click)="onDelete(item.announcement)"
                     [disabled]="busyId() !== null"
-                    class="inline-flex items-center gap-1 rounded-sm border border-state-danger-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-state-danger-700 hover:bg-state-danger-50 focus:outline-none focus:ring-2 focus:ring-state-danger-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-state-danger-500 dark:bg-gray-700 dark:text-state-danger-400 dark:hover:bg-state-danger-900/20"
+                    class="inline-flex items-center gap-1 rounded-2xl border border-state-danger-300 bg-white px-2.5 py-1.5 text-sm/6 font-medium text-state-danger-700 hover:bg-state-danger-50 focus:outline-none focus:ring-2 focus:ring-state-danger-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-state-danger-500 dark:bg-gray-700 dark:text-state-danger-400 dark:hover:bg-state-danger-900/20"
                     [attr.aria-label]="'Delete ' + item.announcement.title"
                   >
                     <ng-icon name="heroTrash" class="size-4" />

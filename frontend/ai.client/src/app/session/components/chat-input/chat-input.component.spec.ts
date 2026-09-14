@@ -1,8 +1,9 @@
 import { NO_ERRORS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentMentionService, MentionableAgent } from '../../../agents/services/agent-mention.service';
+import { SkillCommand, SkillCommandService } from '../../../services/skill/skill-command.service';
 import { FileUploadService } from '../../../services/file-upload';
 import { SystemPromptsService } from '../../../services/system-prompts/system-prompts.service';
 import { ToastService } from '../../../services/toast/toast.service';
@@ -64,6 +65,30 @@ class SteeringServiceStub {
   reset(): void {}
 }
 
+const SKILLS: SkillCommand[] = [
+  { skillId: 's1', slug: 'brand-deck', name: 'Brand Deck', description: 'Build a deck' },
+  { skillId: 's2', slug: 'brand-voice', name: 'Brand Voice', description: 'House style' },
+  { skillId: 's3', slug: 'web-research', name: 'Web Research', description: 'Search the web' },
+];
+
+/**
+ * Stand-in for SkillCommandService. A DI token rather than a `vi.mock`, per the house
+ * rule — and required rather than optional, because the real one reaches SkillService →
+ * HttpClient, which Angular 21 root-provides a live backend for.
+ */
+class SkillCommandServiceStub {
+  readonly commands = signal<SkillCommand[]>(SKILLS);
+  readonly loading = signal(false);
+  async load(): Promise<void> {}
+  search(query: string): SkillCommand[] {
+    const needle = query.trim().toLowerCase();
+    return this.commands().filter((command) => command.slug.startsWith(needle));
+  }
+  bySlugOrUndefined(slug: string): SkillCommand | undefined {
+    return this.commands().find((command) => command.slug === slug);
+  }
+}
+
 class MentionServiceStub {
   readonly mentionable = signal<MentionableAgent[]>(AGENTS);
   readonly loading = signal(false);
@@ -84,6 +109,7 @@ describe('ChatInputComponent — the `@` menu keyboard path (D11)', () => {
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -120,7 +146,6 @@ describe('ChatInputComponent — the `@` menu keyboard path (D11)', () => {
     component = fixture.componentInstance;
     fixture.componentRef.setInput('showFileControls', false);
     fixture.componentRef.setInput('showVoiceControl', false);
-    fixture.componentRef.setInput('showSettingsControl', false);
     fixture.componentRef.setInput('autoFocus', false);
     fixture.detectChanges();
 
@@ -191,25 +216,26 @@ describe('ChatInputComponent — the `@` menu keyboard path (D11)', () => {
 });
 
 /**
- * Queue-instead-of-interrupt (kaizen 2026-08-28 #5).
+ * The `/` skill-command menu.
  *
- * Enter used to route to Stop while a response was streaming, so a follow-up
- * typed out of habit killed the run the user was waiting on. And a send that
- * raced the single-flight guard cleared the composer before the 409 came back,
- * losing the text outright. Both are covered here.
+ * Two things separate it from the `@` menu and both are covered here. First, `/` is
+ * ordinary punctuation — dates, fractions, paths and URLs all contain one — so the token
+ * rule has to keep the menu shut far more often than it opens it. Second, there is no
+ * remembered pick: the invoked set is DERIVED from the composer text, so a hand-typed
+ * command works exactly like a menu pick and the chip can never disagree with what is
+ * about to be sent.
  */
-describe('ChatInputComponent — queueing a follow-up mid-stream', () => {
+describe('ChatInputComponent — the `/` skill-command menu', () => {
   let fixture: ComponentFixture<ChatInputComponent>;
   let component: ChatInputComponent;
   let textarea: HTMLTextAreaElement;
-  let submitted: { content: string; timestamp: Date; mentionAgentId?: string }[];
-  let cancelled: number;
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -244,7 +270,172 @@ describe('ChatInputComponent — queueing a follow-up mid-stream', () => {
     component = fixture.componentInstance;
     fixture.componentRef.setInput('showFileControls', false);
     fixture.componentRef.setInput('showVoiceControl', false);
-    fixture.componentRef.setInput('showSettingsControl', false);
+    fixture.componentRef.setInput('autoFocus', false);
+    fixture.detectChanges();
+
+    textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+  });
+
+  function type(value: string): void {
+    textarea.value = value;
+    textarea.setSelectionRange(value.length, value.length);
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  function pressKey(key: string): void {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true, bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+    fixture.detectChanges();
+  }
+
+  it('opens the menu on a word-initial `/`', () => {
+    type('/');
+    expect(component.isSkillMenuVisible()).toBe(true);
+  });
+
+  it('filters as the slug is typed', () => {
+    type('/brand-v');
+    expect(component.skillResults().map((c) => c.slug)).toEqual(['brand-voice']);
+  });
+
+  it.each(['and/or', 'open 24/7', 'see https://example.com', 'edit src/app/foo'])(
+    'leaves `/` as punctuation in %j',
+    (text) => {
+      type(text);
+      expect(component.isSkillMenuVisible()).toBe(false);
+    },
+  );
+
+  it('closes once a second `/` makes the token a path', () => {
+    type('/usr');
+    expect(component.isSkillMenuVisible()).toBe(true);
+
+    type('/usr/');
+    expect(component.isSkillMenuVisible()).toBe(false);
+  });
+
+  it('walks the list and commits on Enter rather than sending the message', () => {
+    let submitted = false;
+    component.messageSubmitted.subscribe(() => (submitted = true));
+
+    type('/');
+    pressKey('ArrowDown');
+    pressKey('Enter');
+
+    expect(submitted).toBe(false);
+    expect(component.userInput()).toBe('/brand-voice ');
+  });
+
+  it('yields the keyboard to the `@` menu when both tokens would match', () => {
+    // `@` is the narrower token; two menus claiming the arrow keys would make neither
+    // usable.
+    type('@');
+    expect(component.isMentionMenuOpen()).toBe(true);
+    expect(component.isSkillMenuVisible()).toBe(false);
+  });
+
+  it('derives the invoked skills from the text, so a typed command counts', () => {
+    type('use /web-research to check this');
+    expect(component.invokedSkills().map((c) => c.skillId)).toEqual(['s3']);
+  });
+
+  it('ignores a slug the user has not turned on', () => {
+    type('run /not-a-skill please');
+    expect(component.invokedSkills()).toEqual([]);
+  });
+
+  it('de-duplicates a slug repeated in one message', () => {
+    type('/brand-deck and again /brand-deck');
+    expect(component.invokedSkills().map((c) => c.slug)).toEqual(['brand-deck']);
+  });
+
+  it('sends the derived ids with the message', () => {
+    let payload: { invokedSkillIds?: string[] } | undefined;
+    component.messageSubmitted.subscribe((event) => (payload = event));
+
+    type('/brand-deck /web-research make me a deck');
+    component.submitChatRequest();
+
+    expect(payload?.invokedSkillIds).toEqual(['s1', 's3']);
+  });
+
+  it('omits the field entirely when no command was used', () => {
+    let payload: { invokedSkillIds?: string[] } | undefined;
+    component.messageSubmitted.subscribe((event) => (payload = event));
+
+    type('just a normal message');
+    component.submitChatRequest();
+
+    expect(payload?.invokedSkillIds).toBeUndefined();
+  });
+
+  it('clearing a chip edits the text, because the text is the binding', () => {
+    type('/brand-deck make me a deck');
+    const command = component.invokedSkills()[0];
+
+    component.clearSkillCommand(command);
+
+    expect(component.userInput()).toBe('make me a deck');
+    expect(component.invokedSkills()).toEqual([]);
+  });
+});
+
+/**
+ * Queue-instead-of-interrupt (kaizen 2026-08-28 #5).
+ *
+ * Enter used to route to Stop while a response was streaming, so a follow-up
+ * typed out of habit killed the run the user was waiting on. And a send that
+ * raced the single-flight guard cleared the composer before the 409 came back,
+ * losing the text outright. Both are covered here.
+ */
+describe('ChatInputComponent — queueing a follow-up mid-stream', () => {
+  let fixture: ComponentFixture<ChatInputComponent>;
+  let component: ChatInputComponent;
+  let textarea: HTMLTextAreaElement;
+  let submitted: { content: string; timestamp: Date; mentionAgentId?: string }[];
+  let cancelled: number;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [ChatInputComponent],
+      providers: [
+        { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
+        {
+          provide: FileUploadService,
+          useValue: {
+            pendingUploadsList: signal([]),
+            hasActivePendingUploads: signal(false),
+            readyUploadIds: signal([]),
+            clearReadyUploads: () => undefined,
+            clearPendingUpload: () => undefined,
+          },
+        },
+        { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
+        { provide: ToolService, useValue: {} },
+        {
+          provide: VoiceChatService,
+          useValue: {
+            status: signal('idle'),
+            isVoiceActive: signal(false),
+            agentTranscript: signal(''),
+          },
+        },
+        { provide: SystemPromptsService, useValue: { activePrompt: signal(null) } },
+        { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
+        { provide: SteeringService, useClass: SteeringServiceStub },
+      ],
+    })
+      .overrideComponent(ChatInputComponent, {
+        set: { imports: [], schemas: [NO_ERRORS_SCHEMA] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(ChatInputComponent);
+    component = fixture.componentInstance;
+    fixture.componentRef.setInput('showFileControls', false);
+    fixture.componentRef.setInput('showVoiceControl', false);
     fixture.componentRef.setInput('autoFocus', false);
 
     submitted = [];
@@ -422,6 +613,7 @@ describe('ChatInputComponent — mid-turn steering (PR-5)', () => {
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -457,7 +649,6 @@ describe('ChatInputComponent — mid-turn steering (PR-5)', () => {
     steering = TestBed.inject(SteeringService) as unknown as SteeringServiceStub;
     fixture.componentRef.setInput('showFileControls', false);
     fixture.componentRef.setInput('showVoiceControl', false);
-    fixture.componentRef.setInput('showSettingsControl', false);
     fixture.componentRef.setInput('autoFocus', false);
     fixture.componentRef.setInput('sessionId', 'sess-1');
 
@@ -654,6 +845,7 @@ describe('ChatInputComponent — a queue held behind a paused turn (PR-6)', () =
       imports: [ChatInputComponent],
       providers: [
         { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
         {
           provide: FileUploadService,
           useValue: {
@@ -689,7 +881,6 @@ describe('ChatInputComponent — a queue held behind a paused turn (PR-6)', () =
     steering = TestBed.inject(SteeringService) as unknown as SteeringServiceStub;
     fixture.componentRef.setInput('showFileControls', false);
     fixture.componentRef.setInput('showVoiceControl', false);
-    fixture.componentRef.setInput('showSettingsControl', false);
     fixture.componentRef.setInput('autoFocus', false);
     fixture.componentRef.setInput('sessionId', 'sess-1');
 
@@ -851,5 +1042,199 @@ describe('ChatInputComponent — a queue held behind a paused turn (PR-6)', () =
     setStreaming(false);
 
     expect(submitted.map((m) => m.content)).toEqual(['ordinary follow-up']);
+  });
+});
+
+
+/**
+ * The rotating discovery hints in the empty composer.
+ *
+ * The contract worth pinning is the accessibility one: the *visible* line
+ * cycles, the *accessible* placeholder never does. Everything else here exists
+ * so the rotation cannot quietly turn into something that runs forever.
+ */
+describe('ChatInputComponent — rotating discovery hints', () => {
+  let fixture: ComponentFixture<ChatInputComponent>;
+  let textarea: HTMLTextAreaElement;
+  let mentions: MentionServiceStub;
+  let skills: SkillCommandServiceStub;
+
+  /**
+   * The line the overlay is painting, or null when the composer has handed the
+   * placeholder back to the textarea. Excludes a node still playing its exit
+   * animation, which briefly shares the DOM with its replacement.
+   */
+  function hint(): HTMLElement | null {
+    const nodes = fixture.nativeElement.querySelectorAll(
+      '.composer-hint:not(.composer-hint-leave)',
+    );
+    return (nodes[nodes.length - 1] as HTMLElement | undefined) ?? null;
+  }
+
+  function hintText(): string | null {
+    return hint()?.textContent?.trim() ?? null;
+  }
+
+  function tick(): void {
+    vi.advanceTimersByTime(4500);
+    fixture.detectChanges();
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    await TestBed.configureTestingModule({
+      imports: [ChatInputComponent],
+      providers: [
+        { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
+        {
+          provide: FileUploadService,
+          useValue: {
+            pendingUploadsList: signal([]),
+            hasActivePendingUploads: signal(false),
+            readyUploadIds: signal([]),
+            clearReadyUploads: () => undefined,
+            clearPendingUpload: () => undefined,
+          },
+        },
+        { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
+        { provide: ToolService, useValue: {} },
+        {
+          provide: VoiceChatService,
+          useValue: {
+            status: signal('idle'),
+            isVoiceActive: signal(false),
+            agentTranscript: signal(''),
+          },
+        },
+        { provide: SystemPromptsService, useValue: { activePrompt: signal(null) } },
+        { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
+        { provide: SteeringService, useClass: SteeringServiceStub },
+      ],
+    })
+      .overrideComponent(ChatInputComponent, {
+        set: { imports: [], schemas: [NO_ERRORS_SCHEMA] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(ChatInputComponent);
+    mentions = TestBed.inject(AgentMentionService) as unknown as MentionServiceStub;
+    skills = TestBed.inject(SkillCommandService) as unknown as SkillCommandServiceStub;
+    fixture.componentRef.setInput('showFileControls', false);
+    fixture.componentRef.setInput('showVoiceControl', false);
+    fixture.componentRef.setInput('autoFocus', false);
+    fixture.detectChanges();
+
+    textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('paints the idle line first, hidden from assistive tech', () => {
+    expect(hintText()).toBe('How can I help you today?');
+    expect(hint()?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('cycles through the shortcuts a user cannot otherwise discover', () => {
+    tick();
+    expect(hintText()).toContain('Type @');
+
+    tick();
+    expect(hintText()).toContain('Type /');
+  });
+
+  it('leaves the accessible placeholder alone while the pixels change', () => {
+    tick();
+    // The overlay is decoration. A placeholder that rotated with it would
+    // re-announce the field every few seconds.
+    expect(textarea.getAttribute('placeholder')).toBe('How can I help you today?');
+  });
+
+  it('cycles more than once — a single pass is over before anyone looks', () => {
+    // 3 hints x 3 passes. Sampling the head of the second pass is what would
+    // catch a regression back to stopping after one.
+    for (let i = 0; i < 3; i++) tick();
+    expect(hintText()).toBe('How can I help you today?');
+
+    tick();
+    expect(hintText()).toContain('Type @');
+  });
+
+  it('comes to rest on the idle line instead of looping forever', () => {
+    // Nothing on screen may auto-update indefinitely without a pause control,
+    // so the passes run out and the composer settles.
+    for (let i = 0; i < 9; i++) tick();
+    expect(hintText()).toBe('How can I help you today?');
+
+    for (let i = 0; i < 4; i++) tick();
+    expect(hintText()).toBe('How can I help you today?');
+  });
+
+  it('rests in the overlay rather than handing back to the placeholder', () => {
+    for (let i = 0; i < 10; i++) tick();
+
+    // Unmounting at rest would exit-animate a copy of the idle line straight
+    // off the native placeholder, which spells the same words.
+    expect(hint()).not.toBeNull();
+    expect(textarea.className).toContain('placeholder:text-transparent');
+  });
+
+  it('stops the moment the user starts typing', () => {
+    textarea.value = 'h';
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', bubbles: true }));
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    expect(hint()).toBeNull();
+
+    // And it does not pick back up where it left off if the box is emptied —
+    // a hint that returned every time would be pestering, not teaching.
+    textarea.value = '';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    tick();
+    expect(hintText()).toBe('How can I help you today?');
+  });
+
+  it('starts over on a brand-new conversation', () => {
+    textarea.value = 'h';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    textarea.value = '';
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    fixture.componentRef.setInput('sessionId', 'sess-1');
+    fixture.detectChanges();
+    fixture.componentRef.setInput('sessionId', null);
+    fixture.detectChanges();
+
+    // An empty composer on a new conversation is the one moment the hints are
+    // worth showing again.
+    tick();
+    expect(hintText()).toContain('Type @');
+  });
+
+  it('never advertises a shortcut this composer does not offer', () => {
+    mentions.mentionable.set([]);
+    skills.commands.set([]);
+    fixture.detectChanges();
+
+    // With nothing left to teach, the idle string alone is not worth animating
+    // — and a `/` hint for a user with no skills opens an empty menu.
+    expect(hint()).toBeNull();
+    expect(textarea.getAttribute('placeholder')).toBe('How can I help you today?');
+  });
+
+  it('yields to the mid-stream placeholder while a turn is running', () => {
+    fixture.componentRef.setInput('isChatLoading', true);
+    fixture.detectChanges();
+
+    // The streaming placeholder says where a follow-up will land. That is
+    // state, and it outranks a discovery hint.
+    expect(hint()).toBeNull();
+    expect(textarea.getAttribute('placeholder')).toContain('when this response finishes');
   });
 });

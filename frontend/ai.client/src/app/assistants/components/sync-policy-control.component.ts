@@ -81,7 +81,7 @@ export type SyncIntervalSelection = SyncInterval | 'manual';
             type="button"
             (click)="reconnect.emit()"
             [disabled]="busy()"
-            class="inline-flex items-center rounded-2xl px-2 py-1 text-xs/5 font-medium text-primary-accessible hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-primary-900/20"
+            class="inline-flex items-center rounded-2xl px-2 py-1 text-xs/5 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
           >
             Reconnect {{ reconnectLabel() || 'source' }}
           </button>
@@ -91,7 +91,7 @@ export type SyncIntervalSelection = SyncInterval | 'manual';
             (click)="resume.emit()"
             [disabled]="busy()"
             [attr.aria-label]="'Resume sync for ' + (sourceName() || 'this source')"
-            class="inline-flex items-center rounded-2xl px-2 py-1 text-xs/5 font-medium text-primary-accessible hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-primary-900/20"
+            class="inline-flex items-center rounded-2xl px-2 py-1 text-xs/5 font-medium text-primary-accessible hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-primary-accessible-dark dark:hover:bg-gray-700 dark:hover:text-primary-50"
           >
             Resume
           </button>

@@ -45,14 +45,24 @@ describe('AgentCore Runtime alarms — verified metric binding', () => {
     alarms = template.findResources('AWS::CloudWatch::Alarm');
   });
 
-  const AGENTCORE_ALARMS = [
+  /** Alarms on the per-invocation metric streams, dimensioned Resource/Operation/Name. */
+  const INVOCATION_ALARMS = [
     'agentcore-system-errors',
     'agentcore-high-error-rate',
     'agentcore-throttles',
     'agentcore-high-latency',
   ];
 
-  it('creates the four runtime alarms', () => {
+  /**
+   * `ActiveSessionCount` is an account-level gauge published with only a
+   * `Service` dimension, so it is deliberately not in INVOCATION_ALARMS — the
+   * three-dimension assertion below would fail it, correctly.
+   */
+  const ACCOUNT_GAUGE_ALARMS = ['agentcore-runtime-active-sessions'];
+
+  const AGENTCORE_ALARMS = [...INVOCATION_ALARMS, ...ACCOUNT_GAUGE_ALARMS];
+
+  it('creates the five runtime alarms', () => {
     for (const name of AGENTCORE_ALARMS) byName(name);
   });
 
@@ -83,8 +93,8 @@ describe('AgentCore Runtime alarms — verified metric binding', () => {
   });
 
   // Every stream here is dimensioned; an undimensioned metric matches nothing.
-  it('binds the three-dimension runtime set on every alarm', () => {
-    for (const name of AGENTCORE_ALARMS) {
+  it('binds the three-dimension runtime set on every invocation alarm', () => {
+    for (const name of INVOCATION_ALARMS) {
       const dims = byName(name).Properties.Dimensions;
       const keys = dims.map((d: any) => d.Name).sort();
       expect(keys).toEqual(['Name', 'Operation', 'Resource']);
@@ -128,7 +138,73 @@ describe('AgentCore Runtime alarms — verified metric binding', () => {
     expect(byName('agentcore-throttles').Properties.Threshold).toBe(0);
   });
 
-  it('all four alarms are routed to the alarm topic', () => {
+  // Mirrors `agentcore-code-interpreter-active-sessions`, which watches the same
+  // metric on the CodeInterpreter Service dimension.
+  describe('concurrent runtime sessions', () => {
+    it('alarms on ActiveSessionCount for the Runtime service dimension', () => {
+      const alarm = byName('agentcore-runtime-active-sessions');
+      expect(alarm.Properties.MetricName).toBe('ActiveSessionCount');
+      const service = alarm.Properties.Dimensions.find((d: any) => d.Name === 'Service');
+      expect(service).toBeDefined();
+      expect(service.Value).toBe('AgentCore.Runtime');
+    });
+
+    // An account-level gauge carries no Resource: adding one would match no
+    // stream and the alarm would sit in INSUFFICIENT_DATA, reading as healthy.
+    it('carries only the Service dimension', () => {
+      const dims = byName('agentcore-runtime-active-sessions').Properties.Dimensions;
+      expect(dims.map((d: any) => d.Name)).toEqual(['Service']);
+    });
+
+    it('reads the peak of the period, sustained over a full hour', () => {
+      const alarm = byName('agentcore-runtime-active-sessions');
+      // Maximum, not Average: a gauge averaged over 5 minutes hides the peak
+      // that matters.
+      expect(alarm.Properties.Statistic).toBe('Maximum');
+      expect(alarm.Properties.Period).toBe(300);
+      // 12 x 5 min = 1 hour sustained. The window, not the threshold, is what
+      // distinguishes a real accumulation regression from a load test: on 7 days
+      // of prod data the previous 3-period (15 min) window fired on all three
+      // nightly load tests, and no threshold separates them (see config.ts).
+      expect(alarm.Properties.EvaluationPeriods).toBe(12);
+      expect(alarm.Properties.Period * alarm.Properties.EvaluationPeriods).toBe(3_600);
+      // Every datapoint must breach; a dip resets. Accumulation that reaps
+      // itself is not the failure mode being watched.
+      expect(alarm.Properties.DatapointsToAlarm ?? alarm.Properties.EvaluationPeriods).toBe(12);
+      expect(alarm.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+      expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+    });
+
+    /**
+     * The #1016 lesson, pinned. That alarm sat above threshold for 195 of 197
+     * datapoints because an account-wide roll-up was compared against a number
+     * that did not denominate it. Here the threshold has to clear a normal day
+     * by a wide margin — measured prod traffic outside load-test bursts is max
+     * 8-16 with a mean of 2.4-6.8, and dev peaks at 5 — while staying far below
+     * the 5,000 concurrent-session account quota, which `agentcore-throttles`
+     * owns.
+     *
+     * The upper bound also guards the other direction: a threshold high enough
+     * to sit above a load test (~1500) would sit above the ~99-sustained #338
+     * regime too, and the alarm would never fire on the regression it exists
+     * for. Duration, not magnitude, does that separation — see the window test
+     * above.
+     */
+    it('is thresholded well above normal traffic and well below the account quota', () => {
+      const threshold = byName('agentcore-runtime-active-sessions').Properties.Threshold;
+      expect(threshold).toBe(
+        createMockConfig({}).observability.agentCoreActiveSessionThreshold,
+      );
+      // Comfortably above a normal day (peaks in the tens)...
+      expect(threshold).toBeGreaterThan(20);
+      // ...and below the ~99 sustained by the #338 regression, so that regime
+      // actually trips it.
+      expect(threshold).toBeLessThan(99);
+      expect(threshold).toBeLessThan(5_000 * 0.1);
+    });
+  });
+
+  it('all five alarms are routed to the alarm topic', () => {
     for (const name of AGENTCORE_ALARMS) {
       expect(byName(name).Properties.AlarmActions).toHaveLength(1);
       expect(byName(name).Properties.OKActions).toHaveLength(1);

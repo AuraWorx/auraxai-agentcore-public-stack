@@ -32,6 +32,8 @@ import type {
   Citation,
   ReasoningEvent,
   ToolResultEventData,
+  AgentStatusEvent,
+  ToolGroupSummaryEvent,
   QuotaWarningEvent,
   QuotaSessionNoticeEvent,
   QuotaExceededEvent,
@@ -46,7 +48,6 @@ import type {
   SessionTitleEvent,
   SteeringAppliedEvent,
   ModelRetryEvent,
-  ToolProgress,
 } from './stream-parser-types';
 import type { MetadataEvent } from '../../../session/services/models/content-types';
 
@@ -74,7 +75,6 @@ export interface StreamParserCallbacks {
   // Tool events
   onToolUse?: (data: ToolUseEvent) => void;
   onToolResult?: (data: ToolResultEventData) => void;
-  onToolProgress?: (progress: ToolProgress) => void;
 
   // Metadata and auxiliary events
   onMetadata?: (data: MetadataEvent) => void;
@@ -91,6 +91,16 @@ export interface StreamParserCallbacks {
 
   // Tool approval required (catalog flagged this MCP tool needs_approval)
   onToolApprovalRequired?: (data: ToolApprovalRequiredEvent) => void;
+
+  // What the agent is doing right now (model/tool boundaries from the
+  // runtime's AgentStatusHook). Drives the live status line and supplies the
+  // event-loop-measured duration for each finished tool row.
+  onAgentStatus?: (data: AgentStatusEvent) => void;
+
+  // A model-generated one-line summary of a finished tool batch. Arrives
+  // mid-turn, out of band with the content stream, and replaces the
+  // deterministic formatter line the rail has been showing.
+  onToolGroupSummary?: (data: ToolGroupSummaryEvent) => void;
 
   // Compaction (backend rolled older turns into a summary on this turn)
   onCompaction?: (data: CompactionEvent) => void;
@@ -585,6 +595,55 @@ export function validateSteeringAppliedEvent(
  * may legitimately be 0 (an unparseable delay is reported as 0 rather than
  * dropped, so the retry still reaches the user).
  */
+/**
+ * Validate an `agent_status` event.
+ *
+ * `phase` is checked against the closed set rather than merely being a string:
+ * an unrecognized phase would otherwise reach the status line and render as a
+ * blank or a raw token, which looks like a bug to the user. Dropping it leaves
+ * the previous honest status in place.
+ */
+export function validateAgentStatusEvent(data: unknown): data is AgentStatusEvent {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const event = data as Partial<AgentStatusEvent>;
+
+  return (
+    event.type === 'agent_status' &&
+    (event.phase === 'thinking' ||
+      event.phase === 'tool_start' ||
+      event.phase === 'tool_end') &&
+    typeof event.cycle === 'number'
+  );
+}
+
+/**
+ * Validate a `tool_group_summary` event.
+ *
+ * A summary with no tool-use ids cannot be attached to anything, and an empty
+ * summary would blank a line that currently reads correctly — both are
+ * rejected rather than applied.
+ */
+export function validateToolGroupSummaryEvent(
+  data: unknown,
+): data is ToolGroupSummaryEvent {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const event = data as Partial<ToolGroupSummaryEvent>;
+
+  return (
+    event.type === 'tool_group_summary' &&
+    typeof event.summary === 'string' &&
+    event.summary.trim().length > 0 &&
+    Array.isArray(event.toolUseIds) &&
+    event.toolUseIds.length > 0
+  );
+}
+
 export function validateModelRetryEvent(data: unknown): data is ModelRetryEvent {
   if (!data || typeof data !== 'object') {
     return false;
@@ -656,17 +715,6 @@ export function processStreamEvent(
       case 'content_block_start':
         if (validateContentBlockStartEvent(data)) {
           callbacks.onContentBlockStart?.(data);
-
-          // Emit tool progress for tool_use blocks
-          if (data.type === 'tool_use' && data.toolUse) {
-            callbacks.onToolProgress?.({
-              visible: true,
-              toolName: data.toolUse.name,
-              toolUseId: data.toolUse.toolUseId,
-              message: `Running ${data.toolUse.name}...`,
-              startTime: Date.now(),
-            });
-          }
         } else {
           callbacks.onParseError?.('content_block_start: invalid data structure');
         }
@@ -691,11 +739,6 @@ export function processStreamEvent(
       case 'tool_use':
         if (validateToolUseEvent(data)) {
           callbacks.onToolUse?.(data);
-          callbacks.onToolProgress?.({
-            visible: true,
-            toolName: data.tool_use.name,
-            toolUseId: data.tool_use.tool_use_id,
-          });
         } else {
           callbacks.onParseError?.('tool_use: invalid data structure');
         }
@@ -704,7 +747,6 @@ export function processStreamEvent(
       case 'tool_result':
         if (validateToolResultEvent(data)) {
           callbacks.onToolResult?.(data);
-          callbacks.onToolProgress?.({ visible: false });
         } else {
           callbacks.onParseError?.('tool_result: invalid data structure');
         }
@@ -720,7 +762,6 @@ export function processStreamEvent(
 
       case 'done':
         callbacks.onDone?.();
-        callbacks.onToolProgress?.({ visible: false });
         break;
 
       case 'error':
@@ -843,6 +884,22 @@ export function processStreamEvent(
           callbacks.onModelRetry?.(data);
         } else {
           callbacks.onParseError?.('model_retry: invalid data structure');
+        }
+        break;
+
+      case 'agent_status':
+        if (validateAgentStatusEvent(data)) {
+          callbacks.onAgentStatus?.(data);
+        } else {
+          callbacks.onParseError?.('agent_status: invalid data structure');
+        }
+        break;
+
+      case 'tool_group_summary':
+        if (validateToolGroupSummaryEvent(data)) {
+          callbacks.onToolGroupSummary?.(data);
+        } else {
+          callbacks.onParseError?.('tool_group_summary: invalid data structure');
         }
         break;
 

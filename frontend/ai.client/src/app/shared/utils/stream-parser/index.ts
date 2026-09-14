@@ -65,6 +65,8 @@ export {
   validateSessionTitleEvent,
   validateSteeringAppliedEvent,
   validateModelRetryEvent,
+  validateAgentStatusEvent,
+  validateToolGroupSummaryEvent,
 } from './stream-parser-core';
 
 // Types
@@ -93,6 +95,8 @@ export type {
   SessionTitleEvent,
   SteeringAppliedEvent,
   ModelRetryEvent,
+  AgentStatusEvent,
+  ToolGroupSummaryEvent,
   McpUiCsp,
   McpUiPermissions,
   StreamEventType,
@@ -103,5 +107,4 @@ export type {
   ContentBlockBuilder,
   MessageBuilder,
   ToolResultContent,
-  ToolProgress,
 } from './stream-parser-types';

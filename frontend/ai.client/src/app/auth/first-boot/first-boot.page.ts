@@ -185,7 +185,7 @@ import { SpinnerComponent } from '../../components/spinner/spinner.component';
                 <button
                   type="submit"
                   [disabled]="isSubmitting() || form.invalid"
-                  class="w-full mt-2 px-4 py-3 text-white font-medium rounded-lg transition-all duration-200 flex items-center justify-center gap-3 bg-primary-accessible hover:brightness-95 disabled:opacity-60 disabled:cursor-not-allowed"
+                  class="w-full mt-2 px-4 py-3 text-white font-medium rounded-2xl transition-all duration-200 flex items-center justify-center gap-3 bg-primary-accessible hover:brightness-95 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   @if (isSubmitting()) {
                     <app-spinner size="md" variant="on-solid" label="Creating account" />

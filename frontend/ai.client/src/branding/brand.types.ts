@@ -39,6 +39,21 @@ export interface BrandSurfaces {
   raised: HexColorInput; // Default_Surfaces: #ffffff (white)
 }
 
+/**
+ * The four windows the greeting pool is bucketed into.
+ *
+ * Boundaries live in `PART_OF_DAY_START_HOUR` (`greeting.provider.ts`) and
+ * are read off the viewer's own clock, so a greeting always matches the time
+ * where the person actually is.
+ */
+export type PartOfDay = 'morning' | 'afternoon' | 'evening' | 'night';
+
+/**
+ * Greeting pools keyed by part of day. Every key is required, so a bucket can
+ * never silently go missing and leave one window of the day unrepresented.
+ */
+export type TimeOfDayGreetings = Record<PartOfDay, string[]>;
+
 export interface BrandConfig {
   /** Light/dark logo file references (Requirement 2.1). */
   logo: BrandLogoAssets;
@@ -48,6 +63,19 @@ export interface BrandConfig {
   greetingTemplates: string[];
   /** Ordered fallback greetings, 1–50 entries, each 1–500 chars (Requirement 4.2). */
   fallbackGreetings: string[];
+  /**
+   * Greetings offered only during their own part of the day, pooled *with*
+   * `greetingTemplates` rather than instead of it — so a morning visit draws
+   * from the morning lines and the any-time lines together.
+   *
+   * Optional: omit it and the Default_Branding pools apply. A rebrand that
+   * replaces `greetingTemplates` should replace this too, or half the
+   * greetings on offer will still be the stock ones. Same entry bounds as the
+   * lists above, per bucket.
+   */
+  timeOfDayGreetings?: TimeOfDayGreetings;
+  /** Part-of-day counterparts to `fallbackGreetings`, used when no name is known. */
+  timeOfDayFallbackGreetings?: TimeOfDayGreetings;
   /** Brand colors as single hex inputs (Requirement 5.1, 8.3). */
   colors: BrandColors;
   /** Browser page title (Requirement 7.1). */

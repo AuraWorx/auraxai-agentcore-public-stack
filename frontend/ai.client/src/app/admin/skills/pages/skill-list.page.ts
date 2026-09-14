@@ -57,7 +57,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
           </div>
           <a
             routerLink="/admin/skills/new"
-            class="inline-flex shrink-0 items-center gap-2 rounded-lg bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:hover:brightness-110"
+            class="inline-flex shrink-0 items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:hover:brightness-110"
           >
             <ng-icon name="heroPlus" class="size-5" aria-hidden="true" />
             Add Skill
@@ -144,7 +144,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
                 <p class="text-sm/6 text-gray-500 dark:text-gray-400">No skills in catalog yet.</p>
                 <a
                   routerLink="/admin/skills/new"
-                  class="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 dark:hover:brightness-110"
+                  class="mt-4 inline-flex items-center gap-2 rounded-2xl bg-primary-accessible px-4 py-2 text-sm/6 font-medium text-white hover:brightness-95 dark:hover:brightness-110"
                 >
                   <ng-icon name="heroPlus" class="size-5" aria-hidden="true" />
                   Add Skill
