@@ -17,7 +17,15 @@
  * authoritative behavior.
  */
 
-import type { BrandColors, BrandConfig, BrandConfigError, BrandLogoAssets, BrandSurfaces } from './brand.types';
+import type {
+  BrandColors,
+  BrandConfig,
+  BrandConfigError,
+  BrandLogoAssets,
+  BrandSurfaces,
+  PartOfDay,
+  TimeOfDayGreetings,
+} from './brand.types';
 import {
   DEFAULT_ALT_LABEL,
   DEFAULT_COLORS,
@@ -26,6 +34,8 @@ import {
   DEFAULT_LOGO,
   DEFAULT_PAGE_TITLE,
   DEFAULT_SURFACES,
+  DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS,
+  DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
 } from './brand.defaults';
 import { HEX_COLOR_REGEX, hexToOklch, normalizeHex } from '../../scripts/branding/color-math';
 
@@ -53,6 +63,20 @@ const MAX_GREETING_ENTRIES = 50;
 const MIN_GREETING_LENGTH = 1;
 const MAX_GREETING_LENGTH = 500;
 
+/**
+ * The parts of day a greeting pool is bucketed into, in day order.
+ *
+ * Exported as the iteration order for the record so normalization, the
+ * provider and the tests all agree on the key set — a typo'd key in a rebrand
+ * is then a dropped bucket that defaults, not a silent `undefined`.
+ */
+export const PARTS_OF_DAY: readonly PartOfDay[] = Object.freeze([
+  'morning',
+  'afternoon',
+  'evening',
+  'night',
+]);
+
 /** `appName` bounds (Requirement 3.1). */
 const MIN_APP_NAME_LENGTH = 1;
 const MAX_APP_NAME_LENGTH = 100;
@@ -63,6 +87,8 @@ export interface NormalizedBrandConfig {
   appName: string;
   greetingTemplates: string[];
   fallbackGreetings: string[];
+  timeOfDayGreetings: TimeOfDayGreetings;
+  timeOfDayFallbackGreetings: TimeOfDayGreetings;
   colors: BrandColors;
   pageTitle: string;
   surfaces: BrandSurfaces;
@@ -145,7 +171,7 @@ export function normalizeLogo(
  * 4.8).
  */
 export function normalizeGreetingList(
-  field: 'greetingTemplates' | 'fallbackGreetings',
+  field: string,
   value: unknown,
   defaultList: readonly string[],
   errors: BrandConfigError[],
@@ -185,6 +211,68 @@ export function normalizeGreetingList(
   }
 
   return validEntries;
+}
+
+/**
+ * Normalize a part-of-day greeting record (`timeOfDayGreetings` or
+ * `timeOfDayFallbackGreetings`).
+ *
+ * Unlike the two flat lists, this field is **optional**: leaving it out is the
+ * normal case, so an absent value defaults silently rather than logging. Each
+ * bucket is normalized independently by `normalizeGreetingList`, so one broken
+ * window of the day never costs a rebrand the other three.
+ */
+export function normalizeTimeOfDayGreetings(
+  field: 'timeOfDayGreetings' | 'timeOfDayFallbackGreetings',
+  value: unknown,
+  defaults: Readonly<Record<PartOfDay, readonly string[]>>,
+  errors: BrandConfigError[],
+): TimeOfDayGreetings {
+  if (value === undefined || value === null) {
+    return copyTimeOfDayGreetings(defaults);
+  }
+
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    errors.push({
+      field,
+      value: undefined,
+      reason: `${field} must be an object keyed by ${PARTS_OF_DAY.join(', ')}`,
+    });
+    return copyTimeOfDayGreetings(defaults);
+  }
+
+  const provided = value as Partial<Record<PartOfDay, unknown>>;
+  const normalized = {} as TimeOfDayGreetings;
+  for (const part of PARTS_OF_DAY) {
+    const bucket = provided[part];
+    // An absent bucket is not an error either — a rebrand may only care about
+    // mornings — so it takes the default without a warning.
+    if (bucket === undefined) {
+      normalized[part] = [...defaults[part]];
+      continue;
+    }
+    // An explicitly empty bucket is the opt-out, and the one place these
+    // differ from the flat lists: there, empty means "you gave me nothing
+    // usable, have the defaults"; here it means "say nothing special at this
+    // hour", which a rebrand has no other way to ask for.
+    if (Array.isArray(bucket) && bucket.length === 0) {
+      normalized[part] = [];
+      continue;
+    }
+    normalized[part] = normalizeGreetingList(`${field}.${part}`, bucket, defaults[part], errors);
+  }
+  return normalized;
+}
+
+/** Deep-enough copy: the caller gets mutable arrays it cannot alias back into the frozen defaults. */
+function copyTimeOfDayGreetings(
+  source: Readonly<Record<PartOfDay, readonly string[]>>,
+): TimeOfDayGreetings {
+  const copy = {} as TimeOfDayGreetings;
+  for (const part of PARTS_OF_DAY) {
+    copy[part] = [...source[part]];
+  }
+  return copy;
 }
 
 /**
@@ -427,9 +515,32 @@ export function normalizeBrandConfig(config: Partial<BrandConfig> | null | undef
     DEFAULT_FALLBACK_GREETINGS,
     errors,
   );
+  const timeOfDayGreetings = normalizeTimeOfDayGreetings(
+    'timeOfDayGreetings',
+    safeConfig.timeOfDayGreetings,
+    DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+    errors,
+  );
+  const timeOfDayFallbackGreetings = normalizeTimeOfDayGreetings(
+    'timeOfDayFallbackGreetings',
+    safeConfig.timeOfDayFallbackGreetings,
+    DEFAULT_TIME_OF_DAY_FALLBACK_GREETINGS,
+    errors,
+  );
   const colors = normalizeColors(safeConfig.colors, errors);
   const pageTitle = normalizePageTitle(safeConfig.pageTitle, errors);
   const surfaces = normalizeSurfaces(safeConfig.surfaces, errors);
 
-  return { logo, appName, greetingTemplates, fallbackGreetings, colors, pageTitle, surfaces, errors };
+  return {
+    logo,
+    appName,
+    greetingTemplates,
+    fallbackGreetings,
+    timeOfDayGreetings,
+    timeOfDayFallbackGreetings,
+    colors,
+    pageTitle,
+    surfaces,
+    errors,
+  };
 }

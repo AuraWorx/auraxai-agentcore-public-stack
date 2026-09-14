@@ -7,7 +7,12 @@
 // criteria being validated.
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { normalizeBrandConfig, resolveSurfaces } from './brand-config.normalize';
+import {
+  PARTS_OF_DAY,
+  normalizeBrandConfig,
+  normalizeTimeOfDayGreetings,
+  resolveSurfaces,
+} from './brand-config.normalize';
 import type { BrandConfig, BrandSurfaces } from './brand.types';
 import {
   DEFAULT_ALT_LABEL,
@@ -16,6 +21,7 @@ import {
   DEFAULT_GREETING_TEMPLATES,
   DEFAULT_LOGO,
   DEFAULT_SURFACES,
+  DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
 } from './brand.defaults';
 import { hexToOklch } from '../../scripts/branding/color-math';
 
@@ -419,5 +425,94 @@ describe('resolveSurfaces', () => {
     expect(result).toEqual({ light: '#f9fafb', dark: '#101828', raised: '#ffffff' });
     expect(errors).toHaveLength(3);
     expect(errors.map((e) => e.field).sort()).toEqual(['surfaces.dark', 'surfaces.light', 'surfaces.raised']);
+  });
+});
+
+
+describe('normalizeTimeOfDayGreetings', () => {
+  /** The defaults, as the mutable record the normalizer returns. */
+  function defaults(): Record<string, string[]> {
+    return Object.fromEntries(
+      PARTS_OF_DAY.map((part) => [part, [...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES[part]]]),
+    );
+  }
+
+  it('defaults silently when the field is absent — omitting it is the normal case', () => {
+    const errors: Parameters<typeof normalizeTimeOfDayGreetings>[3] = [];
+    const result = normalizeTimeOfDayGreetings(
+      'timeOfDayGreetings',
+      undefined,
+      DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+      errors,
+    );
+
+    // The two flat greeting lists log when they default, because they are
+    // required. This one is optional, so a warning would fire for every
+    // untouched rebrand.
+    expect(result).toEqual(defaults());
+    expect(errors).toEqual([]);
+  });
+
+  it('reports a value that is not a record of buckets', () => {
+    const errors: Parameters<typeof normalizeTimeOfDayGreetings>[3] = [];
+    const result = normalizeTimeOfDayGreetings(
+      'timeOfDayGreetings',
+      ['Good morning!'],
+      DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+      errors,
+    );
+
+    expect(result).toEqual(defaults());
+    expect(errors.map((e) => e.field)).toEqual(['timeOfDayGreetings']);
+  });
+
+  it('normalizes each bucket independently, so one bad hour does not cost the other three', () => {
+    const errors: Parameters<typeof normalizeTimeOfDayGreetings>[3] = [];
+    const result = normalizeTimeOfDayGreetings(
+      'timeOfDayGreetings',
+      { morning: ['Up early, {name}?'], afternoon: 'not a list' },
+      DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+      errors,
+    );
+
+    expect(result.morning).toEqual(['Up early, {name}?']);
+    expect(result.afternoon).toEqual([...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.afternoon]);
+    expect(result.evening).toEqual([...DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.evening]);
+    expect(errors.map((e) => e.field)).toEqual(['timeOfDayGreetings.afternoon']);
+  });
+
+  it('honours an explicitly empty bucket as the opt-out', () => {
+    const errors: Parameters<typeof normalizeTimeOfDayGreetings>[3] = [];
+    const result = normalizeTimeOfDayGreetings(
+      'timeOfDayGreetings',
+      { night: [] },
+      DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+      errors,
+    );
+
+    // Defaulting here would leave a rebrand no way to say "nothing special at
+    // this hour" — every other empty list in this file means "give me the
+    // defaults".
+    expect(result.night).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it('hands back arrays that cannot alias the frozen defaults', () => {
+    const errors: Parameters<typeof normalizeTimeOfDayGreetings>[3] = [];
+    const result = normalizeTimeOfDayGreetings(
+      'timeOfDayGreetings',
+      undefined,
+      DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES,
+      errors,
+    );
+
+    expect(() => result.morning.push('mutable copy')).not.toThrow();
+    expect(DEFAULT_TIME_OF_DAY_GREETING_TEMPLATES.morning).not.toContain('mutable copy');
+  });
+
+  it('is reached by normalizeBrandConfig with the defaults for an untouched config', () => {
+    const result = normalizeBrandConfig({});
+    expect(result.timeOfDayGreetings).toEqual(defaults());
+    expect(result.errors.some((e) => e.field.startsWith('timeOfDay'))).toBe(false);
   });
 });
