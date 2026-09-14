@@ -1,6 +1,6 @@
 # Structured clarifying questions (`ask_user_question`)
 
-Status: **PR-1 (backend) landed. PR-2–4 open.**
+Status: **PR-1 (backend), PR-2 (picker) and PR-3 (rehydration) landed. PR-4 open.**
 
 The agent pauses mid-turn to ask the user one to four multiple-choice
 questions, the SPA renders a picker, and the turn continues in place with the
@@ -60,6 +60,25 @@ the *same* tool call, and the tool is not re-invoked.
 **SSE**: `user_question_required`, payload `{type, interruptId, toolUseId,
 questions}`. See the event table in `CLAUDE.md`.
 
+**Reload**: the event fires once and never re-streams, so a refresh mid-prompt
+would otherwise orphan the turn — picker gone, agent still paused. `GET
+/messages` replays the `PendingInterrupt` breadcrumb (`kind: "user_question"`,
+questions JSON-encoded) and `hydratePendingInterrupts` re-renders the picker.
+Both paths validate questions through the same `validateUserQuestions`, so the
+live and replayed prompts cannot drift.
+
+**Abandonment**: a breadcrumb that outlives its `pausedTurn` snapshot renders a
+prompt the user can no longer answer — the resume route 400s on an interrupt id
+the rebuilt agent never saw, so Submit is a guaranteed error. Nothing used to
+clear them: the two `remove_pending_interrupts` call sites are resume cleanup
+and the explicit dismiss endpoint, neither of which a user reaches by simply
+typing something else. `clear_pending_interrupts` is now called beside
+`clear_paused_turn` at the head of every non-resume turn. It is deliberately a
+separate function rather than folded into `clear_paused_turn`, which clears only
+the snapshot on purpose (`test_paused_turn_independent_of_pending_interrupts`)
+and is also called on the resume-success and expired-snapshot paths where the
+narrower cleanup is already right.
+
 **Resume**: `POST /invocations` with
 
 ```jsonc
@@ -107,9 +126,22 @@ a paused turn with no picker is a worse failure than a guessed assumption.
 | PR | Scope |
 |----|-------|
 | ~~1~~ | ~~Tool, interrupt, SSE event, `PendingInterrupt` kind, integration proof~~ |
-| 2 | `UserQuestionService` + stream-parser wiring + single-question single-select prompt; generalize `resumeFromToolApproval` to carry an object. Ships usable. |
-| 3 | Multi-select, the multi-question carousel, "Other", "Skip"; reload rehydration via `hydratePendingInterrupts`. |
-| 4 | Flip `enabledByDefault`, tool-description tuning, RBAC grants. |
+| ~~2~~ | ~~`UserQuestionService`, stream-parser wiring, the picker (pager + multi-select + Other + Skip), object-carrying resume~~ |
+| ~~3~~ | ~~Reload rehydration, and clearing breadcrumbs for abandoned prompts~~ |
+| 4 | Flip `enabledByDefault`, **trigger-rate work**, RBAC grants. |
+
+### PR-4 is not polish
+
+Measured against real Bedrock: the model reaches for the tool **4/4** when it is
+the only tool under the real default system prompt, **1–2/4** once `browse_web`
+and `calculator` sit beside it, and **0/4** through the full app (which also
+injects the artifact/Office/workspace tools). Temperature is not the variable —
+0.0, 0.7 and 1.0 behave identically. Richly-described "do the work" tools
+crowd it out.
+
+So the feature is correct end to end but rarely fires on its own. Getting it
+called reliably is the remaining work, and a tool description alone may not be
+enough — a clause in the system prompt is the other lever.
 
 Open decisions for PR-2/3:
 

@@ -59,6 +59,7 @@ export {
   validateOAuthRequiredEvent,
   validateToolApprovalRequiredEvent,
   validateUserQuestionRequiredEvent,
+  validateUserQuestions,
   validateCompactionEvent,
   validateArtifactEvent,
   validateUiResourceEvent,

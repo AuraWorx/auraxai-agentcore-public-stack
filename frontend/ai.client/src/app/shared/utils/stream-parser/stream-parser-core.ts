@@ -42,6 +42,8 @@ import type {
   OAuthRequiredEvent,
   ToolApprovalRequiredEvent,
   UserQuestionRequiredEvent,
+  UserQuestion,
+  QuestionOption,
   CompactionEvent,
   ArtifactEvent,
   UiResourceEvent,
@@ -448,35 +450,27 @@ export function validateToolApprovalRequiredEvent(
 }
 
 /**
- * Validate UserQuestionRequiredEvent structure.
+ * Validate a list of clarifying questions.
  *
- * Stricter than its siblings because the payload drives a whole interactive
- * form rather than a fixed two-button prompt: a question with no options, or
- * an option with no label, would render an unanswerable prompt and leave the
- * turn paused with no way forward. Rejecting here routes it to `onParseError`
- * instead, which surfaces as a visible error the user can act on.
+ * Extracted so the two paths that receive questions — the live SSE event and
+ * the persisted `PendingInterrupt` breadcrumb replayed on reload — cannot
+ * drift apart. They arrive by different transports (one a parsed SSE frame,
+ * one a JSON string out of DynamoDB) but must agree on what is renderable;
+ * two hand-written copies of this predicate would eventually disagree, and
+ * the failure mode is a prompt that renders on one path and vanishes on the
+ * other.
+ *
+ * Stricter than the sibling event validators because the payload drives a
+ * whole interactive form rather than a fixed two-button prompt: a question
+ * with no options, or an option with no label, renders an unanswerable prompt
+ * and leaves the turn paused with no way forward.
  */
-export function validateUserQuestionRequiredEvent(
-  data: unknown,
-): data is UserQuestionRequiredEvent {
-  if (!data || typeof data !== 'object') {
+export function validateUserQuestions(value: unknown): value is UserQuestion[] {
+  if (!Array.isArray(value) || value.length === 0) {
     return false;
   }
 
-  const event = data as Partial<UserQuestionRequiredEvent>;
-
-  if (
-    event.type !== 'user_question_required' ||
-    typeof event.interruptId !== 'string' ||
-    event.interruptId.length === 0 ||
-    typeof event.toolUseId !== 'string' ||
-    !Array.isArray(event.questions) ||
-    event.questions.length === 0
-  ) {
-    return false;
-  }
-
-  return event.questions.every(
+  return value.every(
     (question) =>
       !!question &&
       typeof question === 'object' &&
@@ -487,12 +481,34 @@ export function validateUserQuestionRequiredEvent(
       Array.isArray(question.options) &&
       question.options.length > 0 &&
       question.options.every(
-        (option) =>
+        (option: unknown) =>
           !!option &&
           typeof option === 'object' &&
-          typeof option.label === 'string' &&
-          option.label.length > 0,
+          typeof (option as QuestionOption).label === 'string' &&
+          (option as QuestionOption).label.length > 0,
       ),
+  );
+}
+
+/**
+ * Validate UserQuestionRequiredEvent structure. Question-shape checks live in
+ * {@link validateUserQuestions}, shared with the reload path.
+ */
+export function validateUserQuestionRequiredEvent(
+  data: unknown,
+): data is UserQuestionRequiredEvent {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const event = data as Partial<UserQuestionRequiredEvent>;
+
+  return (
+    event.type === 'user_question_required' &&
+    typeof event.interruptId === 'string' &&
+    event.interruptId.length > 0 &&
+    typeof event.toolUseId === 'string' &&
+    validateUserQuestions(event.questions)
   );
 }
 

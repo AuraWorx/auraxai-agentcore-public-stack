@@ -1601,8 +1601,19 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
     if not is_resume and not is_continuation:
         is_new_session = await ensure_session_metadata_exists(input_data.session_id, user_id)
         try:
-            from apis.shared.sessions.metadata import clear_paused_turn
+            from apis.shared.sessions.metadata import (
+                clear_paused_turn,
+                clear_pending_interrupts,
+            )
             await clear_paused_turn(input_data.session_id, user_id)
+            # The snapshot's breadcrumbs go with it. They are the other half of
+            # the same record, and a breadcrumb that outlives the snapshot
+            # re-renders a prompt the user can no longer answer: the resume
+            # route 400s on an interrupt id the rebuilt agent never saw. Safe
+            # here specifically because this runs at the *head* of a non-resume
+            # turn — any breadcrumb this turn goes on to write lands later, on
+            # its own `done` event.
+            await clear_pending_interrupts(input_data.session_id, user_id)
         except Exception as e:
             logger.error("Failed to clear stale paused_turn on new turn: %s", e, exc_info=True)
 
