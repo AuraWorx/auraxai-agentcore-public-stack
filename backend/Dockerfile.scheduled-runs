@@ -33,6 +33,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 # content-hash tag notices changes.
 COPY backend/src/apis/shared/__init__.py ${LAMBDA_TASK_ROOT}/apis/shared/__init__.py
 COPY backend/src/apis/shared/errors.py ${LAMBDA_TASK_ROOT}/apis/shared/errors.py
+# Leaf module (imports only os); reached via apis/shared/sessions/metadata.py,
+# which reads the COST_DIAGNOSTICS_ENABLED kill switch at aggregate-bump time.
+COPY backend/src/apis/shared/feature_flags.py ${LAMBDA_TASK_ROOT}/apis/shared/feature_flags.py
 COPY backend/src/apis/shared/harness/ ${LAMBDA_TASK_ROOT}/apis/shared/harness/
 COPY backend/src/apis/shared/scheduled_prompts/ ${LAMBDA_TASK_ROOT}/apis/shared/scheduled_prompts/
 COPY backend/src/apis/shared/sessions_bff/ ${LAMBDA_TASK_ROOT}/apis/shared/sessions_bff/

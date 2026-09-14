@@ -14,6 +14,7 @@ from agents.main_agent.core import ModelConfig, SystemPromptBuilder, AgentFactor
 from agents.main_agent.session import SessionFactory
 from agents.main_agent.session.hooks import (
     AgentStatusHook,
+    ToolCensusHook,
     DisplayTextHook,
     SteeringHook,
     StopHook,
@@ -339,6 +340,15 @@ class BaseAgent(ABC):
         # return immediately when AGENT_STATUS_ENABLED=false.
         self.agent_status_hook = AgentStatusHook()
         hooks.append(self.agent_status_hook)
+
+        # Content-free tool census (tool name → calls/errors per model call).
+        # Held on the wrapper so the stream coordinator can read each call's
+        # tally at turn end and persist it on that call's cost row for the
+        # admin session profile. Non-drained, per-turn only. Registered
+        # unconditionally; the callbacks return immediately when
+        # COST_DIAGNOSTICS_ENABLED=false.
+        self.tool_census_hook = ToolCensusHook()
+        hooks.append(self.tool_census_hook)
 
         # Per-model-call prompt-cache prefix fingerprints (toolConfig /
         # system prompt / history hashes). Best-effort; the stream

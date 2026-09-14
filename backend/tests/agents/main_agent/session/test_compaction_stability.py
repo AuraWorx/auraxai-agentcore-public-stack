@@ -99,7 +99,7 @@ def restore_session(make_session_manager, compaction_config):
             state_store.get("compaction")
         )
 
-        def _save(state: CompactionState) -> None:
+        def _save(state: CompactionState, record_event: bool = False) -> None:
             state.updated_at = _iso(_now())
             state_store["compaction"] = state.to_dict()
 
@@ -141,7 +141,7 @@ def make_wired_manager(make_session_manager, compaction_config):
             state_store.get("compaction")
         )
 
-        def _save(state: CompactionState) -> None:
+        def _save(state: CompactionState, record_event: bool = False) -> None:
             state.updated_at = _iso(_now())
             state_store["compaction"] = state.to_dict()
 
