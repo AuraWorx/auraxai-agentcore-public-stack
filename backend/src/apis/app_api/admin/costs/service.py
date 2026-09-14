@@ -4,12 +4,29 @@ Provides methods for retrieving system-wide cost metrics, top users by cost,
 model usage breakdowns, and cost trends for the admin dashboard.
 """
 
+import asyncio
 import logging
+from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 from apis.shared.storage.dynamodb_storage import DynamoDBStorage
+from .diagnoses import (
+    CHARS_PER_TOKEN,
+    Diagnosis,
+    ProfileFacts,
+    compaction_token_threshold,
+    run_diagnoses,
+    top_severity,
+)
 from .models import (
+    AttachmentProfile,
+    ContextTrajectoryPoint,
+    DataCoverage,
+    FingerprintChanges,
+    SessionDiagnosis,
+    SessionProfile,
+    ToolCensusEntry,
     TopUserCost,
     TopSessionCost,
     TopSessionsResponse,
@@ -21,23 +38,108 @@ from .models import (
     PrefixFingerprints,
     SessionCallRow,
     SessionCostAnatomy,
+    UserSessionSummary,
+    UserSessionsResponse,
 )
 
 logger = logging.getLogger(__name__)
+
+# Bound on concurrent per-user lookups when enriching the top-users table.
+_ENRICH_CONCURRENCY = 10
+
+
+def _as_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_cost(record: Dict[str, Any]) -> Optional[float]:
+    """A C# row's cost: a breakdown dict on the streaming path, a bare float on
+    the legacy path, or absent (unknown — never zero)."""
+    raw = record.get("cost")
+    if isinstance(raw, dict):
+        raw = raw.get("total")
+    return _as_float(raw)
+
+
+def _context_tokens(record: Dict[str, Any]) -> int:
+    """True context occupancy of one call: uncached input + cached prefix +
+    newly cached tokens (Bedrock reports the three disjointly)."""
+    usage = record.get("tokenUsage") or {}
+    return (
+        int(usage.get("inputTokens") or 0)
+        + int(usage.get("cacheReadInputTokens") or 0)
+        + int(usage.get("cacheWriteInputTokens") or 0)
+    )
 
 
 class AdminCostService:
     """Service for admin cost dashboard operations."""
 
-    def __init__(self, storage: Optional[DynamoDBStorage] = None):
+    def __init__(
+        self,
+        storage: Optional[DynamoDBStorage] = None,
+        user_repository: Any = None,
+        quota_resolver: Any = None,
+        file_repository: Any = None,
+    ):
         """
         Initialize the admin cost service.
 
         Args:
             storage: Optional DynamoDB storage instance. If not provided,
                      a new instance will be created.
+            user_repository: Optional ``UserRepository`` for top-users
+                     enrichment (email). Resolved lazily when omitted.
+            quota_resolver: Optional ``QuotaResolver`` for top-users
+                     enrichment (tier, quota %). Resolved lazily when omitted.
+            file_repository: Optional ``FileUploadRepository`` for the session
+                     profile's attachment stats. Resolved lazily when omitted.
         """
         self.storage = storage or DynamoDBStorage()
+        self._user_repository = user_repository
+        self._quota_resolver = quota_resolver
+        self._file_repository = file_repository
+
+    # Lazy collaborators. `getattr` defaults so a test that builds the service
+    # with `__new__` and sets only `storage` still works.
+
+    def _users(self):
+        repo = getattr(self, "_user_repository", None)
+        if repo is None:
+            from apis.shared.users.repository import UserRepository
+            repo = UserRepository()
+            self._user_repository = repo
+        return repo
+
+    def _quota(self):
+        resolver = getattr(self, "_quota_resolver", None)
+        if resolver is None:
+            from apis.shared.quota import get_quota_resolver
+            resolver = get_quota_resolver()
+            self._quota_resolver = resolver
+        return resolver
+
+    def _files(self):
+        repo = getattr(self, "_file_repository", None)
+        if repo is None:
+            from apis.shared.files.repository import get_file_upload_repository
+            repo = get_file_upload_repository()
+            self._file_repository = repo
+        return repo
 
     def _get_current_period(self) -> str:
         """Get the current month period in YYYY-MM format."""
@@ -112,12 +214,13 @@ class AdminCostService:
                     total_cost=user_data.get("totalCost", 0.0),
                     total_requests=user_data.get("totalRequests", 0),
                     last_updated=user_data.get("lastUpdated", ""),
-                    # TODO: Enrich with email, tier info from user service
                     email=None,
                     tier_name=None,
                     quota_limit=None,
                     quota_percentage=None
                 ))
+
+            await self._enrich_top_users(result)
 
             logger.info("Retrieved top users for period")
             return result
@@ -125,6 +228,59 @@ class AdminCostService:
         except Exception as e:
             logger.error(f"Error getting top users: {e}")
             raise
+
+    async def _enrich_top_users(self, rows: List[TopUserCost]) -> None:
+        """Fill in ``email`` / ``tierName`` / ``quotaLimit`` / ``quotaPercentage``.
+
+        The table's job is to make the user who is about to hit their quota
+        visible without opening every row, so the quota share matters more
+        than the email. Best-effort throughout: the users table may be
+        unconfigured (a fork without the BFF user store), and one user's
+        lookup failing must not blank the column for the rest. Bounded
+        concurrency so a 100-row page is ~10 round-trips deep, not 100.
+        """
+        try:
+            users = self._users()
+        except Exception as e:  # noqa: BLE001 - enrichment is optional
+            logger.debug("Top-users enrichment unavailable: %s", e)
+            return
+        if not getattr(users, "enabled", False) or not rows:
+            return
+
+        from apis.shared.auth import User
+
+        quota = self._quota()
+        semaphore = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+
+        async def enrich(row: TopUserCost) -> None:
+            async with semaphore:
+                try:
+                    profile = await users.get_user_by_user_id(row.user_id)
+                    if profile is None:
+                        return
+                    row.email = profile.email
+                    resolved = await quota.resolve_user_quota(User(
+                        user_id=profile.user_id,
+                        email=profile.email,
+                        name=profile.name,
+                        roles=profile.roles,
+                    ))
+                    tier = getattr(resolved, "tier", None) if resolved else None
+                    if tier is None:
+                        return
+                    row.tier_name = getattr(tier, "tier_name", None)
+                    limit = getattr(tier, "monthly_cost_limit", None)
+                    if limit is None or limit == float("inf"):
+                        return
+                    limit = float(limit)
+                    if limit <= 0:
+                        return
+                    row.quota_limit = limit
+                    row.quota_percentage = round(row.total_cost / limit * 100, 1)
+                except Exception as e:  # noqa: BLE001 - one user must not blank the page
+                    logger.debug("Top-users enrichment skipped for a user: %s", e)
+
+        await asyncio.gather(*(enrich(row) for row in rows))
 
     async def get_system_summary(
         self,
@@ -545,6 +701,345 @@ class AdminCostService:
             agent_switch_miss_count=agent_switch_misses,
             agent_switch_usd=round(agent_switch_usd, 6),
             cache_efficiency=cache_efficiency,
+        )
+
+    # =========================================================================
+    # Content-free drill-down: user → conversations → conversation profile
+    # =========================================================================
+
+    async def _user_period_cost(self, user_id: str, period: Optional[str]) -> Optional[float]:
+        """The user's recorded cost for ``period`` — the denominator for a
+        conversation's share — or ``None`` when unscoped or unrecorded."""
+        if not period:
+            return None
+        try:
+            summary = await self.storage.get_user_cost_summary(user_id, period)
+        except Exception as e:  # noqa: BLE001 - a missing denominator is not an error
+            logger.debug("User period cost unavailable: %s", e)
+            return None
+        total = _as_float((summary or {}).get("totalCost")) if isinstance(summary, dict) else None
+        return total if total and total > 0 else None
+
+    @staticmethod
+    def _row_facts(row: Dict[str, Any], threshold: int, share: Optional[float]) -> ProfileFacts:
+        """Facts derivable from the session row alone — what the list view
+        diagnoses on. The profile refines these with per-call data."""
+        preferences = row.get("preferences") or {}
+        compaction = row.get("compaction") or {}
+        enabled = preferences.get("enabledTools")
+        summary_chars = _as_int(compaction.get("summaryChars"))
+        total_cost = _as_float(row.get("totalCost"))
+        return ProfileFacts(
+            cost_known=total_cost is not None,
+            total_cost=total_cost or 0.0,
+            call_count=0,
+            peak_context_tokens=_as_int(row.get("lastContextTokens")),
+            context_window=_as_int(row.get("contextWindow")),
+            compaction_threshold=threshold,
+            cache_read_tokens=_as_int(row.get("totalCacheReadTokens")) or 0,
+            cache_write_tokens=_as_int(row.get("totalCacheWriteTokens")) or 0,
+            wasted_usd=_as_float(row.get("wastedUsd")) or 0.0,
+            partial_miss_usd=_as_float(row.get("partialMissUsd")) or 0.0,
+            partial_miss_count=_as_int(row.get("partialMissCount")) or 0,
+            summary_approx_tokens=(
+                summary_chars // CHARS_PER_TOKEN if summary_chars is not None else None
+            ),
+            checkpoint=_as_int(compaction.get("checkpoint")),
+            truncation_anchor=_as_int(compaction.get("truncationAnchor")),
+            enabled_tools=list(enabled) if isinstance(enabled, list) else [],
+            share_of_user_period=share,
+            tool_call_count=_as_int(row.get("toolCallCount")),
+            tool_error_count=_as_int(row.get("toolErrorCount")),
+        )
+
+    @staticmethod
+    def _session_summary(
+        row: Dict[str, Any],
+        findings: List[Diagnosis],
+        share: Optional[float],
+    ) -> UserSessionSummary:
+        """Map a content-free session row to the list/profile summary model."""
+        preferences = row.get("preferences") or {}
+        compaction = row.get("compaction") or {}
+        total_cost = _as_float(row.get("totalCost"))
+        read = _as_int(row.get("totalCacheReadTokens")) or 0
+        write = _as_int(row.get("totalCacheWriteTokens")) or 0
+        traffic = read + write
+        last_context = _as_int(row.get("lastContextTokens"))
+        window = _as_int(row.get("contextWindow"))
+        summary_chars = _as_int(compaction.get("summaryChars"))
+        enabled = preferences.get("enabledTools")
+        wasted = _as_float(row.get("wastedUsd"))
+        partial = _as_float(row.get("partialMissUsd"))
+
+        return UserSessionSummary(
+            session_id=row.get("sessionId", ""),
+            created_at=row.get("createdAt"),
+            last_message_at=row.get("lastMessageAt"),
+            status=row.get("status"),
+            message_count=_as_int(row.get("messageCount")),
+            model_id=preferences.get("lastModel"),
+            enabled_tool_count=len(enabled) if isinstance(enabled, list) else None,
+            agent_bound=bool(preferences.get("assistantId")),
+            last_context_tokens=last_context,
+            context_window=window,
+            context_share=(
+                round(last_context / window, 4)
+                if last_context is not None and window else None
+            ),
+            total_cost=round(total_cost, 6) if total_cost is not None else None,
+            cost_known=total_cost is not None,
+            share_of_user_period=share,
+            cache_efficiency=round(read / traffic, 4) if traffic > 0 else None,
+            wasted_usd=round(wasted, 6) if wasted is not None else None,
+            partial_miss_usd=round(partial, 6) if partial is not None else None,
+            summarized_turns=_as_int(compaction.get("totalSummarizedTurns")),
+            summary_approx_tokens=(
+                summary_chars // CHARS_PER_TOKEN if summary_chars is not None else None
+            ),
+            tool_call_count=_as_int(row.get("toolCallCount")),
+            tool_error_count=_as_int(row.get("toolErrorCount")),
+            compaction_count=_as_int(row.get("compactionCount")),
+            diagnosis_count=len(findings),
+            top_diagnosis_severity=top_severity(findings),
+        )
+
+    @staticmethod
+    def _share(total_cost: Optional[float], user_period_cost: Optional[float]) -> Optional[float]:
+        if total_cost is None or not user_period_cost:
+            return None
+        return round(total_cost / user_period_cost * 100, 2)
+
+    async def get_user_sessions(
+        self,
+        user_id: str,
+        period: Optional[str] = None,
+        all_time: bool = False,
+        sort: str = "cost",
+        limit: int = 100,
+    ) -> UserSessionsResponse:
+        """One user's conversations, content-free, diagnosed on their own rows.
+
+        Period semantics match :meth:`get_top_sessions`: ``period`` selects
+        which sessions are listed (active in it) and supplies the share
+        denominator; each row's ``totalCost`` is the conversation's lifetime
+        cost. ``all_time`` lists everything and reports no share.
+
+        Rows with no recorded cost are *listed*, flagged ``costKnown=False``,
+        and trail under cost-sort — they are unrecorded, not free.
+        """
+        period = None if all_time else (period or self._get_current_period())
+        active_since = self._get_period_date_range(period)[0] if period else None
+
+        rows = await self.storage.get_user_session_diagnostics(
+            user_id=user_id,
+            active_since=active_since,
+        )
+        user_period_cost = await self._user_period_cost(user_id, period)
+        threshold = compaction_token_threshold()
+
+        summaries: List[UserSessionSummary] = []
+        for row in rows:
+            share = self._share(_as_float(row.get("totalCost")), user_period_cost)
+            findings = run_diagnoses(self._row_facts(row, threshold, share))
+            summaries.append(self._session_summary(row, findings, share))
+
+        def recent_key(s: UserSessionSummary) -> str:
+            return s.last_message_at or ""
+
+        if sort == "recent":
+            summaries.sort(key=recent_key, reverse=True)
+        elif sort == "context":
+            summaries.sort(key=lambda s: (s.last_context_tokens or -1, recent_key(s)), reverse=True)
+        elif sort == "messages":
+            summaries.sort(key=lambda s: (s.message_count or -1, recent_key(s)), reverse=True)
+        else:  # cost — known first by cost desc, unknown trailing by recency
+            summaries.sort(
+                key=lambda s: (s.cost_known, s.total_cost or 0.0, recent_key(s)),
+                reverse=True,
+            )
+
+        unknown = sum(1 for s in summaries if not s.cost_known)
+        logger.info(
+            f"User sessions: {len(summaries)} rows ({unknown} unknown-cost), "
+            f"returning {min(limit, len(summaries))}"
+        )
+        return UserSessionsResponse(
+            user_id=user_id,
+            period=period,
+            user_period_cost=round(user_period_cost, 6) if user_period_cost else None,
+            sessions=summaries[:limit],
+            total=len(summaries),
+            unknown_cost_count=unknown,
+        )
+
+    async def _attachment_profile(self, session_id: str) -> AttachmentProfile:
+        """Per-session upload stats. Best-effort: a fork without the uploads
+        table, or a transient error, yields an empty profile, never a 500."""
+        try:
+            stats = await self._files().list_session_file_stats(session_id)
+        except Exception as e:  # noqa: BLE001 - attachments are one signal of several
+            logger.debug("Attachment stats unavailable for session: %s", e)
+            return AttachmentProfile()
+        by_mime: Counter = Counter()
+        total_bytes = 0
+        for item in stats:
+            by_mime[item.get("mimeType") or "unknown"] += 1
+            total_bytes += _as_int(item.get("sizeBytes")) or 0
+        return AttachmentProfile(
+            count=len(stats),
+            total_bytes=total_bytes,
+            by_mime=dict(by_mime),
+        )
+
+    async def get_session_profile(self, session_id: str) -> Optional[SessionProfile]:
+        """The content-free diagnostic profile of one conversation, or ``None``
+        when the session has no metadata row.
+
+        Three reads — the session row (by session id, via the lookup index),
+        the per-call cost rows the anatomy already uses, and the session's
+        upload stats — then pure arithmetic: context trajectory, model mix,
+        fingerprint churn, tool census, and the diagnosis rules over all of it.
+        """
+        row = await self.storage.get_session_diagnostic_row(session_id)
+        if row is None:
+            return None
+        user_id = row.get("userId")
+
+        records = await self.storage.get_session_cost_records(session_id)
+        attachments = await self._attachment_profile(session_id)
+        user_period_cost = (
+            await self._user_period_cost(user_id, self._get_current_period())
+            if user_id else None
+        )
+
+        # ── per-call derivations ──
+        trajectory: List[ContextTrajectoryPoint] = []
+        model_mix: Counter = Counter()
+        census: Dict[str, ToolCensusEntry] = {}
+        system_changes = tool_changes = explained = 0
+        system_hashes: set = set()
+        tool_hashes: set = set()
+        agent_switches = 0
+        read_total = write_total = 0
+        any_fingerprints = any_census = False
+        previous_fp: Optional[Dict[str, Any]] = None
+
+        for index, record in enumerate(records):
+            usage = record.get("tokenUsage") or {}
+            read_total += int(usage.get("cacheReadInputTokens") or 0)
+            write_total += int(usage.get("cacheWriteInputTokens") or 0)
+            model_id = (record.get("modelInfo") or {}).get("modelId")
+            if model_id:
+                model_mix[model_id] += 1
+            switched = bool(record.get("agentSwitched"))
+            if switched:
+                agent_switches += 1
+
+            fp = record.get("prefixFingerprints")
+            if isinstance(fp, dict):
+                any_fingerprints = True
+                if not switched:
+                    if fp.get("systemPromptHash"):
+                        system_hashes.add(fp["systemPromptHash"])
+                    if fp.get("toolConfigHash"):
+                        tool_hashes.add(fp["toolConfigHash"])
+                if isinstance(previous_fp, dict):
+                    changed = False
+                    if fp.get("systemPromptHash") != previous_fp.get("systemPromptHash"):
+                        system_changes += 1
+                        changed = True
+                    if fp.get("toolConfigHash") != previous_fp.get("toolConfigHash"):
+                        tool_changes += 1
+                        changed = True
+                    if changed and switched:
+                        explained += 1
+                previous_fp = fp
+
+            tool_calls_raw = record.get("toolCalls")
+            point_tool_calls: Optional[Dict[str, int]] = None
+            if isinstance(tool_calls_raw, dict):
+                any_census = True
+                point_tool_calls = {}
+                for name, entry in tool_calls_raw.items():
+                    calls = _as_int(entry.get("calls") if isinstance(entry, dict) else entry) or 0
+                    errors = _as_int(entry.get("errors")) or 0 if isinstance(entry, dict) else 0
+                    point_tool_calls[name] = calls
+                    slot = census.setdefault(name, ToolCensusEntry())
+                    slot.calls += calls
+                    slot.errors += errors
+
+            trajectory.append(ContextTrajectoryPoint(
+                call_index=index,
+                timestamp=record.get("timestamp", ""),
+                context_tokens=_context_tokens(record),
+                cache_status=record.get("cacheStatus"),
+                model_id=model_id,
+                cost=_record_cost(record),
+                tool_calls=point_tool_calls,
+            ))
+
+        # Cache totals: the rows are authoritative when present, else the
+        # session rollups (which cover calls written before fingerprints).
+        if not records:
+            read_total = _as_int(row.get("totalCacheReadTokens")) or 0
+            write_total = _as_int(row.get("totalCacheWriteTokens")) or 0
+
+        peak = max((p.context_tokens for p in trajectory), default=None)
+        if peak is None:
+            peak = _as_int(row.get("lastContextTokens"))
+
+        total_cost = _as_float(row.get("totalCost"))
+        share = self._share(total_cost, user_period_cost)
+        threshold = compaction_token_threshold()
+
+        facts = self._row_facts(row, threshold, share)
+        facts.call_count = len(records)
+        facts.peak_context_tokens = peak
+        facts.cache_read_tokens = read_total
+        facts.cache_write_tokens = write_total
+        facts.distinct_system_prompt_hashes = len(system_hashes)
+        facts.distinct_tool_config_hashes = len(tool_hashes)
+        facts.agent_switch_count = agent_switches
+        facts.attachment_count = attachments.count
+        facts.attachment_bytes = attachments.total_bytes
+        if any_census:
+            facts.tool_call_count = sum(e.calls for e in census.values())
+            facts.tool_error_count = sum(e.errors for e in census.values())
+
+        findings = run_diagnoses(facts)
+        summary = self._session_summary(row, findings, share)
+        if any_census and summary.tool_call_count is None:
+            summary.tool_call_count = facts.tool_call_count
+            summary.tool_error_count = facts.tool_error_count
+
+        return SessionProfile(
+            session_id=session_id,
+            user_id=user_id,
+            session=summary,
+            call_count=len(records),
+            peak_context_tokens=peak,
+            compaction_threshold=threshold,
+            write_read_ratio=(
+                round(write_total / read_total, 3) if read_total > 0 else None
+            ),
+            attachments=attachments,
+            context_trajectory=trajectory,
+            model_mix=dict(model_mix),
+            fingerprint_changes=FingerprintChanges(
+                system_prompt=system_changes,
+                tool_config=tool_changes,
+                explained_by_agent_switch=explained,
+            ),
+            tool_census=census,
+            enabled_tool_ids=sorted(facts.enabled_tools),
+            diagnoses=[SessionDiagnosis(**d.to_dict()) for d in findings],
+            data_coverage=DataCoverage(
+                tool_census=any_census or row.get("toolCallCount") is not None,
+                compaction_count=row.get("compactionCount") is not None,
+                fingerprints=any_fingerprints,
+                cost=total_cost is not None,
+            ),
         )
 
     async def get_dashboard(

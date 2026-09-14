@@ -1,0 +1,159 @@
+"""The content-free storage readers, against a real (moto) table.
+
+Seeds rows that *carry* every kind of content the denylist names — a title, a
+custom prompt, a compaction summary, citation text, display text — and asserts
+none of it comes back through the three admin readers, while the numbers next
+to it do. The one reader that keeps `title` by decision is pinned too, so a
+future "harden everything" sweep does not change it by accident.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from apis.shared.observability.content_policy import content_bearing_paths
+
+SESSION_ID = "sess-diag-1"
+USER_ID = "user-diag-1"
+SUMMARY = "s" * 2_000
+
+
+def _seed(storage):
+    table = storage.sessions_metadata_table
+    table.put_item(Item={
+        "PK": f"USER#{USER_ID}",
+        "SK": f"S#{SESSION_ID}",
+        "GSI_PK": f"SESSION#{SESSION_ID}",
+        "GSI_SK": "META",
+        "sessionId": SESSION_ID,
+        "userId": USER_ID,
+        "title": "SECRET TITLE",
+        "tags": ["secret-tag"],
+        "status": "active",
+        "createdAt": "2026-09-01T00:00:00Z",
+        "lastMessageAt": "2026-09-02T00:00:00Z",
+        "messageCount": Decimal(4),
+        "totalCost": Decimal("1.25"),
+        "lastContextTokens": Decimal(120_000),
+        "contextWindow": Decimal(200_000),
+        "totalCacheReadTokens": Decimal(10_000),
+        "totalCacheWriteTokens": Decimal(40_000),
+        "partialMissCount": Decimal(2),
+        "partialMissUsd": Decimal("0.9"),
+        "wastedUsd": Decimal("0.9"),
+        "preferences": {
+            "lastModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "enabledTools": ["calculator", "analyze_spreadsheet"],
+            "customPromptText": "SECRET PROMPT",
+            "assistantId": "agent-1",
+        },
+        "compaction": {
+            "checkpoint": Decimal(34),
+            "truncationAnchor": Decimal(68),
+            "totalSummarizedTurns": Decimal(12),
+            "summary": SUMMARY,
+        },
+        "pausedTurn": {"modelId": "m", "prompt": "SECRET"},
+    })
+    table.put_item(Item={
+        "PK": f"USER#{USER_ID}",
+        "SK": "C#2026-09-02T00:00:00Z#abc",
+        "GSI_PK": f"SESSION#{SESSION_ID}",
+        "GSI_SK": "C#2026-09-02T00:00:00Z",
+        "GSI1PK": f"USER#{USER_ID}",
+        "GSI1SK": "2026-09-02T00:00:00Z",
+        "sessionId": SESSION_ID,
+        "messageId": Decimal(3),
+        "timestamp": "2026-09-02T00:00:00Z",
+        "tokenUsage": {
+            "inputTokens": Decimal(100),
+            "outputTokens": Decimal(50),
+            "cacheReadInputTokens": Decimal(10_000),
+            "cacheWriteInputTokens": Decimal(40_000),
+        },
+        "modelInfo": {
+            "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "modelName": "Claude Haiku 4.5",
+            "pricingSnapshot": {"inputPricePerMtok": Decimal("1.1")},
+        },
+        "cost": {"total": Decimal("0.05")},
+        "cacheStatus": "partial_miss",
+        "wastedUsd": Decimal("0.04"),
+        "agentSwitched": False,
+        "prefixFingerprints": {"toolConfigHash": "abc", "systemPromptHash": "def", "historyHash": "ghi", "messageCount": Decimal(3)},
+        "citations": [{"text": "SECRET CITATION", "fileName": "secret.pdf", "documentId": "d1"}],
+        "displayText": "SECRET USER MESSAGE",
+    })
+
+
+@pytest.mark.asyncio
+async def test_user_session_diagnostics_returns_numbers_and_no_content(storage):
+    _seed(storage)
+    rows = await storage.get_user_session_diagnostics(USER_ID)
+    assert len(rows) == 1
+    row = rows[0]
+
+    assert content_bearing_paths(row) == []
+    assert "title" not in row and "tags" not in row and "pausedTurn" not in row
+    # The summary was measured, then dropped.
+    assert row["compaction"]["summaryChars"] == len(SUMMARY)
+    assert "summary" not in row["compaction"]
+    assert row["compaction"]["checkpoint"] == 34 and row["compaction"]["truncationAnchor"] == 68
+    # Preferences reduced to the allowlisted keys — the custom prompt is gone.
+    assert row["preferences"] == {
+        "lastModel": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "enabledTools": ["calculator", "analyze_spreadsheet"],
+        "assistantId": "agent-1",
+    }
+    # And the numbers came through as floats/ints.
+    assert row["totalCost"] == 1.25 and row["lastContextTokens"] == 120_000
+
+
+@pytest.mark.asyncio
+async def test_session_diagnostic_row_resolves_by_session_id_only(storage):
+    _seed(storage)
+    row = await storage.get_session_diagnostic_row(SESSION_ID)
+    assert row is not None and row["userId"] == USER_ID
+    assert content_bearing_paths(row) == []
+    assert row["compaction"]["summaryChars"] == len(SUMMARY)
+    assert await storage.get_session_diagnostic_row("no-such-session") is None
+
+
+@pytest.mark.asyncio
+async def test_session_cost_records_no_longer_carry_citation_text(storage):
+    _seed(storage)
+    records = await storage.get_session_cost_records(SESSION_ID)
+    assert len(records) == 1
+    rec = records[0]
+    assert content_bearing_paths(rec) == []
+    assert "citations" not in rec and "displayText" not in rec
+    # Only the model id survives from modelInfo — pricing is not the anatomy's business.
+    assert rec["modelInfo"] == {"modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0"}
+    # Everything the anatomy reads is still there.
+    assert rec["cacheStatus"] == "partial_miss"
+    assert rec["tokenUsage"]["cacheWriteInputTokens"] == 40_000
+    assert rec["prefixFingerprints"]["systemPromptHash"] == "def"
+    assert rec["cost"] == {"total": 0.05}
+
+
+@pytest.mark.asyncio
+async def test_top_sessions_reader_keeps_title_by_decision(storage):
+    # Pinned on purpose: the "most expensive conversations" table shows the
+    # title. If this ever changes it should change in a PR that says so.
+    _seed(storage)
+    rows = await storage.get_user_session_costs(USER_ID)
+    assert rows[0]["title"] == "SECRET TITLE"
+    assert "compaction" not in rows[0]  # and it never widened into the diagnostic fields
+
+
+@pytest.mark.asyncio
+async def test_deleted_sessions_are_excluded_from_the_diagnostic_list(storage):
+    _seed(storage)
+    storage.sessions_metadata_table.put_item(Item={
+        "PK": f"USER#{USER_ID}", "SK": "S#gone", "GSI_PK": "SESSION#gone", "GSI_SK": "META",
+        "sessionId": "gone", "userId": USER_ID, "deleted": True, "totalCost": Decimal("9"),
+    })
+    rows = await storage.get_user_session_diagnostics(USER_ID)
+    assert [r["sessionId"] for r in rows] == [SESSION_ID]

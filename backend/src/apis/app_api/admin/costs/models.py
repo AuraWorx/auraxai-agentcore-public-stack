@@ -6,7 +6,7 @@ and cost trends.
 """
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 
 
 class TopUserCost(BaseModel):
@@ -241,3 +241,170 @@ class AdminCostDashboard(BaseModel):
 
     # Historical daily trends (optional)
     daily_trends: Optional[List[CostTrend]] = Field(None, alias="dailyTrends")
+
+
+# =============================================================================
+# Per-user conversation list + session profile (content-free drill-down)
+#
+# Every field below is a count, a token figure, a dollar figure, a timestamp,
+# a hash-derived count, or a catalog/tool *id*. No field may carry user text
+# or model-generated prose — `tests/.../test_content_policy.py` walks these
+# models against `apis.shared.observability.content_policy.CONTENT_BEARING`.
+# The single exemption on this surface is `TopSessionCost.title`, above.
+# =============================================================================
+
+
+class SessionDiagnosis(BaseModel):
+    """One named finding from `diagnoses.run_diagnoses`."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    code: str
+    severity: str  # high | warn | info
+    headline: str
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    suggestion: str
+    ref: str
+
+
+class UserSessionSummary(BaseModel):
+    """One conversation in a user's content-free conversation list.
+
+    ``costKnown=False`` means the session's cost aggregate was never written —
+    the cost is *unrecorded*, not zero — and ``totalCost`` is then ``None``.
+    Optional counters (``toolCallCount``, ``toolErrorCount``,
+    ``compactionCount``) are ``None`` on rows written before they shipped, so
+    a UI can say "not tracked" rather than "0".
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_id: str = Field(..., alias="sessionId")
+    created_at: Optional[str] = Field(None, alias="createdAt")
+    last_message_at: Optional[str] = Field(None, alias="lastMessageAt")
+    status: Optional[str] = None
+    message_count: Optional[int] = Field(None, alias="messageCount")
+
+    model_id: Optional[str] = Field(None, alias="modelId")
+    enabled_tool_count: Optional[int] = Field(None, alias="enabledToolCount")
+    agent_bound: bool = Field(False, alias="agentBound")
+
+    last_context_tokens: Optional[int] = Field(None, alias="lastContextTokens")
+    context_window: Optional[int] = Field(None, alias="contextWindow")
+    # lastContextTokens / contextWindow, 0..1, when both are known
+    context_share: Optional[float] = Field(None, alias="contextShare")
+
+    total_cost: Optional[float] = Field(None, alias="totalCost")
+    cost_known: bool = Field(False, alias="costKnown")
+    share_of_user_period: Optional[float] = Field(None, alias="shareOfUserPeriod")
+
+    cache_efficiency: Optional[float] = Field(None, alias="cacheEfficiency")
+    wasted_usd: Optional[float] = Field(None, alias="wastedUsd")
+    partial_miss_usd: Optional[float] = Field(None, alias="partialMissUsd")
+
+    summarized_turns: Optional[int] = Field(None, alias="summarizedTurns")
+    summary_approx_tokens: Optional[int] = Field(None, alias="summaryApproxTokens")
+
+    tool_call_count: Optional[int] = Field(None, alias="toolCallCount")
+    tool_error_count: Optional[int] = Field(None, alias="toolErrorCount")
+    compaction_count: Optional[int] = Field(None, alias="compactionCount")
+
+    diagnosis_count: int = Field(0, alias="diagnosisCount")
+    top_diagnosis_severity: Optional[str] = Field(None, alias="topDiagnosisSeverity")
+
+
+class UserSessionsResponse(BaseModel):
+    """A user's conversations, content-free, for the admin user page."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    user_id: str = Field(..., alias="userId")
+    # The period the list was scoped to (YYYY-MM), or None for all time.
+    period: Optional[str] = None
+    # The user's recorded cost for `period`, when scoped; the denominator of
+    # each row's `shareOfUserPeriod`.
+    user_period_cost: Optional[float] = Field(None, alias="userPeriodCost")
+    sessions: List[UserSessionSummary]
+    # Rows before `limit` was applied, so the page can say "showing 50 of 212".
+    total: int = 0
+    # Sessions excluded because their cost is unrecorded (they are still listed,
+    # with costKnown=False, when sort != "cost"; under cost-sort they trail).
+    unknown_cost_count: int = Field(0, alias="unknownCostCount")
+
+
+class AttachmentProfile(BaseModel):
+    """Per-session upload stats. Never filenames."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    count: int = 0
+    total_bytes: int = Field(0, alias="totalBytes")
+    by_mime: Dict[str, int] = Field(default_factory=dict, alias="byMime")
+
+
+class ContextTrajectoryPoint(BaseModel):
+    """One model call's context occupancy (input + cacheRead + cacheWrite)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    call_index: int = Field(..., alias="callIndex")
+    timestamp: str
+    context_tokens: int = Field(..., alias="contextTokens")
+    cache_status: Optional[str] = Field(None, alias="cacheStatus")
+    model_id: Optional[str] = Field(None, alias="modelId")
+    cost: Optional[float] = None
+    # Per-call tool census when recorded (PR-3): tool name -> calls
+    tool_calls: Optional[Dict[str, int]] = Field(None, alias="toolCalls")
+
+
+class FingerprintChanges(BaseModel):
+    """How often each cached-prefix component changed between consecutive calls."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    system_prompt: int = Field(0, alias="systemPrompt")
+    tool_config: int = Field(0, alias="toolConfig")
+    # The subset of the two figures above that an Agent switch explains.
+    explained_by_agent_switch: int = Field(0, alias="explainedByAgentSwitch")
+
+
+class ToolCensusEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    calls: int = 0
+    errors: int = 0
+
+
+class DataCoverage(BaseModel):
+    """Which optional signals this session actually has, so the UI can say
+    "not tracked" instead of rendering an honest-looking zero."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    tool_census: bool = Field(False, alias="toolCensus")
+    compaction_count: bool = Field(False, alias="compactionCount")
+    fingerprints: bool = False
+    cost: bool = False
+
+
+class SessionProfile(BaseModel):
+    """The content-free diagnostic profile of one conversation."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_id: str = Field(..., alias="sessionId")
+    user_id: Optional[str] = Field(None, alias="userId")
+    session: UserSessionSummary
+
+    call_count: int = Field(0, alias="callCount")
+    peak_context_tokens: Optional[int] = Field(None, alias="peakContextTokens")
+    compaction_threshold: int = Field(..., alias="compactionThreshold")
+    write_read_ratio: Optional[float] = Field(None, alias="writeReadRatio")
+
+    attachments: AttachmentProfile
+    context_trajectory: List[ContextTrajectoryPoint] = Field(
+        default_factory=list, alias="contextTrajectory"
+    )
+    model_mix: Dict[str, int] = Field(default_factory=dict, alias="modelMix")
+    fingerprint_changes: FingerprintChanges = Field(
+        default_factory=FingerprintChanges, alias="fingerprintChanges"
+    )
+    tool_census: Dict[str, ToolCensusEntry] = Field(
+        default_factory=dict, alias="toolCensus"
+    )
+    enabled_tool_ids: List[str] = Field(default_factory=list, alias="enabledToolIds")
+
+    diagnoses: List[SessionDiagnosis] = Field(default_factory=list)
+    data_coverage: DataCoverage = Field(default_factory=DataCoverage, alias="dataCoverage")
