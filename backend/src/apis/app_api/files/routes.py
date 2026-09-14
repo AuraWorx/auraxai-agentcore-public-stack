@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
 from apis.shared.auth import User, get_current_user_from_session
 from apis.shared.files.repository import InvalidCursorError
@@ -164,6 +164,44 @@ async def get_preview_url(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"File {upload_id} not found or not owned by you",
         )
+
+
+@router.get("/{upload_id}/download", response_class=RedirectResponse)
+async def download_file(
+    upload_id: str,
+    user: User = Depends(get_current_user_from_session),
+    service: FileUploadService = Depends(get_file_upload_service),
+):
+    """
+    Redirect to a freshly minted presigned GET URL that downloads the file.
+
+    This is the *durable* download link. Presigned S3 URLs expire in minutes,
+    so any URL that gets written into a conversation — the inline download
+    card on a generated .docx, a link in an assistant message — is dead by the
+    time the user reopens the thread. This route is a stable, owner-scoped
+    path (`/api/files/{uploadId}/download`) that mints the presigned URL at
+    click time, so a persisted link keeps working for as long as the file does.
+
+    A 302 rather than a proxied body: the bytes still come straight from S3,
+    and the response carries `Content-Disposition: attachment` from the
+    presigned request.
+    """
+    try:
+        url = await service.get_download_url(user.user_id, upload_id)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File {upload_id} not found or not owned by you",
+        )
+
+    # 302 (not 307): this is a GET-only redirect to a different origin, and
+    # `no-store` keeps a browser or intermediary from reusing the Location
+    # after the signature it carries has expired.
+    return RedirectResponse(
+        url=url,
+        status_code=status.HTTP_302_FOUND,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/{upload_id}/text-snippet", response_model=TextSnippetResponse)

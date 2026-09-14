@@ -1,15 +1,26 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { ConfigService } from '../../../../../../services/config.service';
+import {
+  downloadUrlFor,
+  durableDownloadUrlFromHref,
+} from '../../../../../../shared/utils/file-download-url';
 
 /**
  * Payload for the file_download inline visual, produced by the office document
- * tools (create_word_document, create_excel_spreadsheet, ...). download_url is
- * a short-lived presigned S3 GET URL whose response forces
- * Content-Disposition: attachment, so a plain click downloads the file (no new
- * tab / navigation needed).
+ * tools (create_word_document, create_excel_spreadsheet, ...) and by
+ * workspace_write.
+ *
+ * `upload_id` is the current contract; the card resolves it to the durable
+ * `/files/{uploadId}/download` route, which mints a presigned URL per click.
+ * `download_url` is the legacy field — a presigned S3 URL that expired an hour
+ * after the message was written — and is kept only so cards already persisted
+ * in old conversations still work: the upload id is recovered from the S3 key
+ * and routed the same way.
  */
 interface FileDownloadPayload {
   filename: string;
-  download_url: string;
+  upload_id?: string;
+  download_url?: string;
   size_kb?: string;
 }
 
@@ -111,7 +122,7 @@ function styleForFilename(filename: string): FileKindStyle {
                  text-sm/5 font-semibold text-white! no-underline! transition-colors
                  hover:brightness-95
                  focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
-          [href]="f.download_url"
+          [href]="f.href"
           [attr.download]="f.filename"
           rel="noopener noreferrer"
         >
@@ -133,15 +144,26 @@ export class FileDownloadRendererComponent {
   /** The payload data from the backend tool result. */
   payload = input.required<unknown>();
 
+  private readonly config = inject(ConfigService);
+
   /** Narrowed, validated payload with resolved icon styling (null when malformed). */
-  file = computed<(FileDownloadPayload & FileKindStyle) | null>(() => {
+  file = computed<(FileDownloadPayload & FileKindStyle & { href: string }) | null>(() => {
     const raw = this.payload();
     if (!raw || typeof raw !== 'object') return null;
     const p = raw as Partial<FileDownloadPayload>;
-    if (!p.filename || !p.download_url) return null;
+    if (!p.filename) return null;
+
+    const appApiUrl = this.config.appApiUrl();
+    const href = p.upload_id
+      ? downloadUrlFor(appApiUrl, p.upload_id)
+      : p.download_url
+        ? durableDownloadUrlFromHref(appApiUrl, p.download_url)
+        : null;
+    if (!href) return null;
+
     return {
       filename: p.filename,
-      download_url: p.download_url,
+      href,
       size_kb: p.size_kb,
       ...styleForFilename(p.filename),
     };
