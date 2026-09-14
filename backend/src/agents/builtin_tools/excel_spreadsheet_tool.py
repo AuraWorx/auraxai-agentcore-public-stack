@@ -328,14 +328,14 @@ def make_create_excel_spreadsheet_tool(session_id: str, user_id: str):
             return _error(f"❌ Failed to create '{filename}': {exc}")
 
         try:
-            _id, download_url, size_kb = await _store_document(
+            upload_id, size_kb = await _store_document(
                 user_id, session_id, filename, file_bytes, _XLSX_MIME
             )
         except Exception as exc:  # noqa: BLE001 - storage failure is terminal
             logger.error(f"create_excel_spreadsheet storage error: {exc}")
             return _error(f"❌ Created '{filename}' but failed to save it: {exc}")
 
-        return _download_card(filename, download_url, size_kb, "Created")
+        return _download_card(filename, upload_id, size_kb, "Created")
 
     return create_excel_spreadsheet
 
@@ -424,7 +424,7 @@ def make_modify_excel_spreadsheet_tool(session_id: str, user_id: str):
             return _error(f"❌ Failed to modify '{source.filename}': {exc}")
 
         try:
-            _id, download_url, size_kb = await _store_document(
+            upload_id, size_kb = await _store_document(
                 user_id, session_id, output_filename, file_bytes, _XLSX_MIME
             )
         except Exception as exc:  # noqa: BLE001 - storage failure is terminal
@@ -433,7 +433,7 @@ def make_modify_excel_spreadsheet_tool(session_id: str, user_id: str):
                 f"❌ Modified '{source.filename}' but failed to save it: {exc}"
             )
 
-        return _download_card(output_filename, download_url, size_kb, "Updated")
+        return _download_card(output_filename, upload_id, size_kb, "Updated")
 
     return modify_excel_spreadsheet
 
