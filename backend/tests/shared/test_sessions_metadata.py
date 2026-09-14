@@ -1113,6 +1113,116 @@ class TestPausedTurnSnapshot:
         assert interrupts[0].interrupt_id == "i1"
 
 
+class TestClearPendingInterrupts:
+    """The "supersede" clear: a fresh turn abandons a paused one.
+
+    Separate from ``remove_pending_interrupts`` (drop resolved ids) because a
+    breadcrumb that outlives its ``pausedTurn`` snapshot re-renders a prompt
+    the user can no longer answer — the resume route 400s on an interrupt id
+    the rebuilt agent has never heard of.
+    """
+
+    @pytest.mark.asyncio
+    async def test_clears_every_breadcrumb(self, sessions_metadata_table):
+        from apis.shared.sessions.metadata import (
+            ensure_session_metadata_exists, add_pending_interrupt,
+            get_pending_interrupts, clear_pending_interrupts,
+        )
+        from apis.shared.sessions.models import PendingInterrupt
+
+        await ensure_session_metadata_exists("s1", "u1")
+        for n in ("i1", "i2"):
+            await add_pending_interrupt(
+                "s1", "u1",
+                PendingInterrupt(
+                    interruptId=n, providerId="calendar",
+                    createdAt="2026-04-25T00:00:00Z",
+                ),
+            )
+        assert len(await get_pending_interrupts("s1", "u1")) == 2
+
+        await clear_pending_interrupts("s1", "u1")
+
+        assert await get_pending_interrupts("s1", "u1") == []
+
+    @pytest.mark.asyncio
+    async def test_clears_a_user_question_breadcrumb(self, sessions_metadata_table):
+        """The flavor this shipped for: the picker's primary action is Submit,
+        so a stale prompt hands the user a guaranteed error rather than a
+        dismissible notice."""
+        from apis.shared.sessions.metadata import (
+            ensure_session_metadata_exists, add_pending_interrupt,
+            get_pending_interrupts, clear_pending_interrupts,
+        )
+        from apis.shared.sessions.models import PendingInterrupt
+
+        await ensure_session_metadata_exists("s1", "u1")
+        await add_pending_interrupt(
+            "s1", "u1",
+            PendingInterrupt(
+                interruptId="v1:tool_call:tu-1:abc", kind="user_question",
+                toolUseId="tu-1", toolName="ask_user_question",
+                questions='[{"header":"Scope","question":"Which?","options":[{"label":"a"}]}]',
+                createdAt="2026-04-25T00:00:00Z",
+            ),
+        )
+
+        await clear_pending_interrupts("s1", "u1")
+
+        assert await get_pending_interrupts("s1", "u1") == []
+
+    @pytest.mark.asyncio
+    async def test_noop_when_already_clear(self, sessions_metadata_table):
+        from apis.shared.sessions.metadata import (
+            ensure_session_metadata_exists, clear_pending_interrupts,
+            get_pending_interrupts,
+        )
+
+        await ensure_session_metadata_exists("s1", "u1")
+        await clear_pending_interrupts("s1", "u1")
+        assert await get_pending_interrupts("s1", "u1") == []
+
+    @pytest.mark.asyncio
+    async def test_noop_when_session_missing(self, sessions_metadata_table):
+        from apis.shared.sessions.metadata import clear_pending_interrupts
+
+        await clear_pending_interrupts("never-created", "u1")
+
+    @pytest.mark.asyncio
+    async def test_leaves_the_paused_turn_snapshot_alone(self, sessions_metadata_table):
+        """The inverse of ``test_paused_turn_independent_of_pending_interrupts``.
+
+        Each clear stays in its own lane; the routes layer calls both when a
+        fresh turn supersedes a paused one, and that ordering is its policy to
+        own — not something either function should assume.
+        """
+        from apis.shared.sessions.metadata import (
+            ensure_session_metadata_exists, set_paused_turn, get_paused_turn,
+            add_pending_interrupt, clear_pending_interrupts,
+        )
+        from apis.shared.sessions.models import PausedTurnSnapshot, PendingInterrupt
+
+        await ensure_session_metadata_exists("s1", "u1")
+        await set_paused_turn(
+            "s1", "u1",
+            PausedTurnSnapshot(
+                enabledTools=["calendar"], capturedAt="2026-04-25T00:00:00Z",
+                expiresAt="2026-04-25T01:00:00Z",
+            ),
+        )
+        await add_pending_interrupt(
+            "s1", "u1",
+            PendingInterrupt(
+                interruptId="i1", providerId="calendar",
+                createdAt="2026-04-25T00:00:00Z",
+            ),
+        )
+
+        await clear_pending_interrupts("s1", "u1")
+
+        assert await get_paused_turn("s1", "u1") is not None
+
+
 class TestCoerceCostTotal:
     """Normalize ``MessageMetadata.cost`` (float | dict | None) to a finite float total.
 
