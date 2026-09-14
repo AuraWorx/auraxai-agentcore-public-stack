@@ -619,6 +619,12 @@ class StreamCoordinator:
                         user_id=user_id,
                     ):
                         yield sse
+                    for sse in await self._extract_user_question_required_events(
+                        agent,
+                        session_id=session_id,
+                        user_id=user_id,
+                    ):
+                        yield sse
                     for sse in self._extract_preflight_consent_events(user_id):
                         yield sse
 
@@ -1916,6 +1922,96 @@ class StreamCoordinator:
                     tool_name=tool_name,
                     tool_input=tool_input,
                     message=message,
+                ).to_sse_format()
+            )
+        return events
+
+    async def _extract_user_question_required_events(
+        self,
+        agent: Any,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[str]:
+        """Yield one SSE-formatted `user_question_required` event per pending
+        ``ask_user_question`` interrupt, persisting each one so the picker
+        rehydrates after a refresh.
+
+        Structurally identical to
+        :meth:`_extract_tool_approval_required_events` — the difference is only
+        where the interrupt came from. That one is raised by a hook before
+        someone else's tool; this one is raised by the ``ask_user_question``
+        tool itself through ``ToolContext``. Strands routes both through
+        ``_stop_for_interrupts``, so by the time we read
+        ``agent._interrupt_state`` the two are indistinguishable and the
+        ``PausedTurnSnapshot`` written on this same ``done`` event covers both.
+
+        Persistence is best-effort: a DynamoDB write failure logs but does not
+        break the live SSE flow — the user still sees the prompt, they just
+        lose it on a refresh.
+        """
+        from apis.shared.sessions.metadata import add_pending_interrupt
+        from apis.shared.sessions.models import PendingInterrupt
+        from apis.shared.user_questions.models import (
+            UserQuestion,
+            UserQuestionRequiredEvent,
+            encode_questions,
+        )
+
+        interrupt_state = getattr(agent, "_interrupt_state", None)
+        if not interrupt_state or not getattr(interrupt_state, "activated", False):
+            return []
+
+        events: List[str] = []
+        for interrupt in interrupt_state.interrupts.values():
+            reason = interrupt.reason or {}
+            if not isinstance(reason, dict) or reason.get("type") != "user_question_required":
+                continue
+
+            raw_questions = reason.get("questions") or []
+            try:
+                questions = [UserQuestion.model_validate(q) for q in raw_questions]
+            except Exception as e:  # noqa: BLE001 - never break the stream
+                logger.warning(
+                    "User-question interrupt carries unrenderable questions "
+                    "(id=%s): %s",
+                    interrupt.id, e,
+                )
+                continue
+            if not questions:
+                logger.warning(
+                    "User-question interrupt has no questions: id=%s", interrupt.id
+                )
+                continue
+
+            tool_use_id = reason.get("toolUseId", "")
+
+            # Persist the breadcrumb before yielding so a client that refreshes
+            # mid-prompt can rehydrate the picker.
+            if session_id and user_id:
+                try:
+                    await add_pending_interrupt(
+                        session_id=session_id,
+                        user_id=user_id,
+                        interrupt=PendingInterrupt(
+                            interrupt_id=interrupt.id,
+                            kind="user_question",
+                            tool_use_id=tool_use_id,
+                            tool_name="ask_user_question",
+                            questions=encode_questions(questions),
+                            created_at=datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to persist user_question pending_interrupt %s: %s",
+                        interrupt.id, e, exc_info=True,
+                    )
+
+            events.append(
+                UserQuestionRequiredEvent(
+                    interrupt_id=interrupt.id,
+                    tool_use_id=tool_use_id,
+                    questions=questions,
                 ).to_sse_format()
             )
         return events
