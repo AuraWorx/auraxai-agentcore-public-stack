@@ -8,6 +8,7 @@ import {
   heroPhoto,
   heroPresentationChartBar,
   heroArrowTopRightOnSquare,
+  heroEye,
 } from '@ng-icons/heroicons/outline';
 import { MarkdownComponent } from 'ngx-markdown';
 import { formatBytes, FileUploadService } from '../../../../../services/file-upload';
@@ -156,6 +157,7 @@ const SLIDE_BULLET_WIDTHS = [78, 92, 60];
       heroPhoto,
       heroPresentationChartBar,
       heroArrowTopRightOnSquare,
+      heroEye,
     }),
   ],
   host: { class: 'contents' },
@@ -260,11 +262,28 @@ const SLIDE_BULLET_WIDTHS = [78, 92, 60];
             {{ style().label }}
           </span>
         </div>
-        <ng-icon
-          name="heroArrowTopRightOnSquare"
-          class="size-4 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100"
-          aria-hidden="true"
-        />
+        <!-- The affordance has to be legible at rest, not on hover. A card
+             that only reveals what it does when the pointer is over it says
+             nothing to someone reading the thread, and nothing at all on a
+             touch screen. For anything the pane can render we therefore
+             spell it out — eye + "Preview", the same pairing the generated
+             file's download card uses, so the two read as one feature.
+             Everything else keeps the quieter hover hint, because "opens in
+             a new tab" is a weaker promise not worth the ink. -->
+        @if (isPanePreviewable()) {
+          <span
+            class="flex items-center gap-1 text-[10px] font-bold tracking-wider text-gray-600 transition-colors group-hover:text-gray-900 dark:text-gray-300 dark:group-hover:text-white"
+          >
+            <ng-icon name="heroEye" class="size-3.5" aria-hidden="true" />
+            PREVIEW
+          </span>
+        } @else {
+          <ng-icon
+            name="heroArrowTopRightOnSquare"
+            class="size-4 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100"
+            aria-hidden="true"
+          />
+        }
       </div>
 
       <!-- Paper page area -->

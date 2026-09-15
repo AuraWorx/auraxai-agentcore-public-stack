@@ -121,6 +121,26 @@ describe('FileAttachmentBadgeComponent click routing', () => {
     expect(getPreviewUrl).toHaveBeenCalledWith('up1');
   });
 
+  it('advertises Preview on the card at rest, not only on hover', async () => {
+    // The card is the whole affordance — there is no separate button — so a
+    // hover-only hint tells a reader of the thread nothing, and a touch user
+    // nothing at all.
+    const { fixture } = await mount('deck.pptx', PPTX_MIME);
+
+    const label = fixture.nativeElement.textContent;
+    expect(label).toContain('PREVIEW');
+
+    const badge = [...fixture.nativeElement.querySelectorAll('span')].find(
+      (el: HTMLElement) => el.textContent?.includes('PREVIEW'),
+    ) as HTMLElement;
+    expect(badge.className).not.toContain('opacity-0');
+  });
+
+  it('does not advertise Preview for a format the pane cannot render', async () => {
+    const { fixture } = await mount('paper.pdf', PDF_MIME);
+    expect(fixture.nativeElement.textContent).not.toContain('PREVIEW');
+  });
+
   it('names the action Preview only when it previews', async () => {
     const deck = await mount('deck.pptx', PPTX_MIME);
     expect(
