@@ -200,6 +200,7 @@ case "$SERVICE" in
         MANIFESTS=(
             "backend/src/apis/shared/__init__.py"
             "backend/src/apis/shared/errors.py"
+            "backend/src/apis/shared/feature_flags.py"
         )
         # Both scheduled-runs Lambdas are arm64 (see the scheduled-runs
         # CDK construct).

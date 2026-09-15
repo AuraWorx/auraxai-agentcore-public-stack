@@ -6,6 +6,8 @@ import { PendingInterrupt, SessionService } from './session.service';
 import { FileUploadService, FileMetadata } from '../../../services/file-upload';
 import { OAuthConsentService } from '../../../services/oauth-consent/oauth-consent.service';
 import { ToolApprovalService } from '../../../services/tool-approval/tool-approval.service';
+import { UserQuestionService } from '../../../services/user-question/user-question.service';
+import { validateUserQuestions } from '../../../shared/utils/stream-parser';
 import { McpAppStateService } from '../mcp-apps/mcp-app-state.service';
 import { ToolInsightService } from '../chat/tool-insight.service';
 import { normalizeSteeringMessages } from '../chat/steering';
@@ -69,6 +71,7 @@ export class MessageMapService {
   private fileUploadService = inject(FileUploadService);
   private oauthConsentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
+  private userQuestionService = inject(UserQuestionService);
   private mcpAppState = inject(McpAppStateService);
   private toolInsight = inject(ToolInsightService);
   private injector = inject(Injector);
@@ -474,6 +477,50 @@ export class MessageMapService {
    * anchor to the most recent assistant message, mirroring the live-stream
    * behavior in stream-parser.service.ts.
    */
+  /**
+   * Re-render a clarifying-question picker from its persisted breadcrumb.
+   *
+   * The questions arrive as a JSON string (DynamoDB would otherwise coerce
+   * numbers nested inside them), so this is the one place in the SPA that
+   * parses untrusted stored JSON back into questions. Both failure modes —
+   * unparseable text and a parsed payload that is not renderable — drop the
+   * prompt rather than render a broken one: a picker with no options is a
+   * dead end the user cannot answer or dismiss, whereas a missing picker
+   * leaves them able to retype their request.
+   */
+  private hydrateUserQuestion(
+    sessionId: string,
+    interrupt: PendingInterrupt,
+    messageId: string | undefined,
+  ): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(interrupt.questions ?? '');
+    } catch {
+      console.warn(
+        'Skipping user_question interrupt with unparseable questions',
+        interrupt.interruptId,
+      );
+      return;
+    }
+
+    if (!validateUserQuestions(parsed)) {
+      console.warn(
+        'Skipping user_question interrupt with unrenderable questions',
+        interrupt.interruptId,
+      );
+      return;
+    }
+
+    this.userQuestionService.requestAnswers({
+      interruptId: interrupt.interruptId,
+      toolUseId: interrupt.toolUseId ?? '',
+      questions: parsed,
+      messageId,
+      sessionId,
+    });
+  }
+
   private hydratePendingInterrupts(
     sessionId: string,
     interrupts: PendingInterrupt[] | undefined,
@@ -492,6 +539,11 @@ export class MessageMapService {
     for (const interrupt of interrupts) {
       const messageId = interrupt.triggeringMessageId ?? lastAssistantId;
       const kind = interrupt.kind ?? 'oauth';
+
+      if (kind === 'user_question') {
+        this.hydrateUserQuestion(sessionId, interrupt, messageId);
+        continue;
+      }
 
       if (kind === 'tool_approval') {
         if (!interrupt.toolName) {

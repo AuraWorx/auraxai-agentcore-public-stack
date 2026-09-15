@@ -44,7 +44,7 @@ export interface PendingInterrupt {
    * written before per-tool approval shipped omit this — backend defaults
    * to "oauth" on read.
    */
-  kind?: 'oauth' | 'tool_approval';
+  kind?: 'oauth' | 'tool_approval' | 'user_question';
   /** Id of the assistant message whose tool call triggered this interrupt, if known */
   triggeringMessageId?: string | null;
   /** ISO 8601 timestamp when the interrupt was recorded */
@@ -59,6 +59,16 @@ export interface PendingInterrupt {
   toolInput?: string | null;
   /** (tool_approval) Message to display in the approval prompt */
   message?: string | null;
+  /**
+   * (user_question) JSON-encoded list of questions to re-render.
+   *
+   * A string rather than a structured field for the same reason `toolInput`
+   * is: DynamoDB coerces numbers inside nested objects to Decimal on the way
+   * out, so the backend stores the payload pre-serialized and the client
+   * parses it back. Validate with `validateUserQuestions` after parsing —
+   * never trust it to be renderable.
+   */
+  questions?: string | null;
 }
 
 /**

@@ -41,6 +41,9 @@ import type {
   ConversationalStreamErrorEvent,
   OAuthRequiredEvent,
   ToolApprovalRequiredEvent,
+  UserQuestionRequiredEvent,
+  UserQuestion,
+  QuestionOption,
   CompactionEvent,
   ArtifactEvent,
   UiResourceEvent,
@@ -91,6 +94,9 @@ export interface StreamParserCallbacks {
 
   // Tool approval required (catalog flagged this MCP tool needs_approval)
   onToolApprovalRequired?: (data: ToolApprovalRequiredEvent) => void;
+
+  // The agent paused to ask the user structured clarifying questions
+  onUserQuestionRequired?: (data: UserQuestionRequiredEvent) => void;
 
   // What the agent is doing right now (model/tool boundaries from the
   // runtime's AgentStatusHook). Drives the live status line and supplies the
@@ -440,6 +446,69 @@ export function validateToolApprovalRequiredEvent(
     event.interruptId.length > 0 &&
     typeof event.toolName === 'string' &&
     event.toolName.length > 0
+  );
+}
+
+/**
+ * Validate a list of clarifying questions.
+ *
+ * Extracted so the two paths that receive questions — the live SSE event and
+ * the persisted `PendingInterrupt` breadcrumb replayed on reload — cannot
+ * drift apart. They arrive by different transports (one a parsed SSE frame,
+ * one a JSON string out of DynamoDB) but must agree on what is renderable;
+ * two hand-written copies of this predicate would eventually disagree, and
+ * the failure mode is a prompt that renders on one path and vanishes on the
+ * other.
+ *
+ * Stricter than the sibling event validators because the payload drives a
+ * whole interactive form rather than a fixed two-button prompt: a question
+ * with no options, or an option with no label, renders an unanswerable prompt
+ * and leaves the turn paused with no way forward.
+ */
+export function validateUserQuestions(value: unknown): value is UserQuestion[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return false;
+  }
+
+  return value.every(
+    (question) =>
+      !!question &&
+      typeof question === 'object' &&
+      typeof question.header === 'string' &&
+      question.header.length > 0 &&
+      typeof question.question === 'string' &&
+      question.question.length > 0 &&
+      Array.isArray(question.options) &&
+      question.options.length > 0 &&
+      question.options.every(
+        (option: unknown) =>
+          !!option &&
+          typeof option === 'object' &&
+          typeof (option as QuestionOption).label === 'string' &&
+          (option as QuestionOption).label.length > 0,
+      ),
+  );
+}
+
+/**
+ * Validate UserQuestionRequiredEvent structure. Question-shape checks live in
+ * {@link validateUserQuestions}, shared with the reload path.
+ */
+export function validateUserQuestionRequiredEvent(
+  data: unknown,
+): data is UserQuestionRequiredEvent {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const event = data as Partial<UserQuestionRequiredEvent>;
+
+  return (
+    event.type === 'user_question_required' &&
+    typeof event.interruptId === 'string' &&
+    event.interruptId.length > 0 &&
+    typeof event.toolUseId === 'string' &&
+    validateUserQuestions(event.questions)
   );
 }
 
@@ -826,6 +895,14 @@ export function processStreamEvent(
           callbacks.onToolApprovalRequired?.(data);
         } else {
           callbacks.onParseError?.('tool_approval_required: invalid data structure');
+        }
+        break;
+
+      case 'user_question_required':
+        if (validateUserQuestionRequiredEvent(data)) {
+          callbacks.onUserQuestionRequired?.(data);
+        } else {
+          callbacks.onParseError?.('user_question_required: invalid data structure');
         }
         break;
 

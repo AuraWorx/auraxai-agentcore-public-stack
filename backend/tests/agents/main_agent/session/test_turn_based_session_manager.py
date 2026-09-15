@@ -388,6 +388,43 @@ class TestCompactionStatePersistence:
         # Should not raise
         mgr._save_compaction_state(CompactionState(checkpoint=5))
 
+    def test_record_event_bumps_a_monotonic_compaction_count(
+        self, make_session_manager, compaction_config, dynamodb_sessions_table, monkeypatch
+    ):
+        # The persisted `compaction` map is last-write-wins and cannot say how
+        # many times compaction fired; the top-level counter can, and only a
+        # save that *is* a compaction (record_event=True) moves it.
+        monkeypatch.setenv("DYNAMODB_SESSIONS_METADATA_TABLE_NAME", TABLE_NAME)
+        monkeypatch.delenv("COST_DIAGNOSTICS_ENABLED", raising=False)
+        mgr = make_session_manager(compaction_config=compaction_config)
+        from agents.main_agent.session.turn_based_session_manager import TurnBasedSessionManager
+        TurnBasedSessionManager._dynamodb_table = dynamodb_sessions_table
+        seed_session_record(dynamodb_sessions_table, TEST_SESSION_ID, TEST_USER_ID)
+
+        mgr._save_compaction_state(CompactionState(checkpoint=3), record_event=True)
+        mgr._save_compaction_state(CompactionState(checkpoint=3))  # bookkeeping save, no event
+        mgr._save_compaction_state(CompactionState(checkpoint=7), record_event=True)
+
+        row = mgr._get_session_via_gsi(dynamodb_sessions_table)
+        assert row["compactionCount"] == 2
+        assert row["compaction"]["checkpoint"] == 7
+
+    def test_record_event_respects_the_kill_switch(
+        self, make_session_manager, compaction_config, dynamodb_sessions_table, monkeypatch
+    ):
+        monkeypatch.setenv("DYNAMODB_SESSIONS_METADATA_TABLE_NAME", TABLE_NAME)
+        monkeypatch.setenv("COST_DIAGNOSTICS_ENABLED", "false")
+        mgr = make_session_manager(compaction_config=compaction_config)
+        from agents.main_agent.session.turn_based_session_manager import TurnBasedSessionManager
+        TurnBasedSessionManager._dynamodb_table = dynamodb_sessions_table
+        seed_session_record(dynamodb_sessions_table, TEST_SESSION_ID, TEST_USER_ID)
+
+        mgr._save_compaction_state(CompactionState(checkpoint=3), record_event=True)
+
+        row = mgr._get_session_via_gsi(dynamodb_sessions_table)
+        assert "compactionCount" not in row
+        assert row["compaction"]["checkpoint"] == 3  # the state itself still saves
+
 
 # ===========================================================================
 # Task 6 — LTM summary retrieval

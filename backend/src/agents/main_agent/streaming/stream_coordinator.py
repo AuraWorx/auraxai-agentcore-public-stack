@@ -619,6 +619,12 @@ class StreamCoordinator:
                         user_id=user_id,
                     ):
                         yield sse
+                    for sse in await self._extract_user_question_required_events(
+                        agent,
+                        session_id=session_id,
+                        user_id=user_id,
+                    ):
+                        yield sse
                     for sse in self._extract_preflight_consent_events(user_id):
                         yield sse
 
@@ -1171,6 +1177,11 @@ class StreamCoordinator:
             message_ids_to_store = assistant_message_ids if assistant_message_ids else ([message_id] if message_id is not None else [])
 
             if message_ids_to_store:
+                # Content-free tool census, read (not drained) per call so each
+                # cost row carries the tools that call requested. None when the
+                # wrapper has no hook (tests, older agents) or the census is off.
+                tool_census_hook = getattr(main_agent_wrapper, "tool_census_hook", None)
+
                 # Build list of metadata storage tasks for parallel execution
                 metadata_tasks = []
                 for idx, msg_id in enumerate(message_ids_to_store):
@@ -1222,6 +1233,10 @@ class StreamCoordinator:
                             citations=citations_for_message,  # Pass citations for persistence
                             call_index=idx,  # Nth model call of this turn (prefix fingerprint lookup)
                             turn_agent_id=turn_agent_id,  # Which Agent ran this turn (#756)
+                            tool_calls=(
+                                tool_census_hook.tally_for_call(idx)
+                                if tool_census_hook is not None else None
+                            ),
                         )
                     )
 
@@ -1916,6 +1931,96 @@ class StreamCoordinator:
                     tool_name=tool_name,
                     tool_input=tool_input,
                     message=message,
+                ).to_sse_format()
+            )
+        return events
+
+    async def _extract_user_question_required_events(
+        self,
+        agent: Any,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[str]:
+        """Yield one SSE-formatted `user_question_required` event per pending
+        ``ask_user_question`` interrupt, persisting each one so the picker
+        rehydrates after a refresh.
+
+        Structurally identical to
+        :meth:`_extract_tool_approval_required_events` — the difference is only
+        where the interrupt came from. That one is raised by a hook before
+        someone else's tool; this one is raised by the ``ask_user_question``
+        tool itself through ``ToolContext``. Strands routes both through
+        ``_stop_for_interrupts``, so by the time we read
+        ``agent._interrupt_state`` the two are indistinguishable and the
+        ``PausedTurnSnapshot`` written on this same ``done`` event covers both.
+
+        Persistence is best-effort: a DynamoDB write failure logs but does not
+        break the live SSE flow — the user still sees the prompt, they just
+        lose it on a refresh.
+        """
+        from apis.shared.sessions.metadata import add_pending_interrupt
+        from apis.shared.sessions.models import PendingInterrupt
+        from apis.shared.user_questions.models import (
+            UserQuestion,
+            UserQuestionRequiredEvent,
+            encode_questions,
+        )
+
+        interrupt_state = getattr(agent, "_interrupt_state", None)
+        if not interrupt_state or not getattr(interrupt_state, "activated", False):
+            return []
+
+        events: List[str] = []
+        for interrupt in interrupt_state.interrupts.values():
+            reason = interrupt.reason or {}
+            if not isinstance(reason, dict) or reason.get("type") != "user_question_required":
+                continue
+
+            raw_questions = reason.get("questions") or []
+            try:
+                questions = [UserQuestion.model_validate(q) for q in raw_questions]
+            except Exception as e:  # noqa: BLE001 - never break the stream
+                logger.warning(
+                    "User-question interrupt carries unrenderable questions "
+                    "(id=%s): %s",
+                    interrupt.id, e,
+                )
+                continue
+            if not questions:
+                logger.warning(
+                    "User-question interrupt has no questions: id=%s", interrupt.id
+                )
+                continue
+
+            tool_use_id = reason.get("toolUseId", "")
+
+            # Persist the breadcrumb before yielding so a client that refreshes
+            # mid-prompt can rehydrate the picker.
+            if session_id and user_id:
+                try:
+                    await add_pending_interrupt(
+                        session_id=session_id,
+                        user_id=user_id,
+                        interrupt=PendingInterrupt(
+                            interrupt_id=interrupt.id,
+                            kind="user_question",
+                            tool_use_id=tool_use_id,
+                            tool_name="ask_user_question",
+                            questions=encode_questions(questions),
+                            created_at=datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to persist user_question pending_interrupt %s: %s",
+                        interrupt.id, e, exc_info=True,
+                    )
+
+            events.append(
+                UserQuestionRequiredEvent(
+                    interrupt_id=interrupt.id,
+                    tool_use_id=tool_use_id,
+                    questions=questions,
                 ).to_sse_format()
             )
         return events
@@ -2711,6 +2816,7 @@ class StreamCoordinator:
         citations: Optional[List] = None,
         call_index: Optional[int] = None,
         turn_agent_id: Optional[str] = None,
+        tool_calls: Optional[Dict[str, Dict[str, int]]] = None,
     ) -> None:
         """
         Store message-level metadata (token usage, latency, model info, citations)
@@ -2881,6 +2987,14 @@ class StreamCoordinator:
                 # else on the row distinguishes them.
                 if turn_agent_id:
                     metadata_kwargs["turnAgentId"] = turn_agent_id
+
+                # Content-free tool census for this call (tool name → calls /
+                # errors), another extra field. Read by the admin session
+                # profile to show what the user was doing; tool names are
+                # catalog ids, never content. Absent when the call requested
+                # no tools or COST_DIAGNOSTICS_ENABLED=false.
+                if tool_calls:
+                    metadata_kwargs["toolCalls"] = tool_calls
 
                 message_metadata = MessageMetadata(**metadata_kwargs)
 

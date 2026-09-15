@@ -22,7 +22,7 @@ import {
   heroMicrophone,
   heroXMark,
 } from '@ng-icons/heroicons/outline';
-import { heroPaperAirplaneSolid, heroStopSolid } from '@ng-icons/heroicons/solid';
+import { heroArrowUpSolid, heroStopSolid } from '@ng-icons/heroicons/solid';
 import { ModelDropdownComponent } from '../../../components/model-dropdown/model-dropdown.component';
 import { AnnouncementBannerComponent } from '../../../components/announcement-banner/announcement-banner.component';
 import { QuotaWarningBannerComponent } from '../../../components/quota-warning-banner/quota-warning-banner.component';
@@ -147,7 +147,7 @@ interface MentionToken {
       heroMicrophone,
       heroXMark,
       heroStopSolid,
-      heroPaperAirplaneSolid
+      heroArrowUpSolid
     })
   ],
   templateUrl: './chat-input.component.html',

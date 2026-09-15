@@ -202,6 +202,15 @@
     </div>
   }
 
+  <!-- Clarifying questions the agent paused to ask (ask_user_question).
+       Unlike the approval prompts above this is a form, not a yes/no, so it
+       takes the assistant column's full width rather than sitting in a
+       left-aligned pill. Survives a refresh: the backend's PendingInterrupt
+       breadcrumb is replayed by MessageMapService.hydratePendingInterrupts. -->
+  @for (request of pendingUserQuestions(); track request.interruptId) {
+    <app-user-question-prompt [request]="request" />
+  }
+
   <!-- Loading indicator -->
   @if (isChatLoading()) {
     <div class="py-4">

@@ -17,6 +17,10 @@ import {
   ToolApprovalDecision,
   ToolApprovalService,
 } from '../../../services/tool-approval/tool-approval.service';
+import {
+  UserQuestionResponse,
+  UserQuestionService,
+} from '../../../services/user-question/user-question.service';
 import { ErrorService } from '../../../services/error/error.service';
 import { SystemPromptsService } from '../../../services/system-prompts/system-prompts.service';
 import { isPreviewSession } from '../../../shared/constants/session.constants';
@@ -45,6 +49,7 @@ export class ChatRequestService implements OnDestroy {
   private fileUploadService = inject(FileUploadService);
   private oauthConsentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
+  private userQuestionService = inject(UserQuestionService);
   private steering = inject(SteeringService);
   private errorService = inject(ErrorService);
   private systemPromptsService = inject(SystemPromptsService);
@@ -58,11 +63,15 @@ export class ChatRequestService implements OnDestroy {
     this.toolApprovalService.setResumeHandler((interruptId, decision, context) =>
       this.resumeFromToolApproval(interruptId, decision, context?.sessionId),
     );
+    this.userQuestionService.setResumeHandler((interruptId, response, context) =>
+      this.resumeFromUserQuestion(interruptId, response, context?.sessionId),
+    );
   }
 
   ngOnDestroy(): void {
     this.oauthConsentService.setResumeHandler(null);
     this.toolApprovalService.setResumeHandler(null);
+    this.userQuestionService.setResumeHandler(null);
   }
 
   async submitChatRequest(
@@ -525,6 +534,55 @@ export class ChatRequestService implements OnDestroy {
       if (this.isExpiredInterruptError(error)) {
         this.errorService.addError(
           'Approval expired',
+          'The agent paused too long ago to resume this turn automatically. Please send your message again.',
+        );
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Resume the paused agent turn after the user answers (or skips) the
+   * clarifying questions.
+   *
+   * Identical in shape to `resumeFromToolApproval`; the only difference is the
+   * response payload, which is a structured object rather than a decision
+   * string. It must never be null — the backend's `ToolContext.interrupt`
+   * only treats a non-null response as an answer, so a null would re-raise the
+   * same interrupt forever. `UserQuestionService` guarantees an object (Skip
+   * sends `{ skipped: true }`).
+   */
+  private async resumeFromUserQuestion(
+    interruptId: string,
+    response: UserQuestionResponse,
+    sessionId?: string,
+  ): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    this.messageMapService.beginContinuationStreaming(sessionId);
+    this.chatStateService.setChatLoading(sessionId, true);
+
+    const resumeRequest: Record<string, unknown> = {
+      session_id: sessionId,
+      message: '',
+      interrupt_responses: [{ interruptId, response }],
+    };
+
+    this.attachCarriedSteering(resumeRequest, sessionId);
+
+    try {
+      await this.chatHttpService.sendChatRequest(resumeRequest);
+      await this.reconcileAfterResume(sessionId);
+    } catch (error) {
+      this.chatStateService.setChatLoading(sessionId, false);
+      this.messageMapService.endStreaming(sessionId);
+
+      if (this.isExpiredInterruptError(error)) {
+        this.errorService.addError(
+          'Question expired',
           'The agent paused too long ago to resume this turn automatically. Please send your message again.',
         );
         return;

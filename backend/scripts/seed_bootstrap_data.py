@@ -403,6 +403,24 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
         "forwardAuthToken": False,
     },
     {
+        "toolId": "ask_user_question",
+        "displayName": "Clarifying Questions",
+        "description": (
+            "Pause and ask the user multiple-choice questions when a request "
+            "is ambiguous, then continue with their answer."
+        ),
+        "category": "utility",
+        # On by default. The picker ships, survives a refresh, and the turn
+        # resumes into the same tool call; and the model only reaches for it on
+        # genuinely ambiguous requests — measured 24/24 on ambiguous prompts
+        # and 0/18 on clear ones, so it does not turn direct questions into
+        # interrogations. Its spec is ~630 tokens in the cacheable prefix.
+        "enabledByDefault": True,
+        "protocol": "local",
+        "isPublic": False,
+        "forwardAuthToken": False,
+    },
+    {
         "toolId": "browse_web",
         "displayName": "Web Browser",
         "description": (

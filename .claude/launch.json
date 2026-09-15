@@ -23,6 +23,20 @@
       "autoPort": false
     },
     {
+      "name": "app-api-branch",
+      "runtimeExecutable": "/Users/philmerrell/Repos/agentcore-public-stack/backend/.venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "apis.app_api.main:app",
+        "--port",
+        "8010"
+      ],
+      "port": 8010,
+      "cwd": "backend/src",
+      "autoPort": false
+    },
+    {
       "name": "inference-api",
       "runtimeExecutable": "/Users/philmerrell/Repos/agentcore-public-stack/backend/.venv/bin/python",
       "runtimeArgs": [

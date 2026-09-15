@@ -11,13 +11,24 @@ import { SessionService } from './auth/session.service';
 import { ThemeService } from './components/topnav/components/theme-toggle/theme.service';
 import { provideBuiltInToolRenderers } from './session/components/message-list/components/tool-use/built-in-renderers';
 import { AnnouncementModalService } from './services/announcements/announcement-modal.service';
+import { ConfigService } from './services/config.service';
+import { durableDownloadUrlFromHref } from './shared/utils/file-download-url';
 
-function markedOptionsFactory(): MarkedOptions {
+function markedOptionsFactory(config: ConfigService): MarkedOptions {
   const renderer = new MarkedRenderer();
   const renderLink = renderer.link;
 
   renderer.link = function (link) {
-    const html = renderLink.call(this, link);
+    // A raw user-files S3 URL in assistant prose is always broken. The model
+    // reads the same tool-result JSON the download card does, and when that
+    // JSON carried a presigned URL it would compose its own "[Download](...)"
+    // link from it — truncated at the `?`, so the signature was gone and S3
+    // answered AccessDenied while the card's own button worked. The backend no
+    // longer puts signed URLs in tool results; this rewrite heals the links
+    // already persisted in conversations, routing them to the durable
+    // `/files/{uploadId}/download` endpoint.
+    const durable = durableDownloadUrlFromHref(config.appApiUrl(), link.href);
+    const html = renderLink.call(this, durable ? { ...link, href: durable } : link);
     return html.replace(/^<a /, '<a target="_blank" rel="noopener noreferrer" ');
   };
 
@@ -38,6 +49,7 @@ export const appConfig: ApplicationConfig = {
       markedOptions: {
         provide: MARKED_OPTIONS,
         useFactory: markedOptionsFactory,
+        deps: [ConfigService],
       },
     }),
     provideRouter(routes, withComponentInputBinding()),

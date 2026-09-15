@@ -425,6 +425,52 @@ class FileUploadService:
             filename=file_meta.filename,
         )
 
+    async def get_download_url(self, user_id: str, upload_id: str) -> str:
+        """Mint a short-lived presigned GET URL that forces a download.
+
+        Same ownership + READY gate as `get_preview_url`, but the response
+        headers carry `Content-Disposition: attachment` so the browser saves
+        the file instead of rendering it. Minted per request and immediately
+        redirected to, so the caller never holds an expiring URL — that is the
+        whole point of the `/files/{id}/download` route: a stable, durable link
+        that can be persisted in a conversation and still work a week later.
+
+        Args:
+            user_id: The owner's user ID
+            upload_id: The upload identifier
+
+        Returns:
+            A presigned S3 GET URL with an attachment disposition.
+
+        Raises:
+            FileNotFoundError: If file not found, not owned by user, or not ready
+        """
+        file_meta = await self.repository.get_file(user_id, upload_id)
+        if not file_meta:
+            raise FileNotFoundError(f"File {upload_id} not found")
+
+        if file_meta.status != FileStatus.READY:
+            raise FileNotFoundError(
+                f"File {upload_id} is not ready (status: {file_meta.status})"
+            )
+
+        try:
+            return self._s3_client.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": file_meta.s3_key,
+                    "ResponseContentType": file_meta.mime_type,
+                    "ResponseContentDisposition": (
+                        f'attachment; filename="{file_meta.filename}"'
+                    ),
+                },
+                ExpiresIn=self.preview_url_expiration,
+            )
+        except ClientError as e:
+            logger.error(f"Failed to generate download URL: {e}")
+            raise
+
     async def get_text_snippet(
         self, user_id: str, upload_id: str
     ) -> TextSnippetResponse:

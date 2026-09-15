@@ -27,7 +27,7 @@ class PendingInterrupt(BaseModel):
     reload — without it, a browser refresh leaves the prompt stuck and the
     tool call orphaned in ``pending`` forever.
 
-    Two variants share this shape (discriminated by ``kind``):
+    Three variants share this shape (discriminated by ``kind``):
 
     - ``oauth`` — written by ``OAuthConsentHook``. Carries ``provider_id``;
       the frontend re-fetches a fresh consent URL via ``initiate-consent``
@@ -38,6 +38,12 @@ class PendingInterrupt(BaseModel):
       ``tool_input`` is stored as a JSON-encoded string to avoid DynamoDB's
       Decimal/float coercion when the agent's tool input contains nested
       objects with floats.
+    - ``user_question`` — written for the ``ask_user_question`` tool's own
+      interrupt. Carries ``questions`` (JSON-encoded, same reasoning as
+      ``tool_input``) so the picker rehydrates with the questions the user was
+      already looking at. Unlike the other two this interrupt is raised by the
+      tool itself via ``ToolContext``, not by a hook — the persisted shape and
+      the resume path are identical either way.
 
     Default ``kind`` is ``oauth`` for backward compatibility with rows
     written before per-tool approval shipped.
@@ -45,7 +51,7 @@ class PendingInterrupt(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
     interrupt_id: str = Field(..., alias="interruptId", description="Strands interrupt id used to resume the paused turn")
-    kind: Literal["oauth", "tool_approval"] = Field(
+    kind: Literal["oauth", "tool_approval", "user_question"] = Field(
         default="oauth",
         description="Discriminator: which variant this interrupt represents",
     )
@@ -82,6 +88,12 @@ class PendingInterrupt(BaseModel):
     message: Optional[str] = Field(
         default=None,
         description="(tool_approval) Admin-supplied or default approval message",
+    )
+
+    # user_question-only fields
+    questions: Optional[str] = Field(
+        default=None,
+        description="(user_question) JSON-encoded list of questions to re-render",
     )
 
 

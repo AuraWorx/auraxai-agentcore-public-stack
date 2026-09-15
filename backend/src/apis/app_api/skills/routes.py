@@ -62,6 +62,7 @@ from .user_service import (
     UserSkillNotFoundError,
     get_user_skill_service,
 )
+from apis.shared.security.log_sanitize import scrub_log
 
 logger = logging.getLogger(__name__)
 
@@ -548,7 +549,9 @@ async def get_accessible_skill(
     user: User = Depends(get_current_user_from_session),
 ) -> SkillDetailResponse:
     """Read one skill the current user can reach, catalog or self-authored."""
-    logger.info(f"User {user.name} reading skill '{skill_id}'")
+    logger.info(
+        f"User {scrub_log(user.name)} reading skill '{scrub_log(skill_id)}'"
+    )
 
     skill = await _require_accessible_skill(skill_id, user)
 

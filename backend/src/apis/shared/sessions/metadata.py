@@ -1729,6 +1729,20 @@ async def _bump_session_aggregates(
         # A split of :wasted, not a deduction from it.
         values[":partialWasted"] = wasted_decimal if is_partial_miss else Decimal("0")
 
+        # Content-free behavioral rollups for the admin session profile: how
+        # many tool calls this session has made and how many failed, summed
+        # from the per-call census the coordinator attached as `toolCalls`.
+        # Only written while the census is on — an absent attribute is what
+        # lets the profile say "not tracked" instead of an honest-looking 0.
+        from apis.shared.feature_flags import cost_diagnostics_enabled
+
+        if cost_diagnostics_enabled():
+            tool_calls_total, tool_errors_total = _tool_census_totals(message_metadata)
+            update_parts_add.append("toolCallCount :toolCalls")
+            update_parts_add.append("toolErrorCount :toolErrors")
+            values[":toolCalls"] = tool_calls_total
+            values[":toolErrors"] = tool_errors_total
+
         update_expression = (
             "ADD " + ", ".join(update_parts_add) + " SET " + ", ".join(update_parts_set)
         )
@@ -1748,6 +1762,29 @@ async def _bump_session_aggregates(
     except Exception as e:
         # Non-fatal — lazy backfill compensates on next read.
         logger.debug("bump_session_aggregates failed (will be backfilled on read): %s", e)
+
+
+def _tool_census_totals(message_metadata: Any) -> tuple[int, int]:
+    """``(calls, errors)`` summed over the call's ``toolCalls`` extra field.
+
+    The field is ``{tool_name: {"calls": n, "errors": e}}`` when the
+    coordinator attached one, and absent otherwise; malformed entries count as
+    zero rather than raising — the aggregate bump must never fail on it.
+    """
+    extra = getattr(message_metadata, "model_extra", None)
+    tool_calls = extra.get("toolCalls") if isinstance(extra, dict) else None
+    if not isinstance(tool_calls, dict):
+        return 0, 0
+    calls = errors = 0
+    for entry in tool_calls.values():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            calls += int(entry.get("calls") or 0)
+            errors += int(entry.get("errors") or 0)
+        except (TypeError, ValueError):
+            continue
+    return calls, errors
 
 
 def _emit_session_cache_rollup_metrics(
@@ -2741,6 +2778,67 @@ async def remove_pending_interrupts(
         )
     except Exception as e:
         logger.error("Failed to remove pending_interrupts: %s", e, exc_info=True)
+
+
+async def clear_pending_interrupts(session_id: str, user_id: str) -> None:
+    """Drop every pending-interrupt breadcrumb for a session.
+
+    Distinct from :func:`remove_pending_interrupts`, which drops specific ids
+    as they are resolved. This is the "supersede" form, for when a fresh turn
+    abandons a paused one: the breadcrumbs are one of only two records of that
+    turn, and once its ``pausedTurn`` snapshot is gone the turn can no longer
+    be resumed at all.
+
+    A breadcrumb that outlives its snapshot re-renders a prompt whose only
+    working action is dismissal — the resume route 400s on an interrupt id the
+    rebuilt agent has never heard of, so the user gets an error for answering
+    the question the app just asked them. Nothing used to clear them on
+    abandonment: the two ``remove_pending_interrupts`` call sites are resume
+    cleanup and the explicit dismiss endpoint, neither of which a user reaches
+    by simply typing something else.
+
+    Deliberately NOT folded into ``clear_paused_turn``. That function clears
+    only the snapshot, which ``test_paused_turn_independent_of_pending_interrupts``
+    pins on purpose, and it is also called on the resume-success and
+    expired-snapshot paths where the narrower cleanup is already correct. The
+    supersede policy belongs at the call site that owns it, next to
+    ``clear_interrupted_turn`` and ``clear_truncated_turn``.
+
+    Best-effort: a write failure logs but never breaks the turn.
+    """
+    sessions_metadata_table = os.environ.get("DYNAMODB_SESSIONS_METADATA_TABLE_NAME")
+    if not sessions_metadata_table:
+        return
+
+    try:
+        import boto3
+
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(sessions_metadata_table)
+
+        existing = await _get_session_by_gsi(session_id, user_id, table)
+        if not existing:
+            return
+
+        sk = existing.get("SK")
+        if not sk:
+            return
+
+        current = existing.get("pendingInterrupts") or []
+        if not current:
+            return  # Already clear
+
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression="REMOVE #pi",
+            ExpressionAttributeNames={"#pi": "pendingInterrupts"},
+        )
+        logger.info(
+            "Cleared %d superseded pending_interrupt(s) for session %s",
+            len(current), session_id,
+        )
+    except Exception as e:
+        logger.error("Failed to clear pending_interrupts: %s", e, exc_info=True)
 
 
 async def get_pending_interrupts(session_id: str, user_id: str) -> List[PendingInterrupt]:

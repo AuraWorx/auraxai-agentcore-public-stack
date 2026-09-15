@@ -74,6 +74,13 @@ TOOL_CATALOG: Dict[str, ToolMetadata] = {
         category=ToolCategory.UTILITIES,
         icon="calculator",
     ),
+    "ask_user_question": ToolMetadata(
+        tool_id="ask_user_question",
+        name="Clarifying Questions",
+        description="Pause and ask the user multiple-choice questions when a request is ambiguous, then continue with their answer.",
+        category=ToolCategory.UTILITIES,
+        icon="question-mark-circle",
+    ),
 
     # --- Built-in Tools (Browser) ---
     "browse_web": ToolMetadata(
