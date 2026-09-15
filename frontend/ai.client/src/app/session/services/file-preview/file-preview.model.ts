@@ -22,19 +22,42 @@ export const DOCX_MIME =
 export const PPTX_MIME =
   'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
+/**
+ * MIME type of a comma-separated values file. Matches the `.csv` entry
+ * in `apis.shared.files.ALLOWED_EXTENSIONS`.
+ */
+export const CSV_MIME = 'text/csv';
+
 /** What the pane knows how to render, and which viewer does it. */
-export type PreviewKind = 'docx' | 'pptx';
+export type PreviewKind = 'docx' | 'pptx' | 'csv';
 
 /** Human label for the pane header's subtitle. */
 export const PREVIEW_KIND_LABELS: Readonly<Record<PreviewKind, string>> = {
   docx: 'Word document',
   pptx: 'PowerPoint presentation',
+  csv: 'Data file',
 };
 
-/** The MIME type each viewer requires, checked against `/preview-url`. */
-export const PREVIEW_KIND_MIMES: Readonly<Record<PreviewKind, string>> = {
-  docx: DOCX_MIME,
-  pptx: PPTX_MIME,
+/**
+ * The MIME types each viewer will accept, checked against what
+ * `/preview-url` reports.
+ *
+ * A list rather than a single type because the recorded MIME is
+ * whatever the *browser* reported at upload time (`request.mime_type`
+ * in `files/service.py`), not something the server derives from the
+ * bytes. For the OOXML formats that is reliably the one true type. For
+ * `.csv` it is not: Windows reports `application/vnd.ms-excel` for a
+ * `.csv` whenever Excel is the registered handler, and some clients
+ * send `application/csv` or fall back to `text/plain`. Rejecting those
+ * would fail the preview on the most ordinary desktop in the building,
+ * for a file whose extension already told us what it is.
+ */
+export const PREVIEW_KIND_MIMES: Readonly<
+  Record<PreviewKind, readonly string[]>
+> = {
+  docx: [DOCX_MIME],
+  pptx: [PPTX_MIME],
+  csv: [CSV_MIME, 'application/csv', 'application/vnd.ms-excel', 'text/plain'],
 };
 
 /**
@@ -49,20 +72,25 @@ export const PREVIEW_KIND_MIMES: Readonly<Record<PreviewKind, string>> = {
  * `/preview-url` reports, so a mislabelled `.docx` fails there rather
  * than feeding garbage to the renderer.
  *
- * Legacy `.doc` and `.ppt` are deliberately excluded: they are the
- * pre-2007 binary formats, which the OOXML renderers cannot read at all.
+ * Legacy `.doc`, `.ppt` and `.xls` are deliberately excluded: they are
+ * the pre-2007 binary formats, which neither the OOXML renderers nor
+ * the delimited-text parser can read at all.
  *
- * `.xlsx` is deliberately absent. There is no renderer for it we are
- * willing to ship: the npm build of SheetJS is frozen at a 2022 release
- * carrying unfixed advisories, and the only maintained grid renderer is
- * built on ExcelJS, which throws outright on the workbooks
+ * `.xlsx` is deliberately absent, and for a narrower reason than it
+ * looks. There is no client-side *renderer* for it we are willing to
+ * ship: the npm build of SheetJS is frozen at a 2022 release carrying
+ * unfixed advisories, and the only maintained grid renderer is built on
+ * ExcelJS, which throws outright on the workbooks
  * `create_excel_spreadsheet` produces whenever one contains a native
- * chart. Download-and-open remains the path for spreadsheets.
+ * chart. That rules out reading the bytes here — it does not rule out a
+ * server-side read that hands this pane rows, which is the open path.
+ * Until then, download-and-open remains it for `.xlsx`.
  */
 export function previewKindFor(filename: string): PreviewKind | null {
   const name = filename.trim();
   if (/\.docx$/i.test(name)) return 'docx';
   if (/\.pptx$/i.test(name)) return 'pptx';
+  if (/\.csv$/i.test(name)) return 'csv';
   return null;
 }
 

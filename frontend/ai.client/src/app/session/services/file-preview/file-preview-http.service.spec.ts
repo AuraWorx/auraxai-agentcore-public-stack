@@ -87,6 +87,41 @@ describe('FilePreviewHttpService', () => {
     expect(doc.mimeType).toBe(PPTX_MIME);
   });
 
+  it('accepts a .csv the browser mislabelled as an Excel type', async () => {
+    // Windows reports application/vnd.ms-excel for a .csv whenever Excel
+    // is the registered handler, and the recorded MIME is whatever the
+    // browser said at upload time. Refusing it would fail the preview on
+    // the most ordinary desktop in the building.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)),
+    });
+
+    const pending = service.fetchDocument('up1');
+    flushPreviewUrl({
+      mimeType: 'application/vnd.ms-excel',
+      filename: 'export.csv',
+    });
+    const doc = await pending;
+
+    expect(doc.kind).toBe('csv');
+  });
+
+  it('still refuses an .xls, which shares that MIME type', async () => {
+    // The extension is what chooses the viewer, so widening the accepted
+    // MIME list for .csv must not make the legacy binary format
+    // previewable.
+    const pending = service.fetchDocument('up1');
+    flushPreviewUrl({
+      mimeType: 'application/vnd.ms-excel',
+      filename: 'budget.xls',
+    });
+
+    await expect(pending).rejects.toThrow(FilePreviewError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a file whose MIME type contradicts its extension', async () => {
     // The extension picked the viewer before any request was made, so a
     // file named .pptx that the server knows to be a .docx has to fail

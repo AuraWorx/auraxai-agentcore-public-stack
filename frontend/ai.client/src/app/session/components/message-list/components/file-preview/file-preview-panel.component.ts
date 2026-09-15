@@ -22,6 +22,7 @@ import {
 import { ConfigService } from '../../../../../services/config.service';
 import { downloadUrlFor } from '../../../../../shared/utils/file-download-url';
 import { TooltipDirective } from '../../../../../components/tooltip/tooltip.directive';
+import { CsvViewerComponent } from './csv-viewer.component';
 import { DocxViewerComponent } from './docx-viewer.component';
 import { PptxViewerComponent } from './pptx-viewer.component';
 import {
@@ -31,8 +32,8 @@ import {
 } from '../../../../services/file-preview/file-preview.model';
 
 /**
- * Right-docked pane that previews one uploaded Office file in the
- * browser — `.docx` and `.pptx` today.
+ * Right-docked pane that previews one uploaded file in the browser —
+ * `.docx`, `.pptx` and `.csv` today.
  *
  * Shares the rail with `ArtifactPanelComponent` through
  * `DockedPaneService` — same width, same resize affordance, same
@@ -52,7 +53,13 @@ import {
 @Component({
   selector: 'app-file-preview-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [NgIcon, TooltipDirective, DocxViewerComponent, PptxViewerComponent],
+  imports: [
+    NgIcon,
+    TooltipDirective,
+    CsvViewerComponent,
+    DocxViewerComponent,
+    PptxViewerComponent,
+  ],
   providers: [
     provideIcons({
       heroArrowDownTray,
@@ -161,6 +168,13 @@ import {
             @switch (kind()) {
               @case ('pptx') {
                 <app-pptx-viewer
+                  [bytes]="bytes()"
+                  (renderFailed)="onRenderFailed($event)"
+                  (rendered)="onRendered()"
+                />
+              }
+              @case ('csv') {
+                <app-csv-viewer
                   [bytes]="bytes()"
                   (renderFailed)="onRenderFailed($event)"
                   (rendered)="onRendered()"

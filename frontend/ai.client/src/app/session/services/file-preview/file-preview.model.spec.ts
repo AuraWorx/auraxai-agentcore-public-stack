@@ -6,14 +6,16 @@ import {
 } from './file-preview.model';
 
 describe('previewKindFor', () => {
-  it('maps the OOXML formats the pane can render', () => {
+  it('maps the formats the pane can render', () => {
     expect(previewKindFor('plan.docx')).toBe('docx');
     expect(previewKindFor('deck.pptx')).toBe('pptx');
+    expect(previewKindFor('rows.csv')).toBe('csv');
   });
 
   it('ignores case and surrounding whitespace', () => {
     expect(previewKindFor('  REPORT.DOCX ')).toBe('docx');
     expect(previewKindFor('Quarterly Review.PPTX')).toBe('pptx');
+    expect(previewKindFor('Export.CSV')).toBe('csv');
   });
 
   it('declines the pre-2007 binary formats', () => {
@@ -21,11 +23,13 @@ describe('previewKindFor', () => {
     // preview would only produce an error the user cannot act on.
     expect(previewKindFor('old.doc')).toBeNull();
     expect(previewKindFor('old.ppt')).toBeNull();
+    expect(previewKindFor('old.xls')).toBeNull();
   });
 
   it('declines .xlsx', () => {
-    // Deliberate: there is no spreadsheet renderer we are willing to
-    // ship. See the note on previewKindFor.
+    // Deliberate: there is no client-side spreadsheet renderer we are
+    // willing to ship. `.csv` is previewable because it needs a parser
+    // rather than a renderer — see the note on previewKindFor.
     expect(previewKindFor('budget.xlsx')).toBeNull();
   });
 
@@ -35,13 +39,20 @@ describe('previewKindFor', () => {
   });
 
   it('agrees with isPreviewableFilename', () => {
-    for (const name of ['a.docx', 'b.pptx', 'c.xlsx', 'd.txt', 'e.doc']) {
+    for (const name of [
+      'a.docx',
+      'b.pptx',
+      'c.xlsx',
+      'd.txt',
+      'e.doc',
+      'f.csv',
+    ]) {
       expect(isPreviewableFilename(name)).toBe(previewKindFor(name) !== null);
     }
   });
 
   it('labels every kind it can return', () => {
-    for (const name of ['a.docx', 'b.pptx']) {
+    for (const name of ['a.docx', 'b.pptx', 'c.csv']) {
       const kind = previewKindFor(name);
       expect(kind).not.toBeNull();
       expect(PREVIEW_KIND_LABELS[kind!]).toBeTruthy();

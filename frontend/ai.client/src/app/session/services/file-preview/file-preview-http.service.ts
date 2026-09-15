@@ -88,7 +88,7 @@ export class FilePreviewHttpService {
     const meta = await this.requestPreviewUrl(uploadId);
 
     const kind = previewKindFor(meta.filename);
-    if (kind === null || meta.mimeType !== PREVIEW_KIND_MIMES[kind]) {
+    if (kind === null || !PREVIEW_KIND_MIMES[kind].includes(meta.mimeType)) {
       throw new FilePreviewError(
         `This file is a ${meta.mimeType || 'unknown type'}, which can't be previewed here.`,
         false,
