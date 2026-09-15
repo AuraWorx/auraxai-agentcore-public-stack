@@ -37,13 +37,13 @@ export const FILE_TYPE_STYLES: Record<string, FileTypeStyle> = {
   'application/pdf': {
     icon: 'heroDocument',
     label: 'PDF',
-    accent_text: 'text-filetype-pdf-600 dark:text-filetype-pdf-300',
+    accent_text: 'text-filetype-pdf-700 dark:text-filetype-pdf-300',
     header_bg: 'bg-filetype-pdf-50 dark:bg-filetype-pdf-950/40',
   },
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {
     icon: 'heroDocumentText',
     label: 'DOCX',
-    accent_text: 'text-filetype-doc-600 dark:text-filetype-doc-300',
+    accent_text: 'text-filetype-doc-700 dark:text-filetype-doc-300',
     header_bg: 'bg-filetype-doc-50 dark:bg-filetype-doc-950/40',
   },
   'text/plain': {
@@ -55,25 +55,25 @@ export const FILE_TYPE_STYLES: Record<string, FileTypeStyle> = {
   'text/html': {
     icon: 'heroCodeBracket',
     label: 'HTML',
-    accent_text: 'text-filetype-code-600 dark:text-filetype-code-300',
+    accent_text: 'text-filetype-code-700 dark:text-filetype-code-300',
     header_bg: 'bg-filetype-code-50 dark:bg-filetype-code-950/40',
   },
   'text/csv': {
     icon: 'heroTableCells',
     label: 'CSV',
-    accent_text: 'text-filetype-sheet-600 dark:text-filetype-sheet-300',
+    accent_text: 'text-filetype-sheet-700 dark:text-filetype-sheet-300',
     header_bg: 'bg-filetype-sheet-50 dark:bg-filetype-sheet-950/40',
   },
   'application/vnd.ms-excel': {
     icon: 'heroTableCells',
     label: 'XLS',
-    accent_text: 'text-filetype-sheet-600 dark:text-filetype-sheet-300',
+    accent_text: 'text-filetype-sheet-700 dark:text-filetype-sheet-300',
     header_bg: 'bg-filetype-sheet-50 dark:bg-filetype-sheet-950/40',
   },
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': {
     icon: 'heroTableCells',
     label: 'XLSX',
-    accent_text: 'text-filetype-sheet-600 dark:text-filetype-sheet-300',
+    accent_text: 'text-filetype-sheet-700 dark:text-filetype-sheet-300',
     header_bg: 'bg-filetype-sheet-50 dark:bg-filetype-sheet-950/40',
   },
   // filetype-presentation is PowerPoint's orange brand association, which makes
@@ -83,37 +83,37 @@ export const FILE_TYPE_STYLES: Record<string, FileTypeStyle> = {
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': {
     icon: 'heroPresentationChartBar',
     label: 'PPTX',
-    accent_text: 'text-filetype-presentation-600 dark:text-filetype-presentation-300',
+    accent_text: 'text-filetype-presentation-700 dark:text-filetype-presentation-300',
     header_bg: 'bg-filetype-presentation-50 dark:bg-filetype-presentation-950/40',
   },
   'text/markdown': {
     icon: 'heroDocumentText',
     label: 'MD',
-    accent_text: 'text-filetype-markdown-600 dark:text-filetype-markdown-300',
+    accent_text: 'text-filetype-markdown-700 dark:text-filetype-markdown-300',
     header_bg: 'bg-filetype-markdown-50 dark:bg-filetype-markdown-950/40',
   },
   'image/png': {
     icon: 'heroPhoto',
     label: 'PNG',
-    accent_text: 'text-filetype-image-600 dark:text-filetype-image-300',
+    accent_text: 'text-filetype-image-700 dark:text-filetype-image-300',
     header_bg: 'bg-filetype-image-50 dark:bg-filetype-image-950/40',
   },
   'image/jpeg': {
     icon: 'heroPhoto',
     label: 'JPG',
-    accent_text: 'text-filetype-image-600 dark:text-filetype-image-300',
+    accent_text: 'text-filetype-image-700 dark:text-filetype-image-300',
     header_bg: 'bg-filetype-image-50 dark:bg-filetype-image-950/40',
   },
   'image/gif': {
     icon: 'heroPhoto',
     label: 'GIF',
-    accent_text: 'text-filetype-image-600 dark:text-filetype-image-300',
+    accent_text: 'text-filetype-image-700 dark:text-filetype-image-300',
     header_bg: 'bg-filetype-image-50 dark:bg-filetype-image-950/40',
   },
   'image/webp': {
     icon: 'heroPhoto',
     label: 'WEBP',
-    accent_text: 'text-filetype-image-600 dark:text-filetype-image-300',
+    accent_text: 'text-filetype-image-700 dark:text-filetype-image-300',
     header_bg: 'bg-filetype-image-50 dark:bg-filetype-image-950/40',
   },
 };
