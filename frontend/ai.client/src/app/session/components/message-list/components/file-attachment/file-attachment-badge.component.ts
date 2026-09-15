@@ -248,17 +248,15 @@ const SLIDE_BULLET_WIDTHS = [78, 92, 60];
         class="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-700"
         [class]="style().header_bg"
       >
-        <div class="flex items-center gap-2">
-          <ng-icon
-            [name]="style().icon"
-            class="size-4"
-            [class]="style().accent_text"
-            aria-hidden="true"
-          />
-          <span
-            class="text-[10px] font-bold tracking-wider"
-            [class]="style().accent_text"
-          >
+        <!-- The accent colour goes on this wrapper, not on the two children.
+             A text-<colour> utility placed directly on an <ng-icon> does not
+             paint it -- the component's own host rule outranks a plain class,
+             so the chip icon rendered black in both themes while the label
+             beside it, carrying the identical class, came out correctly.
+             ng-icon *does* inherit, so colouring the parent reaches both. -->
+        <div class="flex items-center gap-2" [class]="style().accent_text">
+          <ng-icon [name]="style().icon" class="size-4" aria-hidden="true" />
+          <span class="text-[10px] font-bold tracking-wider">
             {{ style().label }}
           </span>
         </div>
@@ -267,12 +265,18 @@ const SLIDE_BULLET_WIDTHS = [78, 92, 60];
              nothing to someone reading the thread, and nothing at all on a
              touch screen. For anything the pane can render we therefore
              spell it out — eye + "Preview", the same pairing the generated
-             file's download card uses, so the two read as one feature.
+             file's download card uses, so the two read as one feature, and
+             it takes the file type's own accent so the strip reads as one
+             unit. Deliberately the same colour and weight as the type chip
+             rather than a dimmed version: the accent already measures
+             3.37:1 on its own light-mode tint, so anything held further back
+             would be worse than a label that is itself under AA.
              Everything else keeps the quieter hover hint, because "opens in
              a new tab" is a weaker promise not worth the ink. -->
         @if (isPanePreviewable()) {
           <span
-            class="flex items-center gap-1 text-[10px] font-bold tracking-wider text-gray-600 transition-colors group-hover:text-gray-900 dark:text-gray-300 dark:group-hover:text-white"
+            class="flex items-center gap-1 text-[10px] font-bold tracking-wider"
+            [class]="style().accent_text"
           >
             <ng-icon name="heroEye" class="size-3.5" aria-hidden="true" />
             PREVIEW
