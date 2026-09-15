@@ -1382,7 +1382,7 @@ export class ChatInputComponent {
         if (!enabled) {
           this.toastService.info(
             'Enable Spreadsheet Analysis',
-            'To analyze spreadsheets, enable "Spreadsheet Analysis" in the Tools section of the settings panel.'
+            'To analyze spreadsheets, enable "Spreadsheet Analysis" under Customize → Tools in the sidebar.'
           );
           tabularNudgeShown = true;
         }

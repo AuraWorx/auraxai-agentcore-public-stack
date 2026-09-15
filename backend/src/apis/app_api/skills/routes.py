@@ -178,7 +178,7 @@ async def update_skill_preferences(
 
 
 class MySkillResponse(BaseModel):
-    """One skill the caller authored, as shown on the My Skills page."""
+    """One skill the caller authored, as shown under Customize → Skills."""
 
     skill_id: str = Field(..., alias="skillId")
     display_name: str = Field(..., alias="displayName")

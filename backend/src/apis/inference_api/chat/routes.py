@@ -875,8 +875,8 @@ def _build_attachment_guidance(
             parts.append(
                 f"_Attached spreadsheet(s) {names} can't be read inline at "
                 f"this size. To analyze them, enable **Spreadsheet Analysis** "
-                f"in the Tools section of the settings panel (gear icon next "
-                f"to the message input), then re-send your message._"
+                f"under Customize → Tools in the sidebar, then re-send "
+                f"your message._"
             )
 
     if diverted_presentations:
@@ -895,9 +895,9 @@ def _build_attachment_guidance(
         else:
             parts.append(
                 f"_Attached presentation(s) {names} can't be read inline. To "
-                f"work with them, enable **PowerPoint Presentations** in the "
-                f"Tools section of the settings panel (gear icon next to the "
-                f"message input), then re-send your message._"
+                f"work with them, enable **PowerPoint Presentations** under "
+                f"Customize → Tools in the sidebar, then re-send your "
+                f"message._"
             )
 
     if oversized_inline:
