@@ -12,6 +12,8 @@ import {
 import { MarkdownComponent } from 'ngx-markdown';
 import { formatBytes, FileUploadService } from '../../../../../services/file-upload';
 import { FileAttachmentData } from '../../../../services/models/message.model';
+import { FilePreviewStateService } from '../../../../services/file-preview/file-preview-state.service';
+import { isPreviewableFilename } from '../../../../services/file-preview/file-preview.model';
 import { MarkdownPreviewModalComponent } from './markdown-preview-modal.component';
 
 interface FileTypeStyle {
@@ -137,7 +139,9 @@ const SLIDE_BULLET_WIDTHS = [78, 92, 60];
  * excerpt (for txt/md/csv/html) or skeleton lines (for binary docs), a
  * folded top-right corner detail, and a footer with filename + size.
  *
- * Clicking opens the file in a new tab via a short-lived presigned URL.
+ * Clicking previews the file where we can render one — Markdown in a modal,
+ * `.docx` / `.pptx` in the docked pane — and otherwise opens it in a new tab
+ * via a short-lived presigned URL.
  */
 @Component({
   selector: 'app-file-attachment-badge',
@@ -235,7 +239,7 @@ const SLIDE_BULLET_WIDTHS = [78, 92, 60];
       type="button"
       (click)="openFile()"
       class="group flex w-60 shrink-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:border-gray-700 dark:bg-gray-800"
-      [attr.aria-label]="'Open ' + attachment().filename"
+      [attr.aria-label]="actionLabel() + ' ' + attachment().filename"
     >
       <!-- Header strip -->
       <div
@@ -373,6 +377,7 @@ export class FileAttachmentBadgeComponent {
   readonly attachment = input.required<FileAttachmentData>();
 
   private readonly fileUploadService = inject(FileUploadService);
+  private readonly filePreview = inject(FilePreviewStateService);
 
   protected readonly skeletonWidths = SKELETON_LINE_WIDTHS;
   protected readonly slideBulletWidths = SLIDE_BULLET_WIDTHS;
@@ -400,6 +405,18 @@ export class FileAttachmentBadgeComponent {
 
   protected readonly isPresentation = computed(
     () => this.attachment().mimeType === PRESENTATION_MIME,
+  );
+
+  /** Whether clicking opens the docked preview pane rather than a new tab.
+   *  Keyed off the filename, the same gate the generated-file download card
+   *  uses, so the two surfaces can never disagree about what is previewable. */
+  protected readonly isPanePreviewable = computed(() =>
+    isPreviewableFilename(this.attachment().filename),
+  );
+
+  /** What the click will do, for the button's accessible name. */
+  protected readonly actionLabel = computed(() =>
+    this.isPanePreviewable() || this.isMarkdown() ? 'Preview' : 'Open',
   );
 
   /** Cap chars so very long unbroken lines don't blow out the card. */
@@ -460,6 +477,14 @@ export class FileAttachmentBadgeComponent {
   protected async openFile(): Promise<void> {
     if (this.isMarkdown()) {
       this.markdownModalOpen.set(true);
+      return;
+    }
+    // An uploaded .docx/.pptx gets the same docked pane as a generated one.
+    // Falling through to the presigned URL would just hand the browser an
+    // OOXML file it cannot render, which downloads it instead of showing it.
+    if (this.isPanePreviewable()) {
+      const att = this.attachment();
+      this.filePreview.open({ uploadId: att.uploadId, filename: att.filename });
       return;
     }
     try {
