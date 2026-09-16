@@ -106,6 +106,33 @@ class PrefixFingerprints(BaseModel):
     message_count: Optional[int] = Field(None, alias="messageCount")
 
 
+class PrefixTokens(BaseModel):
+    """The agent's stable static prefix, split: system prompt vs tool schemas."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    system: int = 0
+    tools: int = 0
+
+
+class CompactionEvent(BaseModel):
+    """One compaction decision recorded before a model call (numbers only).
+
+    ``kind``: ``applied`` (restore-time slice ran), ``checkpoint`` (a new
+    checkpoint was cut after the previous turn), ``forced`` / ``floor_unreachable``
+    (reserved for the scheduling policy). ``summaryTokens`` is the summary's
+    size at that moment — the number a summary cap has to move.
+    """
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    kind: str
+    checkpoint: Optional[int] = None
+    summary_tokens: Optional[int] = Field(None, alias="summaryTokens")
+    summarized_turns: Optional[int] = Field(None, alias="summarizedTurns")
+    retained_messages: Optional[int] = Field(None, alias="retainedMessages")
+    truncated_tool_results: Optional[int] = Field(None, alias="truncatedToolResults")
+    input_tokens: Optional[int] = Field(None, alias="inputTokens")
+
+
 class SessionCallRow(BaseModel):
     """One model call within a session's cost anatomy."""
     model_config = ConfigDict(populate_by_name=True)
@@ -144,6 +171,16 @@ class SessionCallRow(BaseModel):
     prefix_fingerprints: Optional[PrefixFingerprints] = Field(
         None, alias="prefixFingerprints"
     )
+    # Context ledger (optional; absent on rows written before it shipped or
+    # while COST_DIAGNOSTICS_ENABLED=false).
+    prefix_tokens: Optional[PrefixTokens] = Field(None, alias="prefixTokens")
+    # The conversation window's cumulative trimmed-message count at this call.
+    window_removed_messages: Optional[int] = Field(None, alias="windowRemovedMessages")
+    # Messages trimmed since the previous ledger-bearing call — derived, so a
+    # reader does not have to diff consecutive rows. A positive value means
+    # the prefix changed before this call.
+    window_trimmed: Optional[int] = Field(None, alias="windowTrimmed")
+    compaction_events: Optional[List[CompactionEvent]] = Field(None, alias="compactionEvents")
 
 
 class SessionCostAnatomy(BaseModel):
@@ -306,6 +343,11 @@ class UserSessionSummary(BaseModel):
     tool_call_count: Optional[int] = Field(None, alias="toolCallCount")
     tool_error_count: Optional[int] = Field(None, alias="toolErrorCount")
     compaction_count: Optional[int] = Field(None, alias="compactionCount")
+    compaction_applied_count: Optional[int] = Field(None, alias="compactionAppliedCount")
+    compaction_forced_count: Optional[int] = Field(None, alias="compactionForcedCount")
+    compaction_floor_unreachable_count: Optional[int] = Field(
+        None, alias="compactionFloorUnreachableCount"
+    )
 
     diagnosis_count: int = Field(0, alias="diagnosisCount")
     top_diagnosis_severity: Optional[str] = Field(None, alias="topDiagnosisSeverity")
@@ -350,6 +392,10 @@ class ContextTrajectoryPoint(BaseModel):
     cost: Optional[float] = None
     # Per-call tool census when recorded (PR-3): tool name -> calls
     tool_calls: Optional[Dict[str, int]] = Field(None, alias="toolCalls")
+    # Context ledger when recorded: messages trimmed before this call, and the
+    # kinds of compaction decision taken before it.
+    window_trimmed: Optional[int] = Field(None, alias="windowTrimmed")
+    compaction: Optional[List[str]] = None
 
 
 class FingerprintChanges(BaseModel):
@@ -378,6 +424,9 @@ class DataCoverage(BaseModel):
     compaction_count: bool = Field(False, alias="compactionCount")
     fingerprints: bool = False
     cost: bool = False
+    prefix_tokens: bool = Field(False, alias="prefixTokens")
+    window_trim: bool = Field(False, alias="windowTrim")
+    compaction_events: bool = Field(False, alias="compactionEvents")
 
 
 class SessionProfile(BaseModel):
@@ -408,3 +457,15 @@ class SessionProfile(BaseModel):
 
     diagnoses: List[SessionDiagnosis] = Field(default_factory=list)
     data_coverage: DataCoverage = Field(default_factory=DataCoverage, alias="dataCoverage")
+    # Latest recorded static prefix split (system prompt vs tool schemas).
+    prefix_tokens: Optional[PrefixTokens] = Field(None, alias="prefixTokens")
+    # How many calls in this session were preceded by a window trim, and the
+    # messages the window has removed in total (last ledger-bearing call).
+    window_trim_calls: int = Field(0, alias="windowTrimCalls")
+    window_removed_messages: Optional[int] = Field(None, alias="windowRemovedMessages")
+    # Compaction decisions by kind across the session's calls.
+    compaction_event_counts: Dict[str, int] = Field(
+        default_factory=dict, alias="compactionEventCounts"
+    )
+    # The summary's token size at the most recent compaction decision.
+    last_summary_tokens: Optional[int] = Field(None, alias="lastSummaryTokens")

@@ -21,7 +21,9 @@ import {
 import { AdminCostHttpService } from '../services/admin-cost-http.service';
 import { SpinnerComponent } from '../../../components/spinner/spinner.component';
 import { ContextTrajectoryChartComponent } from '../components/context-trajectory-chart.component';
-import { CacheStatus, DiagnosisSeverity, SessionDiagnosis } from '../models';
+import { CacheStatus, DiagnosisSeverity, SessionDiagnosis,
+  CompactionEvent,
+} from '../models';
 import {
   AnatomyRow,
   FINGERPRINT_KEYS,
@@ -112,7 +114,7 @@ import {
         @let profile = profileResource.value();
         <section class="mb-6" aria-labelledby="profile-heading">
           <h2 id="profile-heading" class="sr-only">Conversation profile</h2>
-          <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-7">
+          <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
             <div class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
               <p class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Messages</p>
               <p class="mt-1 text-lg/7 font-semibold text-gray-900 dark:text-white">{{ profile.session.messageCount ?? '—' }}</p>
@@ -147,6 +149,9 @@ import {
               <p class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Compactions</p>
               @if (profile.dataCoverage.compactionCount) {
                 <p class="mt-1 text-lg/7 font-semibold text-gray-900 dark:text-white">{{ profile.session.compactionCount ?? 0 }}</p>
+                @if (compactionEventsLine(); as events) {
+                  <p class="mt-1 truncate text-xs/5 text-gray-500 dark:text-gray-400" [title]="events">{{ events }}</p>
+                }
               } @else {
                 <p class="mt-1 text-lg/7 font-semibold text-gray-400 dark:text-gray-500">—</p>
                 <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">
@@ -168,6 +173,35 @@ import {
               </p>
               @if (profile.session.contextWindow) {
                 <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">of {{ formatTokens(profile.session.contextWindow) }} window</p>
+              }
+            </div>
+            <div class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <p class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Static prefix</p>
+              @if (profile.dataCoverage.prefixTokens && profile.prefixTokens; as prefix) {
+                <!-- Read on every call, re-written on every cold turn: the
+                     part of the prompt the user never typed. Tool schemas are
+                     the part that curation can shrink. -->
+                <p class="mt-1 text-lg/7 font-semibold text-gray-900 dark:text-white">{{ formatTokens(prefix.system + prefix.tools) }}</p>
+                <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">
+                  {{ formatTokens(prefix.system) }} system · {{ formatTokens(prefix.tools) }} tools
+                </p>
+              } @else {
+                <p class="mt-1 text-lg/7 font-semibold text-gray-400 dark:text-gray-500">—</p>
+                <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">not tracked</p>
+              }
+            </div>
+            <div class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <p class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Window trims</p>
+              @if (profile.dataCoverage.windowTrim) {
+                <!-- Each trim moves the front of the history, which re-writes
+                     the cached prefix on the next call. -->
+                <p class="mt-1 text-lg/7 font-semibold text-gray-900 dark:text-white">{{ profile.windowTrimCalls ?? 0 }}</p>
+                <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">
+                  {{ profile.windowRemovedMessages ?? 0 }} messages removed
+                </p>
+              } @else {
+                <p class="mt-1 text-lg/7 font-semibold text-gray-400 dark:text-gray-500">—</p>
+                <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">not tracked</p>
               }
             </div>
             <div class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
@@ -468,6 +502,21 @@ import {
                       } @else {
                         <span class="text-gray-400 dark:text-gray-500">—</span>
                       }
+                      @if (row.call.windowTrimmed; as trimmed) {
+                        <!-- The window slid before this call — the prefix changed. -->
+                        <span
+                          class="ml-1 rounded-sm bg-gray-100 px-1.5 font-mono text-[10px]/5 text-gray-600 dark:bg-white/10 dark:text-gray-300"
+                          [title]="trimmed + ' messages trimmed from the window before this call'"
+                          >trim −{{ trimmed }}</span
+                        >
+                      }
+                      @for (event of row.call.compactionEvents ?? []; track $index) {
+                        <span
+                          class="ml-1 rounded-sm bg-gray-100 px-1.5 font-mono text-[10px]/5 text-gray-600 dark:bg-white/10 dark:text-gray-300"
+                          [title]="compactionEventTitle(event)"
+                          >{{ event.kind }}</span
+                        >
+                      }
                     </td>
                     <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums">
                       {{ formatGap(row.call.cacheGapSeconds) }}
@@ -538,6 +587,43 @@ import {
                             </dt>
                             <dd class="mt-0.5 font-mono text-xs/5 text-gray-700 dark:text-gray-300">
                               {{ row.call.prefixFingerprints?.messageCount ?? '—' }}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                              Window Removed
+                            </dt>
+                            <dd class="mt-0.5 font-mono text-xs/5 text-gray-700 dark:text-gray-300">
+                              {{ row.call.windowRemovedMessages ?? '—' }}
+                              @if (row.call.windowTrimmed) {
+                                <span class="text-gray-500 dark:text-gray-400">(+{{ row.call.windowTrimmed }} before this call)</span>
+                              }
+                            </dd>
+                          </div>
+                          <div>
+                            <dt class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                              Static Prefix
+                            </dt>
+                            <dd class="mt-0.5 font-mono text-xs/5 text-gray-700 dark:text-gray-300">
+                              @if (row.call.prefixTokens; as prefix) {
+                                {{ formatTokens(prefix.system) }} system · {{ formatTokens(prefix.tools) }} tools
+                              } @else {
+                                —
+                              }
+                            </dd>
+                          </div>
+                          <div>
+                            <dt class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                              Compaction
+                            </dt>
+                            <dd class="mt-0.5 font-mono text-xs/5 text-gray-700 dark:text-gray-300">
+                              @if (row.call.compactionEvents?.length) {
+                                @for (event of row.call.compactionEvents; track $index) {
+                                  <div>{{ compactionEventTitle(event) }}</div>
+                                }
+                              } @else {
+                                —
+                              }
                             </dd>
                           </div>
                           @for (key of fingerprintKeys; track key) {
@@ -688,6 +774,28 @@ export class SessionCostAnatomyPage {
    * money but are not a regression. The backend reports the explained subset rather than
    * deducting it, so the page does the subtraction where a reader can see both halves.
    */
+  /** "3 applied · 1 forced · summary 2.3K" — the compaction decisions by kind. */
+  readonly compactionEventsLine = computed(() => {
+    if (!this.profileResource.hasValue()) return '';
+    const p = this.profileResource.value();
+    const counts = p.compactionEventCounts ?? {};
+    const parts = Object.keys(counts)
+      .sort()
+      .map((kind) => `${counts[kind]} ${kind.replace('_', ' ')}`);
+    if (p.lastSummaryTokens != null) parts.push(`summary ${this.formatTokens(p.lastSummaryTokens)}`);
+    return parts.join(' · ');
+  });
+
+  compactionEventTitle(event: CompactionEvent): string {
+    const parts = [event.kind.replace('_', ' ')];
+    if (event.checkpoint != null) parts.push(`checkpoint ${event.checkpoint}`);
+    if (event.summaryTokens != null) parts.push(`summary ${this.formatTokens(event.summaryTokens)}`);
+    if (event.summarizedTurns != null) parts.push(`${event.summarizedTurns} turns summarized`);
+    if (event.retainedMessages != null) parts.push(`${event.retainedMessages} messages retained`);
+    if (event.truncatedToolResults) parts.push(`${event.truncatedToolResults} tool results truncated`);
+    return parts.join(' · ');
+  }
+
   readonly unexplainedMisses = computed(() => {
     const anatomy = this.anatomyResource.value();
     if (!anatomy) return 0;

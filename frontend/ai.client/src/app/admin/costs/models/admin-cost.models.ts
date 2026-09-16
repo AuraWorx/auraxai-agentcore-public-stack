@@ -118,6 +118,28 @@ export interface PrefixFingerprints {
   messageCount?: number | null;
 }
 
+/** The agent's stable static prefix, split: system prompt vs tool schemas. */
+export interface PrefixTokens {
+  system: number;
+  tools: number;
+}
+
+/**
+ * One compaction decision recorded before a model call (numbers only).
+ * `kind`: `applied` (restore-time slice ran), `checkpoint` (a new checkpoint
+ * was cut after the previous turn), `forced` / `floor_unreachable` (the
+ * scheduling policy). `summaryTokens` is the summary's size at that moment.
+ */
+export interface CompactionEvent {
+  kind: string;
+  checkpoint?: number | null;
+  summaryTokens?: number | null;
+  summarizedTurns?: number | null;
+  retainedMessages?: number | null;
+  truncatedToolResults?: number | null;
+  inputTokens?: number | null;
+}
+
 /** One model call within a session's cost anatomy. */
 export interface SessionCallRow {
   timestamp: string;
@@ -152,6 +174,13 @@ export interface SessionCallRow {
   turnAgentId?: string | null;
   agentSwitched?: boolean;
   prefixFingerprints?: PrefixFingerprints | null;
+  /** Context ledger — absent on rows written before it shipped or with diagnostics off. */
+  prefixTokens?: PrefixTokens | null;
+  /** The conversation window's cumulative trimmed-message count at this call. */
+  windowRemovedMessages?: number | null;
+  /** Messages trimmed since the previous ledger-bearing call; > 0 means the prefix changed before this call. */
+  windowTrimmed?: number | null;
+  compactionEvents?: CompactionEvent[] | null;
 }
 
 /** Per-call cost anatomy for one session (admin cache-miss forensics). */
@@ -268,6 +297,9 @@ export interface UserSessionSummary {
   toolCallCount?: number | null;
   toolErrorCount?: number | null;
   compactionCount?: number | null;
+  compactionAppliedCount?: number | null;
+  compactionForcedCount?: number | null;
+  compactionFloorUnreachableCount?: number | null;
   diagnosisCount: number;
   topDiagnosisSeverity?: DiagnosisSeverity | null;
 }
@@ -311,6 +343,10 @@ export interface ContextTrajectoryPoint {
   cost?: number | null;
   /** Per-call tool census when recorded: tool name → calls. */
   toolCalls?: Record<string, number> | null;
+  /** Messages trimmed before this call, when the ledger recorded it. */
+  windowTrimmed?: number | null;
+  /** Kinds of compaction decision taken before this call. */
+  compaction?: string[] | null;
 }
 
 export interface FingerprintChanges {
@@ -331,6 +367,9 @@ export interface DataCoverage {
   compactionCount: boolean;
   fingerprints: boolean;
   cost: boolean;
+  prefixTokens?: boolean;
+  windowTrim?: boolean;
+  compactionEvents?: boolean;
 }
 
 /** The content-free diagnostic profile of one conversation. */
@@ -350,6 +389,15 @@ export interface SessionProfile {
   enabledToolIds: string[];
   diagnoses: SessionDiagnosis[];
   dataCoverage: DataCoverage;
+  /** Latest recorded static prefix split (system prompt vs tool schemas). */
+  prefixTokens?: PrefixTokens | null;
+  /** Calls preceded by a window trim, and the messages the window has removed in total. */
+  windowTrimCalls?: number;
+  windowRemovedMessages?: number | null;
+  /** Compaction decisions by kind across the session's calls. */
+  compactionEventCounts?: Record<string, number>;
+  /** The summary's token size at the most recent compaction decision. */
+  lastSummaryTokens?: number | null;
 }
 
 // ========== API Request Options ==========

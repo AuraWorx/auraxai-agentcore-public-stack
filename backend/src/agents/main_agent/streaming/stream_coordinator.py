@@ -15,6 +15,8 @@ from agents.main_agent.session.hooks.prefix_fingerprint import (
     get_prefix_fingerprint,
     reset_prefix_fingerprints,
 )
+from agents.main_agent.session.hooks.context_attribution import get_prefix_token_split
+from apis.shared.feature_flags import cost_diagnostics_enabled
 from apis.shared.errors import (
     ConversationalErrorEvent,
     ErrorCode,
@@ -1181,6 +1183,9 @@ class StreamCoordinator:
                 # cost row carries the tools that call requested. None when the
                 # wrapper has no hook (tests, older agents) or the census is off.
                 tool_census_hook = getattr(main_agent_wrapper, "tool_census_hook", None)
+                # Same discipline for the context ledger (window trims +
+                # compaction decisions per call).
+                context_ledger_hook = getattr(main_agent_wrapper, "context_ledger_hook", None)
 
                 # Build list of metadata storage tasks for parallel execution
                 metadata_tasks = []
@@ -1236,6 +1241,10 @@ class StreamCoordinator:
                             tool_calls=(
                                 tool_census_hook.tally_for_call(idx)
                                 if tool_census_hook is not None else None
+                            ),
+                            context_ledger=(
+                                context_ledger_hook.ledger_for_call(idx)
+                                if context_ledger_hook is not None else None
                             ),
                         )
                     )
@@ -2817,6 +2826,7 @@ class StreamCoordinator:
         call_index: Optional[int] = None,
         turn_agent_id: Optional[str] = None,
         tool_calls: Optional[Dict[str, Dict[str, int]]] = None,
+        context_ledger: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Store message-level metadata (token usage, latency, model info, citations)
@@ -2995,6 +3005,25 @@ class StreamCoordinator:
                 # no tools or COST_DIAGNOSTICS_ENABLED=false.
                 if tool_calls:
                     metadata_kwargs["toolCalls"] = tool_calls
+
+                # Context ledger for this call: the conversation window's
+                # cumulative trim count (a rise between consecutive rows is a
+                # trim, i.e. a prefix re-write) and the compaction decisions
+                # taken since the previous call, each with the summary's
+                # token size. Plus the agent's stable prefix split (system /
+                # tools tokens) so "how big is the static prefix, and how much
+                # of it is tool schemas" is a stored fact. All numbers.
+                if context_ledger:
+                    removed = context_ledger.get("windowRemovedMessages")
+                    if removed is not None:
+                        metadata_kwargs["windowRemovedMessages"] = removed
+                    events = context_ledger.get("compactionEvents")
+                    if events:
+                        metadata_kwargs["compactionEvents"] = events
+                if strands_agent is not None and cost_diagnostics_enabled():
+                    prefix_tokens = get_prefix_token_split(strands_agent)
+                    if prefix_tokens:
+                        metadata_kwargs["prefixTokens"] = prefix_tokens
 
                 message_metadata = MessageMetadata(**metadata_kwargs)
 

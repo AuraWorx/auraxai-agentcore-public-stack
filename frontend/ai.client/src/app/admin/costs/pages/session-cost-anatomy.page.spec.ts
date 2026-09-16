@@ -242,6 +242,31 @@ describe('SessionCostAnatomyPage', () => {
       expect(page.profileNotFound()).toBe(false);
     });
 
+    it('summarises compaction decisions by kind with the latest summary size', async () => {
+      const profile = vi.fn().mockReturnValue(
+        of({
+          ...MOCK_PROFILE,
+          dataCoverage: { ...MOCK_PROFILE.dataCoverage, compactionCount: true, compactionEvents: true, windowTrim: true, prefixTokens: true },
+          compactionEventCounts: { forced: 1, applied: 3 },
+          lastSummaryTokens: 2_300,
+          prefixTokens: { system: 12_000, tools: 48_000 },
+          windowTrimCalls: 4,
+          windowRemovedMessages: 16,
+        }),
+      );
+      const page = setup(vi.fn().mockReturnValue(of(MOCK_ANATOMY)), profile).componentInstance;
+      await vi.waitFor(() => expect(page.profileResource.hasValue()).toBe(true));
+      expect(page.compactionEventsLine()).toBe('3 applied · 1 forced · summary 2.3K');
+    });
+
+    it('describes one compaction event from its numbers only', () => {
+      const page = setup(vi.fn().mockReturnValue(of(MOCK_ANATOMY))).componentInstance;
+      expect(
+        page.compactionEventTitle({ kind: 'floor_unreachable', checkpoint: 12, summaryTokens: 900, retainedMessages: 30 }),
+      ).toBe('floor unreachable · checkpoint 12 · summary 900 · 30 messages retained');
+      expect(page.compactionEventTitle({ kind: 'checkpoint' })).toBe('checkpoint');
+    });
+
     it('survives a missing profile without touching the anatomy', async () => {
       const page = setup(
         vi.fn().mockReturnValue(of(MOCK_ANATOMY)),

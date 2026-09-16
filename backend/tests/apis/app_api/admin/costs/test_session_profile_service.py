@@ -206,3 +206,51 @@ async def test_the_whole_profile_serializes_without_content_bearing_keys():
     files = [{"uploadId": "a", "mimeType": "application/pdf", "sizeBytes": 1}]
     p = await _service(_row(), [_call(0, tool_calls={"t": {"calls": 1, "errors": 0}})], files=files).get_session_profile("s1")
     assert content_bearing_paths(p.model_dump(by_alias=True)) == []
+
+
+@pytest.mark.asyncio
+async def test_context_ledger_is_decoded_diffed_and_covered():
+    records = [
+        _call(0, read=10_000),
+        _call(1, read=10_000),
+        _call(2, read=10_000),
+        _call(3, read=10_000),
+    ]
+    # Rows carry the ledger from call 1 on: a stable prefix split, a window
+    # count that rises before call 3 (a trim), and one compaction decision
+    # with the summary's size at that moment.
+    records[1]["prefixTokens"] = {"system": 12_000, "tools": 48_000}
+    records[1]["windowRemovedMessages"] = 0
+    records[2]["windowRemovedMessages"] = 0
+    records[3]["windowRemovedMessages"] = 8
+    records[3]["compactionEvents"] = [{"kind": "applied", "checkpoint": 12, "summaryTokens": 2_300}]
+
+    p = await _service(_row(), records).get_session_profile("s1")
+
+    assert p.prefix_tokens.system == 12_000 and p.prefix_tokens.tools == 48_000
+    assert p.window_trim_calls == 1
+    assert p.window_removed_messages == 8
+    assert p.compaction_event_counts == {"applied": 1}
+    assert p.last_summary_tokens == 2_300
+    assert p.data_coverage.prefix_tokens and p.data_coverage.window_trim and p.data_coverage.compaction_events
+    trimmed = [pt.window_trimmed for pt in p.context_trajectory]
+    assert trimmed == [None, 0, 0, 8]
+    assert p.context_trajectory[3].compaction == ["applied"]
+
+
+@pytest.mark.asyncio
+async def test_rows_without_a_ledger_read_not_tracked():
+    p = await _service(_row(), [_call(0), _call(1)]).get_session_profile("s1")
+    assert p.prefix_tokens is None
+    assert p.window_removed_messages is None and p.window_trim_calls == 0
+    assert p.compaction_event_counts == {} and p.last_summary_tokens is None
+    assert not p.data_coverage.prefix_tokens and not p.data_coverage.window_trim
+    assert not p.data_coverage.compaction_events
+    assert all(pt.window_trimmed is None and pt.compaction is None for pt in p.context_trajectory)
+
+
+@pytest.mark.asyncio
+async def test_session_row_counters_alone_mark_compaction_events_as_tracked():
+    p = await _service(_row(compactionAppliedCount=0), [_call(0)]).get_session_profile("s1")
+    assert p.data_coverage.compaction_events
+    assert p.session.compaction_applied_count == 0
