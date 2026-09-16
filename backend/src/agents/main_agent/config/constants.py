@@ -54,6 +54,13 @@ class EnvVars:
     # when the prefix re-write is free (cache expired, model/agent switched)
     # or unavoidable (hard ceiling). "false" applies cuts immediately (PR-1/2).
     COMPACTION_DEFERRED_APPLY_ENABLED = "AGENTCORE_MEMORY_COMPACTION_DEFERRED_APPLY_ENABLED"
+    # Tool-result offload at intake (thresholds spec §3.6 / PR-4): oversized
+    # tool results are stored in S3 (user-files bucket, per-session prefix) and
+    # replaced in context by a bounded preview + retrieval references before
+    # they ever enter the cacheable prefix. Strands' vended ContextOffloader.
+    TOOL_RESULT_OFFLOAD_ENABLED = "AGENTCORE_TOOL_RESULT_OFFLOAD_ENABLED"
+    TOOL_RESULT_OFFLOAD_MAX_TOKENS = "AGENTCORE_TOOL_RESULT_OFFLOAD_MAX_TOKENS"
+    TOOL_RESULT_OFFLOAD_PREVIEW_TOKENS = "AGENTCORE_TOOL_RESULT_OFFLOAD_PREVIEW_TOKENS"
 
     # --- Restored-history repair ---
     # Kill switch for the restore-time tool-pairing/alternation repair
@@ -168,6 +175,14 @@ class Defaults:
     # Same cheap model as the title and tool-batch side-channels.
     COMPACTION_SUMMARY_MODEL_ID = "us.amazon.nova-micro-v1:0"
     COMPACTION_DEFERRED_APPLY_ENABLED = True
+    # Tool-result offload gate. 4k is well under the 25k compaction floor, so a
+    # protected tail of a few big results can no longer hold a session above
+    # the ceiling on its own; the 1k preview keeps the part of a result models
+    # actually quote (headers, first rows, the first error).
+    TOOL_RESULT_OFFLOAD_ENABLED = True
+    TOOL_RESULT_OFFLOAD_MAX_TOKENS = 4_000
+    TOOL_RESULT_OFFLOAD_PREVIEW_TOKENS = 1_000
+    TOOL_RESULT_OFFLOAD_S3_PREFIX = "compaction-offload"
 
     # --- DynamoDB Tables ---
     DYNAMODB_QUOTA_TABLE = "UserQuotas"

@@ -1,8 +1,9 @@
 # Compaction relative to the model window — a trigger ceiling, a target floor, and paying the rewrite only when it is free
 
 **Status:** PR-1 open (#1125, this document rides with it). PR-2 (bounded
-summary + compaction metrics, #1128) and PR-3 (paid-when-free apply) built
-2026-09-15 on top of it, stacked. PR-4 and PR-5 unbuilt.
+summary + compaction metrics, #1128), PR-3 (paid-when-free apply, #1129) and
+PR-4 (tool-result offload at intake) built 2026-09-15 on top of it, stacked.
+PR-5 unbuilt.
 **Owner:** Phil Merrell
 **Related:** `compaction-over-threshold-cache-spiral.md` (#833 — the incident
 and the summary-cap PR this spec depends on) ·
@@ -283,10 +284,31 @@ The original design sketch, kept for the record:
   is unreachable — a 40k-token summary is larger than the 25k floor. PR-1's
   `compaction_forced` metric will show exactly how often this bites until it
   lands.
-- **Content-class eviction + offload** (PR-4): when the protected tail alone
-  exceeds the floor, move the oversized tool result or document to the
-  session workspace behind the retrieval tool and reference it, rather than
-  cutting deeper or giving up.
+- **Offload escalation** (PR-4) — BUILT for tool results, at intake. The
+  case that defeats the floor is a huge tool result inside the protected
+  tail. Rather than escalate at cut time (which would mutate a protected turn
+  and need a restore-replay of every edit), oversized tool results are bounded
+  the moment they are produced, before they enter the prefix: Strands 1.55's
+  vended `ContextOffloader` on `AfterToolCallEvent`, S3 storage in the
+  user-files bucket under `compaction-offload/{userId}/{sessionId}/` (one
+  namespaced storage per agent, so references are session-scoped by
+  construction and an `@`-mention agent resolves the same ones), no eviction
+  from the model path (`evict_after_cycles=None`; a 90-day S3 lifecycle rule
+  expires the objects), gate 4,000 tokens / preview 1,000 (env-backed;
+  `AGENTCORE_TOOL_RESULT_OFFLOAD_ENABLED=false` removes the plugin). The
+  persisted message already carries the bounded form, so restore reproduces
+  it byte-for-byte. Our subclass adds a chars/4 pre-filter so the plugin's
+  per-result `CountTokens` round trip only runs for results near or over the
+  gate, and a content-free `ToolResultOffloaded` record per offload. The
+  model keeps a preview and pulls spans back with
+  `retrieve_offloaded_content` (pattern / line range / full) — one stable
+  spec in `toolConfig`, not an RBAC-gated tool, on the `read_skill_file`
+  precedent (the `workspace_files` catalog key is granted to no prod role,
+  so escalating into the workspace tools would have shipped dark). **User
+  attachments are not touched**: the digest + page-range read in
+  `document-context-offload.md` is the right shape for those and stays that
+  spec's PRs 1–4. What remains of the floor-unreachable case after this is
+  measured by `CompactionFloorUnreachable` on the cut record.
 - **`context_window_limit` on the model** (PR-3, small): plumb
   `maxInputTokens` into `ModelConfig` and set `context_window_limit` in
   `to_bedrock_config` (a valid `BedrockConfig` key in 1.55), so Strands'
@@ -400,7 +422,21 @@ on the first turn after a >300s gap and not before (unless hard ceiling);
 `partial_miss` on the cut turn only; `test_second_cache_key_for_a_session_shares_the_conversation`
 still passes with the in-place apply.
 
-### PR-4 — content-class eviction and offload escalation (§3.6)
+### PR-4 — offload escalation (§3.6) — BUILT as tool-result offload at intake
+
+**Cohort split (2026-09-15 audit, content-free, September prod).** Of the 95
+sessions that peaked over 100k: 52 (55%) had a single tool result ≥4k tokens
+in their last three turns (43 only that, 9 also an attachment) — PR-4's
+target; 25 (26%) had an attachment there (16 only that) — the document-offload
+spec's; 27 (28%) had neither — long sessions whose bulk is old history plus a
+23–40k summary, which the cut and the summary cap reach. The biggest single
+intra-turn writes are squarely tool results (123k, 149k, 131k in one call);
+the attachment-only cases include 1–3-turn sessions at 280–530k that are one
+huge upload. Method: turns split at `cacheGapSeconds ≥ 10s`; "big tool result"
+= an intra-turn call that read the prior prefix and wrote ≥4,000 tokens
+(slightly overstated on long `tool_use` blocks); "attachment in the last 3
+turns" = an upload row between the first call of those turns minus 5 min and
+the last call.
 
 ### PR-5 — selective 1h TTL experiment (§3.6)
 
@@ -417,6 +453,8 @@ observability layer by `PROMPT_CACHE_OBSERVABILITY_ENABLED=false`):
 | `CompactionForced` | how often a cut ran while disarmed = how often the previous cut did not take |
 | `CompactionInputTokens`, `CompactionRetainedTokens` | how far above the ceiling cuts fire and how deep they land (is the floor being reached?) |
 | `CompactionSummaryTokens`, `CompactionSummaryOverBudget` | is the summary the reason cuts miss the floor; how often the model vs truncation path runs |
+| `CompactionFloorUnreachable` (PR-4) | how often the protected tail alone still exceeds the floor after intake offload — the residual document/attachment case |
+| `ToolResultOffloaded`, `ToolResultOffloadedTokens` (PR-4) | how much tool payload was kept out of the prefix, per tool (`toolName` property) |
 
 Properties (queryable in Logs Insights, not dimensions): `policySource`,
 `contextWindow`, `ceiling`, `floor`, `summaryOutcome`, `summaryTokensBefore`.
@@ -438,9 +476,8 @@ rows) and, after PR-2, the second, but not joined:
   number per cut, and the only way to know whether the estimator is off by 5%
   or 50%.
 - **Turn shape** — messages per turn and tool-result bytes per turn (the
-  `ToolCensusHook` has the count; bytes are one more `ADD`). Sessions whose
-  bulk is a handful of huge tool results are the PR-4 offload cohort, and we
-  cannot size it today.
+  `ToolCensusHook` has the count; bytes are one more `ADD`). Partly covered
+  by PR-4's `ToolResultOffloadedTokens`; the sub-gate long tail is not.
 - **Outcome signal joined to compaction** — a down-thumb rate keyed to
   "turns since last cut" is the first evidence that a cut costs anything
   besides dollars (the kaizen review-queue already lists this as the

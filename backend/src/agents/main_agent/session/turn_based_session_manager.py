@@ -1221,6 +1221,11 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 "CompactionRetainedTokens": int(retained_estimate or 0),
                 "CompactionSummaryTokens": int(bounded.tokens_after or 0),
                 "CompactionSummaryOverBudget": 1 if bounded.tokens_before > bounded.tokens_after else 0,
+                # The protected tail alone exceeded the floor: the residual
+                # case after intake offload (attachments, sub-gate results).
+                "CompactionFloorUnreachable": (
+                    1 if (policy.floor is not None and retained_estimate is not None and retained_estimate > policy.floor) else 0
+                ),
             },
             {
                 "policySource": policy.source,

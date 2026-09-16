@@ -189,6 +189,9 @@ class TestCompactionMetrics:
         assert ns == "AgentCoreStack/Compaction"
         assert metrics["CompactionCut"] == 1 and metrics["CompactionForced"] == 0
         assert metrics["CompactionInputTokens"] == 2000
+        # Tiny 5-turn conversation calibrated to 2000 tokens against a 250
+        # floor with 3 protected turns: the tail cannot fit → unreachable.
+        assert metrics["CompactionFloorUnreachable"] == 1
         assert props["summaryOutcome"] == "within_budget" and props["policySource"] == "fixed"
         # Content-free: no summary text, no message text in the record.
         assert "tiny" not in str(props)
