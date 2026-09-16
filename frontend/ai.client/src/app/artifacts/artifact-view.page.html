@@ -150,6 +150,22 @@
         <span class="sr-only">Open this artifact in a new tab</span>
       </button>
 
+      <!-- Only reachable on your own artifacts: this page resolves out of
+           your library partition, so someone else's id renders "not found"
+           and never gets here. The version it shares is the one on screen,
+           and shares are immutable — a later version will not follow the
+           link, which the dialog says before it creates one. -->
+      <button
+        type="button"
+        class="flex size-8 shrink-0 items-center justify-center rounded-2xl text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accessible dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+        [attr.aria-label]="'Share this artifact, version ' + a.version"
+        [appTooltip]="'Share'"
+        appTooltipPosition="bottom"
+        (click)="share()"
+      >
+        <ng-icon name="heroArrowUpOnSquare" class="text-lg" aria-hidden="true" />
+      </button>
+
       <button
         type="button"
         class="flex size-8 shrink-0 items-center justify-center rounded-2xl text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accessible disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
