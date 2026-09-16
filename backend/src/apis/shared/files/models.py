@@ -165,6 +165,31 @@ INLINE_DOCUMENT_MAX_BYTES = int(
     os.environ.get("INLINE_DOCUMENT_MAX_BYTES", 4 * 1024 * 1024)  # 4MB
 )
 
+# A turn's inline attachments are persisted as ONE message, and the message —
+# not the file — is what AgentCore Memory bounds. Anything over the SDK's
+# ~72 KB conversational limit is written as a base64 ``blob`` payload, so raw
+# attachment bytes inflate by 4/3 on the way in and are then held to the
+# 10 MB event quota. 10 MB × 3/4 = 7.5 MB of raw bytes per turn is the break
+# point. Above it ``create_message`` raises ``SessionException`` — a hole in
+# history — which is strictly worse than the per-file oversized note, so the
+# turn is trimmed to this budget *before* it is built. Prod measurement
+# (docs/specs/document-context-offload-validation.md, Claim 7): ~1.3–1.4% of
+# attachment turns exceed it, several with only 3–4 files, so the per-file
+# cap above and the SPA's 5-file cap do not protect on their own.
+# ``0`` (or any non-positive value) disables the aggregate budget.
+INLINE_ATTACHMENTS_MAX_TOTAL_BYTES = int(
+    os.environ.get("INLINE_ATTACHMENTS_MAX_TOTAL_BYTES", 7_500_000)  # 7.5MB
+)
+
+# Files per message. The SPA enforces the same number client-side
+# (``MAX_FILES_PER_MESSAGE`` in file-upload.service.ts); this is the server
+# side of it, shared by the ``file_upload_ids`` resolver and the direct
+# ``files`` path so a sixth file is reported to the user instead of silently
+# truncated. ``0`` (or any non-positive value) disables the count cap.
+MAX_FILES_PER_MESSAGE = int(
+    os.environ.get("FILE_UPLOAD_MAX_FILES_PER_MESSAGE", 5)
+)
+
 
 # =============================================================================
 # Database Models (stored in DynamoDB)

@@ -132,3 +132,18 @@ class TestFileResolver:
         resolver._file_repository = file_repository
         files = await resolver.resolve_files("u1", [f"f{i}" for i in range(10)], max_files=3)
         assert len(files) == 3
+
+    @pytest.mark.asyncio
+    async def test_resolve_files_no_cap_when_max_files_is_none(self, file_repository, s3_bucket, aws):
+        # The chat route applies the per-message cap itself (so it can tell
+        # the user which files were left out) and passes None here.
+        import boto3
+        from apis.shared.files.file_resolver import FileResolver
+        s3 = boto3.client("s3", region_name="us-east-1")
+        for i in range(7):
+            s3.put_object(Bucket=s3_bucket, Key=f"uploads/u1/f{i}", Body=b"x")
+            await file_repository.create_file(_make_file(f"f{i}"))
+        resolver = FileResolver(s3_client=s3)
+        resolver._file_repository = file_repository
+        files = await resolver.resolve_files("u1", [f"f{i}" for i in range(7)], max_files=None)
+        assert len(files) == 7

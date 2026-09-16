@@ -27,10 +27,15 @@ from apis.shared.errors import (
 from apis.inference_api.runtime_health import ping_payload
 from apis.shared.feature_flags import (
     agents_enabled,
+    attachment_turn_guard_enabled,
     mid_turn_steering_enabled,
     skills_enabled,
 )
 from apis.shared.files.file_resolver import get_file_resolver
+from apis.shared.files.models import (
+    INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
+    MAX_FILES_PER_MESSAGE,
+)
 from apis.shared.models.managed_models import list_managed_models
 from apis.shared.quota import (
     QuotaExceededEvent,
@@ -821,6 +826,110 @@ def _partition_attachments(
     return inline, tabular, presentations, oversized
 
 
+def _apply_message_file_cap(
+    direct_files: list,
+    upload_ids: list,
+    max_files: int,
+) -> tuple[list, list, list, int]:
+    """Hold a message to ``max_files`` attachments across both request paths.
+
+    Returns ``(direct_files, upload_ids, dropped_names, dropped_total)``.
+    Direct ``files`` come first (they are already in the request body), then
+    ``file_upload_ids`` fill whatever budget remains. Attachment order is
+    kept, so the first N the user attached are the N that survive.
+
+    The cap is applied to the upload IDs *before* they are resolved: the old
+    resolver default truncated silently after the fact, and letting every ID
+    through just to name the losers would fan out one S3 read per ID a client
+    chose to send. IDs beyond the budget are therefore counted, not named —
+    ``dropped_names`` holds the direct files (names known) and
+    ``dropped_total`` counts both. ``max_files <= 0`` disables the cap.
+    """
+    if max_files <= 0:
+        return direct_files, upload_ids, [], 0
+
+    kept_direct = direct_files[:max_files]
+    dropped_names = [f.filename for f in direct_files[max_files:]]
+    id_budget = max(0, max_files - len(kept_direct))
+    kept_ids = upload_ids[:id_budget]
+    dropped_total = len(dropped_names) + (len(upload_ids) - len(kept_ids))
+    return kept_direct, kept_ids, dropped_names, dropped_total
+
+
+def _apply_inline_byte_budget(
+    inline: list,
+    max_total_bytes: int,
+) -> tuple[list, list, int]:
+    """Hold the inline set (documents *and* images) to one message's byte
+    budget. Returns ``(kept, over_budget, requested_bytes)``.
+
+    Why this exists: the turn's inline attachments are persisted as one
+    AgentCore Memory event, and past ~7.5 MB of raw bytes that write fails
+    with ``SessionException`` — a hole in history, not a degraded turn. See
+    ``INLINE_ATTACHMENTS_MAX_TOTAL_BYTES`` for the derivation.
+
+    Policy — first-fit in attachment order: walk the files as the user
+    attached them, keep each one that still fits, and move any that would
+    push the running total over the budget to ``over_budget``. Earlier
+    attachments win, and a later, smaller file that still fits rides along
+    rather than being punished for a large neighbour. Order within both
+    lists is the attachment order, so the marker text and the guidance note
+    are deterministic (they land in the cacheable prefix on later turns).
+
+    Images count toward the budget: they are part of the same message and
+    the same event, even though the per-file document gate skips them.
+    ``max_total_bytes <= 0`` disables the budget.
+    """
+    requested = sum(_estimate_decoded_size(f) for f in inline)
+    if max_total_bytes <= 0:
+        return list(inline), [], requested
+
+    kept: list = []
+    over: list = []
+    running = 0
+    for file in inline:
+        size = _estimate_decoded_size(file)
+        if running + size > max_total_bytes:
+            over.append(file)
+            continue
+        running += size
+        kept.append(file)
+    return kept, over, requested
+
+
+def _emit_attachment_over_quota_metric(
+    requested_bytes: int,
+    cap_bytes: int,
+    inline_count: int,
+    dropped_count: int,
+) -> None:
+    """One content-free EMF record in ``AgentCoreStack/Compaction`` when a
+    turn's inline attachments had to be trimmed to the byte budget. Never
+    raises. ``AttachmentTurnOverQuota`` carries the requested bytes so the
+    rate *and* the size distribution of over-quota turns are measurable
+    (spec §4E put the rate at ~1.3–1.4% of attachment turns from a proxy;
+    this is the direct count).
+    """
+    try:
+        from apis.shared.observability.emf import emit_emf_metrics
+        from apis.shared.observability.prompt_cache import prompt_cache_observability_enabled
+
+        if not prompt_cache_observability_enabled():
+            return
+        emit_emf_metrics(
+            "AgentCoreStack/Compaction",
+            metrics={"AttachmentTurnOverQuota": requested_bytes},
+            properties={
+                "capBytes": cap_bytes,
+                "inlineFileCount": inline_count,
+                "droppedFileCount": dropped_count,
+            },
+            units={"AttachmentTurnOverQuota": "Bytes"},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("AttachmentTurnOverQuota EMF skipped: %s", e)
+
+
 def _attachment_marker_names(all_files: list, oversized_inline: list) -> list:
     """Filenames for the ``[Attached files: …]`` marker on the user message.
 
@@ -852,10 +961,21 @@ def _build_attachment_guidance(
     diverted_presentations: list,
     oversized_inline: list,
     enabled_tools: list | None,
+    over_budget: list | None = None,
+    dropped_over_count_names: list[str] | None = None,
+    dropped_over_count_total: int = 0,
+    max_files: int = 0,
 ) -> str:
     """Return a short markdown addendum describing how attachments will be
     handled, to append to the user's message so the agent (and the user)
     both understand why a file isn't inline.
+
+    ``oversized_inline`` is the per-file case (the file itself is too big;
+    the fix is a smaller file). ``over_budget`` is the aggregate case (each
+    file is fine, together they exceed one message's budget; the fix is a
+    follow-up message). They get separate sentences because the remedy
+    differs. ``dropped_over_count_*`` describe files beyond the per-message
+    count cap: names where known (direct ``files``), a count otherwise.
     """
     parts: list[str] = []
 
@@ -907,6 +1027,32 @@ def _build_attachment_guidance(
             f"and were skipped. Try a smaller file, or convert to CSV/XLSX "
             f"and use the Spreadsheet Analysis tool._"
         )
+
+    if over_budget:
+        names = ", ".join(f"`{f.filename}`" for f in over_budget)
+        parts.append(
+            f"_Attached file(s) {names} were skipped because this message's "
+            f"attachments together exceed the combined size limit for a "
+            f"single message. Send them in a follow-up message._"
+        )
+
+    if dropped_over_count_total > 0:
+        limit = f"{max_files} file" + ("s" if max_files != 1 else "")
+        if dropped_over_count_names:
+            names = ", ".join(f"`{n}`" for n in dropped_over_count_names)
+            unnamed = dropped_over_count_total - len(dropped_over_count_names)
+            tail = f" and {unnamed} more" if unnamed > 0 else ""
+            parts.append(
+                f"_Only the first {limit} per message are attached; "
+                f"{names}{tail} were not. Send them in a follow-up message._"
+            )
+        else:
+            noun = "file was" if dropped_over_count_total == 1 else "files were"
+            parts.append(
+                f"_Only the first {limit} per message are attached; "
+                f"{dropped_over_count_total} more {noun} not. "
+                f"Send them in a follow-up message._"
+            )
 
     return "\n\n".join(parts)
 
@@ -1532,14 +1678,39 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
     #     budget; we skip them inline and surface a note instead of
     #     letting Bedrock reject the turn.
     all_files = list(input_data.files) if input_data.files else []
+    upload_ids_to_resolve = list(input_data.file_upload_ids or [])
 
-    if input_data.file_upload_ids:
+    # Per-message file count (spec §4E / PR-6). Applied here, before the
+    # S3 fetch, so a sixth file is reported to the user instead of silently
+    # truncated by the resolver — and so a client cannot fan out unbounded
+    # S3 reads. With the guard off, the resolver's own backstop (5) applies
+    # exactly as it did before.
+    turn_guard_on = attachment_turn_guard_enabled()
+    dropped_over_count_names: list[str] = []
+    dropped_over_count_total = 0
+    if turn_guard_on:
+        (
+            all_files,
+            upload_ids_to_resolve,
+            dropped_over_count_names,
+            dropped_over_count_total,
+        ) = _apply_message_file_cap(all_files, upload_ids_to_resolve, MAX_FILES_PER_MESSAGE)
+        if dropped_over_count_total:
+            logger.warning(
+                "Dropped %d attachment(s) over the %d-per-message cap",
+                dropped_over_count_total,
+                MAX_FILES_PER_MESSAGE,
+            )
+
+    if upload_ids_to_resolve:
         try:
             file_resolver = get_file_resolver()
             resolved_files = await file_resolver.resolve_files(
                 user_id=user_id,
-                upload_ids=input_data.file_upload_ids,
-                max_files=5,  # Bedrock document limit
+                upload_ids=upload_ids_to_resolve,
+                # Already capped above when the guard is on; the resolver's
+                # own backstop is the pre-guard behaviour.
+                max_files=None if turn_guard_on else 5,
             )
             for rf in resolved_files:
                 all_files.append(
@@ -1602,7 +1773,36 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
             f"{[(f.filename, _estimate_decoded_size(f)) for f in oversized_inline]}"
         )
 
-    attachment_marker_names = _attachment_marker_names(all_files, oversized_inline)
+    # Aggregate budget for the turn (spec §4E / PR-6): the inline set is one
+    # persisted message, and a message over ~7.5 MB raw fails the AgentCore
+    # Memory write with SessionException. Trim first-fit in attachment order;
+    # the trimmed files join the oversized note path, never the exception.
+    over_budget_inline: list = []
+    if turn_guard_on and files_to_send:
+        files_to_send, over_budget_inline, requested_inline_bytes = _apply_inline_byte_budget(
+            files_to_send, INLINE_ATTACHMENTS_MAX_TOTAL_BYTES
+        )
+        if over_budget_inline:
+            logger.warning(
+                "Attachment turn over quota: requested_bytes=%d cap_bytes=%d "
+                "inline_files=%d dropped_files=%d",
+                requested_inline_bytes,
+                INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
+                len(files_to_send) + len(over_budget_inline),
+                len(over_budget_inline),
+            )
+            _emit_attachment_over_quota_metric(
+                requested_bytes=requested_inline_bytes,
+                cap_bytes=INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
+                inline_count=len(files_to_send) + len(over_budget_inline),
+                dropped_count=len(over_budget_inline),
+            )
+
+    # Both classes were dropped from the turn entirely; the marker must not
+    # promise a card for either.
+    attachment_marker_names = _attachment_marker_names(
+        all_files, oversized_inline + over_budget_inline
+    )
 
     # Pre-create session metadata so OAuth interrupts and other state can
     # attach to the session row from turn one. Best-effort; on failure the
@@ -2697,6 +2897,10 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 diverted_presentations,
                 oversized_inline,
                 effective_enabled_tools,
+                over_budget=over_budget_inline,
+                dropped_over_count_names=dropped_over_count_names,
+                dropped_over_count_total=dropped_over_count_total,
+                max_files=MAX_FILES_PER_MESSAGE,
             )
             # When multiple spreadsheets are visible, ship the full inventory
             # up front so the agent can disambiguate intentionally instead of

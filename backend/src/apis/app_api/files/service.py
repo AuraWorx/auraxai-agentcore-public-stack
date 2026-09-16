@@ -36,6 +36,7 @@ from apis.shared.files.models import (
     is_allowed_mime_type,
     is_presentation_file,
     ALLOWED_MIME_TYPES,
+    MAX_FILES_PER_MESSAGE,
 )
 from .sheet_preview import (
     MAX_WORKBOOK_BYTES,
@@ -182,9 +183,10 @@ class FileUploadService:
                 "FILE_UPLOAD_MAX_SIZE_BYTES_PRESENTATION", 25 * 1024 * 1024  # 25MB
             )
         )
-        self.max_files_per_message = max_files_per_message or int(
-            os.environ.get("FILE_UPLOAD_MAX_FILES_PER_MESSAGE", 5)
-        )
+        # Single source of truth is the shared constant (the inference API
+        # enforces it per message; see ``_apply_message_file_cap``). Kept on
+        # the service so callers can read the effective limit.
+        self.max_files_per_message = max_files_per_message or MAX_FILES_PER_MESSAGE
         self.user_quota_bytes = user_quota_bytes or int(
             os.environ.get("FILE_UPLOAD_USER_QUOTA_BYTES", 1024 * 1024 * 1024)  # 1GB
         )
