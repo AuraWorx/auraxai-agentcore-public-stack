@@ -202,6 +202,8 @@ class SystemPromptBuilder:
             str: Complete system prompt
         """
         if include_date:
+            # This line sits in the Bedrock prompt-cache prefix, so it must be
+            # byte-stable within a day: date + weekday + timezone only, no hour.
             current_date = get_current_date_pacific()
             prompt = f"{self.base_prompt}\n\nCurrent date: {current_date}"
             logger.info(f"Built system prompt with current date: {current_date}")
