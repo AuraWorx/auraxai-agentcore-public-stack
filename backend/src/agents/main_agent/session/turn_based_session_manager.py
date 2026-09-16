@@ -10,7 +10,11 @@ Compaction Strategy (two-feature approach):
 - Stage 1: Tool content truncation — applied only below the persisted
   truncation anchor, which moves at checkpoint advances or when the Bedrock
   prompt cache has already expired between turns
-- Stage 2: Checkpoint + Summary — triggered when token threshold exceeded
+- Stage 2: Checkpoint + Summary — triggered when the turn's context exceeds
+  the model-relative ceiling (compaction_policy.py; the cut lands retained
+  history at the policy floor, and a cut disarms the trigger until the
+  context drops back under the ceiling — spec:
+  docs/specs/compaction-model-relative-thresholds.md)
 
 Byte-stability contract: between compaction-state changes, restoring the same
 stored history must produce byte-identical ``agent.messages``. Bedrock prompt
@@ -37,6 +41,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import AgentC
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 
 from .compaction_models import CompactionState, CompactionConfig, CompactionResult
+from .compaction_policy import CompactionPolicy, choose_checkpoint
 
 if TYPE_CHECKING:
     from strands.agent.agent import Agent
@@ -103,6 +108,12 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         self._valid_cutoff_indices: List[int] = []
         self._all_messages_for_summary: List[Dict] = []
         self._total_message_count_at_init: int = 0
+        # Absolute index (into the stored history) of ``agent.messages[0]``.
+        # The restore slice sets it to the applied checkpoint; the persisted
+        # checkpoint is always ``_live_offset + <index into the live list>``,
+        # so cuts computed over the live list and the slice applied at restore
+        # share one coordinate system (spec §3.4).
+        self._live_offset: int = 0
 
         # Session control
         self.cancelled = False
@@ -261,6 +272,7 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             self.compaction_state = CompactionState()
             self._valid_cutoff_indices = []
             self._all_messages_for_summary = []
+            self._live_offset = 0
 
         # Repair tool-use/tool-result pairing and role alternation on the FINAL
         # restored list — after compaction slicing/truncation — so it is always
@@ -333,6 +345,9 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             stage = "checkpoint"
         else:
             messages_to_process = all_messages
+
+        # The live list now starts at this absolute index.
+        self._live_offset = offset
 
         # Truncate only messages strictly below the anchor (absolute index),
         # translated into post-slice coordinates via the checkpoint offset.
@@ -731,21 +746,35 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         self,
         input_tokens: int,
         current_messages: Optional[List[Dict]] = None,
+        context_window: Optional[int] = None,
+        history_tokens: Optional[int] = None,
     ) -> Optional[CompactionResult]:
         """
         Update compaction state after a turn completes.
 
-        Called by StreamCoordinator with input token count from model response.
-        Triggers checkpoint creation when token threshold exceeded.
+        Called by StreamCoordinator with the turn's cache-inclusive input token
+        count. Resolves the model-relative policy (ceiling / floor / hard
+        ceiling — spec §3.1), applies the hysteresis rule (§3.3) and, when a
+        cut is due, chooses a floor-seeking checkpoint (§3.2) in absolute
+        coordinates (§3.4). Persists the new checkpoint + summary; the slice
+        itself is applied at the next restore by ``_apply_compaction``.
 
         Returns a ``CompactionResult`` when the checkpoint advances on this
         turn so the caller can emit a ``compaction`` SSE event; otherwise
         returns ``None``.
 
-        ``current_messages`` is the agent's live message list. When provided,
-        the cutoff cache is re-derived from it so compaction works even when
-        AgentCoreMemory loads messages via hooks (skipping the initialize-time
-        prime path).
+        Args:
+            input_tokens: cache-inclusive input tokens of the turn's last call.
+            current_messages: the agent's live message list. When provided,
+                the cutoff cache is re-derived from it so compaction works even
+                when AgentCoreMemory loads messages via hooks (skipping the
+                initialize-time prime path).
+            context_window: the model's ``maxInputTokens`` from the catalog,
+                or ``None`` when unknown (falls back to the fixed threshold).
+            history_tokens: measured size of the conversation portion of the
+                prompt (the ``messages`` partition of the context breakdown);
+                calibrates the per-message estimates. ``None`` → use
+                ``input_tokens``, which biases the cut slightly deeper.
         """
         if not self.compaction_config or not self.compaction_config.enabled:
             return None
@@ -753,16 +782,45 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # Re-read persisted state before touching it — on EVERY turn, not just
         # the first. See ``_adopt_persisted_compaction_state`` (#751).
         self._adopt_persisted_compaction_state()
+        state = self.compaction_state
+        state.last_input_tokens = input_tokens
 
-        self.compaction_state.last_input_tokens = input_tokens
+        policy = CompactionPolicy.resolve(self.compaction_config, context_window)
 
-        if input_tokens <= self.compaction_config.token_threshold:
-            self._save_compaction_state(self.compaction_state)
+        if input_tokens <= policy.ceiling:
+            if policy.hysteresis_enabled and not state.armed:
+                logger.info(
+                    "compaction_rearmed: input=%d <= ceiling=%d (source=%s)",
+                    input_tokens, policy.ceiling, policy.source,
+                )
+                state.armed = True
+            self._save_compaction_state(state)
             return None
+
+        forced = policy.hard_ceiling is not None and input_tokens >= policy.hard_ceiling
+        if policy.hysteresis_enabled and not state.armed and not forced:
+            # The previous cut has not been observed to take effect yet (the
+            # slice lands at the next restore) — cutting again now is exactly
+            # the spiral. Wait for the context to drop under the ceiling, or
+            # for the hard ceiling.
+            logger.info(
+                "compaction_disarmed_noop: input=%d > ceiling=%d, hard=%d (source=%s)",
+                input_tokens, policy.ceiling, policy.hard_ceiling, policy.source,
+            )
+            self._save_compaction_state(state)
+            return None
+        if forced and not state.armed:
+            logger.warning(
+                "compaction_forced: input=%d >= hard_ceiling=%d while disarmed — "
+                "the previous cut did not bring the context under the ceiling "
+                "(summary too large, or slice not yet applied on this agent)",
+                input_tokens, policy.hard_ceiling,
+            )
 
         logger.info(
             f"Threshold exceeded: {input_tokens:,} > "
-            f"{self.compaction_config.token_threshold:,}"
+            f"{policy.ceiling:,} (floor={policy.floor}, hard={policy.hard_ceiling}, "
+            f"window={policy.context_window}, source={policy.source})"
         )
 
         # Refresh cutoff cache from the agent's current messages — at this
@@ -780,10 +838,11 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
 
         if not self._valid_cutoff_indices:
             logger.info("No valid cutoff points cached, skipping checkpoint update")
-            self._save_compaction_state(self.compaction_state)
+            self._save_compaction_state(state)
             return None
 
-        total_turns = len(self._valid_cutoff_indices)
+        cutoffs = self._valid_cutoff_indices
+        total_turns = len(cutoffs)
         protected_turns = self.compaction_config.protected_turns
 
         if total_turns <= protected_turns:
@@ -791,23 +850,56 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 f"Only {total_turns} turns available (need > {protected_turns}), "
                 f"keeping all messages"
             )
-            self._save_compaction_state(self.compaction_state)
+            self._save_compaction_state(state)
             return None
 
-        new_checkpoint = self._valid_cutoff_indices[-protected_turns]
-        current_checkpoint = self.compaction_state.checkpoint
+        # Choose the cut in LIVE-LIST coordinates, then translate to absolute.
+        messages = self._all_messages_for_summary
+        retained_estimate: Optional[int] = None
+        if policy.floor is None:
+            # Legacy (kill switch): keep the last N turns, whatever their size.
+            relative_cut = cutoffs[-protected_turns]
+        else:
+            relative_cut, retained_estimate = choose_checkpoint(
+                messages,
+                cutoffs,
+                protected_turns,
+                policy.floor,
+                history_tokens if history_tokens is not None else input_tokens,
+            )
+
+        if relative_cut <= 0:
+            # Everything already fits under the floor — the excess is system
+            # prompt / tools, which a history cut cannot fix.
+            logger.info(
+                "compaction_nothing_to_cut: retained≈%s <= floor=%s with input=%d",
+                retained_estimate, policy.floor, input_tokens,
+            )
+            self._save_compaction_state(state)
+            return None
+
+        new_checkpoint = self._live_offset + relative_cut
+        current_checkpoint = state.checkpoint
 
         if new_checkpoint <= current_checkpoint:
-            self._save_compaction_state(self.compaction_state)
+            self._save_compaction_state(state)
             return None
 
-        logger.info(f"Checkpoint update: {current_checkpoint} -> {new_checkpoint}")
+        logger.info(
+            "compaction_cut: checkpoint %d -> %d (live_offset=%d, relative_cut=%d, "
+            "retained≈%s, floor=%s, ceiling=%d, hard=%s, window=%s, forced=%s)",
+            current_checkpoint, new_checkpoint, self._live_offset, relative_cut,
+            retained_estimate, policy.floor, policy.ceiling, policy.hard_ceiling,
+            policy.context_window, forced,
+        )
 
         # Count turns rolled into the summary on THIS event (delta, not
-        # cumulative) — each inline divider stands on its own.
+        # cumulative) — each inline divider stands on its own. In absolute
+        # coordinates: turn starts at or after the previous checkpoint (they
+        # were retained by the last slice) and before the new one.
         summarized_turns = sum(
-            1 for idx in self._valid_cutoff_indices
-            if current_checkpoint < idx <= new_checkpoint
+            1 for idx in cutoffs
+            if current_checkpoint <= self._live_offset + idx < new_checkpoint
         )
 
         # Retrieve or generate summary for compacted messages
@@ -815,28 +907,34 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         if summaries:
             summary = "\n\n".join(summaries)
         else:
-            messages_to_summarize = self._all_messages_for_summary[:new_checkpoint]
+            messages_to_summarize = messages[:relative_cut]
             summary = self._generate_fallback_summary(messages_to_summarize)
 
-        self.compaction_state.checkpoint = new_checkpoint
+        state.checkpoint = new_checkpoint
         # The anchor rides the checkpoint: everything the slice retains stays
         # byte-identical until the next compaction-state change, so the single
         # mutation (slice + summary) is paid with exactly one cache re-write.
-        self.compaction_state.truncation_anchor = max(
-            self.compaction_state.truncation_anchor, new_checkpoint
-        )
-        self.compaction_state.summary = summary
+        state.truncation_anchor = max(state.truncation_anchor, new_checkpoint)
+        state.summary = summary
         # Running total persisted alongside the rest of the compaction state
         # so a refresh can rehydrate the end-of-conversation summary indicator.
-        self.compaction_state.total_summarized_turns += summarized_turns
+        state.total_summarized_turns += summarized_turns
+        if policy.hysteresis_enabled:
+            state.armed = False
+        state.policy = {
+            **policy.to_dict(),
+            "forced": forced,
+            "inputTokens": input_tokens,
+            "retainedTokensEstimate": retained_estimate,
+        }
         # This save is the compaction event itself — count it.
-        self._save_compaction_state(self.compaction_state, record_event=True)
+        self._save_compaction_state(state, record_event=True)
 
         logger.info(
             f"Compaction checkpoint set: {new_checkpoint}, "
             f"summary_length={len(summary) if summary else 0}, "
             f"summarized_turns={summarized_turns}, "
-            f"total_summarized_turns={self.compaction_state.total_summarized_turns}"
+            f"total_summarized_turns={state.total_summarized_turns}"
         )
 
         return CompactionResult(
@@ -844,6 +942,12 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             new_checkpoint=new_checkpoint,
             summarized_turns=summarized_turns,
             input_tokens=input_tokens,
+            context_window=policy.context_window,
+            ceiling=policy.ceiling,
+            floor=policy.floor,
+            hard_ceiling=policy.hard_ceiling,
+            forced=forced,
+            retained_tokens_estimate=retained_estimate,
         )
 
     # =========================================================================

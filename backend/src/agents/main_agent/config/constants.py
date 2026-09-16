@@ -28,6 +28,21 @@ class EnvVars:
     COMPACTION_PROTECTED_TURNS = "AGENTCORE_MEMORY_COMPACTION_PROTECTED_TURNS"
     COMPACTION_MAX_TOOL_CONTENT_LENGTH = "AGENTCORE_MEMORY_COMPACTION_MAX_TOOL_CONTENT_LENGTH"
     COMPACTION_CACHE_TTL_SECONDS = "AGENTCORE_MEMORY_COMPACTION_CACHE_TTL_SECONDS"
+    # Model-relative thresholds (docs/specs/compaction-model-relative-thresholds.md).
+    # The kill switch reverts to the fixed TOKEN_THRESHOLD and the legacy
+    # turn-count cut; the ratios/caps shape the per-model ceiling and floor.
+    COMPACTION_MODEL_RELATIVE_ENABLED = "AGENTCORE_MEMORY_COMPACTION_MODEL_RELATIVE_ENABLED"
+    COMPACTION_CEILING_RATIO = "AGENTCORE_MEMORY_COMPACTION_CEILING_RATIO"
+    COMPACTION_CEILING_CAP_TOKENS = "AGENTCORE_MEMORY_COMPACTION_CEILING_CAP_TOKENS"
+    COMPACTION_FLOOR_RATIO = "AGENTCORE_MEMORY_COMPACTION_FLOOR_RATIO"
+    COMPACTION_HARD_CEILING_RATIO = "AGENTCORE_MEMORY_COMPACTION_HARD_CEILING_RATIO"
+    COMPACTION_HARD_CEILING_MULTIPLIER = "AGENTCORE_MEMORY_COMPACTION_HARD_CEILING_MULTIPLIER"
+    # Strands conversation-manager window (messages). Our compaction owns
+    # history size; the SDK's default 40-message SlidingWindowConversationManager
+    # would otherwise slide the front of the list every turn past 40 messages
+    # (a prefix re-write per turn, and it moves the coordinates the compaction
+    # checkpoint is expressed in). Setting this to 40 restores the SDK default.
+    CONVERSATION_WINDOW_MESSAGES = "AGENTCORE_CONVERSATION_WINDOW_MESSAGES"
 
     # --- Restored-history repair ---
     # Kill switch for the restore-time tool-pairing/alternation repair
@@ -112,6 +127,27 @@ class Defaults:
     COMPACTION_MAX_TOOL_CONTENT_LENGTH = 500
     # Bedrock prompt-cache TTL (seconds); see CompactionConfig.cache_ttl_seconds
     COMPACTION_CACHE_TTL_SECONDS = 300
+    # Model-relative compaction policy — see
+    # docs/specs/compaction-model-relative-thresholds.md §3.1 for the table
+    # these produce. ceiling = min(window * CEILING_RATIO, CEILING_CAP_TOKENS);
+    # floor = ceiling * FLOOR_RATIO; hard = min(window * HARD_CEILING_RATIO,
+    # ceiling * HARD_CEILING_MULTIPLIER). COMPACTION_TOKEN_THRESHOLD above is
+    # the ceiling used when the model's window is unknown.
+    COMPACTION_MODEL_RELATIVE_ENABLED = True
+    COMPACTION_CEILING_RATIO = 0.5
+    # 100k, not 200k: the 2026-09-15 replay of 20 heavy Sonnet 5 sessions
+    # priced a 200k/50k policy 43% above 100k/25k on the input side, because
+    # 36% of cache-write dollars are cold re-writes after a >5 min pause and
+    # their size is the context at the pause. Raise only on evidence from
+    # compaction_forced + the cost anatomy (spec §3.1).
+    COMPACTION_CEILING_CAP_TOKENS = 100_000
+    COMPACTION_FLOOR_RATIO = 0.25
+    COMPACTION_HARD_CEILING_RATIO = 0.7
+    COMPACTION_HARD_CEILING_MULTIPLIER = 1.5
+    # Effectively "never trim proactively" — compaction decides what leaves the
+    # prompt. Overflow recovery (reduce_context on ContextWindowOverflow) still
+    # works at any window size.
+    CONVERSATION_WINDOW_MESSAGES = 2000
 
     # --- DynamoDB Tables ---
     DYNAMODB_QUOTA_TABLE = "UserQuotas"

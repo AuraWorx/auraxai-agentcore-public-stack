@@ -771,9 +771,18 @@ class StreamCoordinator:
                         if total_input_tokens > 0:
                             try:
                                 current_messages = getattr(agent, "messages", None)
+                                # Model-relative policy inputs: the catalog
+                                # window (same lookup the badge uses — the
+                                # catalog is cached) and the measured size of
+                                # the conversation portion of the prompt.
+                                # See docs/specs/compaction-model-relative-thresholds.md.
+                                turn_context_window = await self._resolve_context_window(main_agent_wrapper)
+                                history_tokens = self._history_tokens_from_breakdown(agent)
                                 compaction_result = await session_manager.update_after_turn(
                                     total_input_tokens,
                                     current_messages=current_messages,
+                                    context_window=turn_context_window,
+                                    history_tokens=history_tokens,
                                 )
                                 logger.info(f"   Compaction state updated: {total_input_tokens:,} input tokens")
                                 if compaction_result is not None:
@@ -783,6 +792,14 @@ class StreamCoordinator:
                                         "newCheckpoint": compaction_result.new_checkpoint,
                                         "summarizedTurns": compaction_result.summarized_turns,
                                         "inputTokens": compaction_result.input_tokens,
+                                        # Additive policy fields (the SPA
+                                        # validator ignores unknown keys).
+                                        "contextWindow": compaction_result.context_window,
+                                        "ceiling": compaction_result.ceiling,
+                                        "floor": compaction_result.floor,
+                                        "hardCeiling": compaction_result.hard_ceiling,
+                                        "forced": compaction_result.forced,
+                                        "retainedTokensEstimate": compaction_result.retained_tokens_estimate,
                                     }
                                     yield f"event: compaction\ndata: {json.dumps(compaction_payload)}\n\n"
                             except Exception as e:
@@ -2564,6 +2581,46 @@ class StreamCoordinator:
             # Fallback for non-serializable objects (should never happen with new processor)
             logger.error(f"Failed to serialize event: {e}")
             return f"event: error\ndata: {json.dumps({'error': f'Serialization error: {str(e)}'})}\n\n"
+
+    @staticmethod
+    async def _resolve_context_window(main_agent_wrapper: Any) -> Optional[int]:
+        """The serving model's ``maxInputTokens`` from the catalog, or ``None``.
+
+        Feeds the model-relative compaction policy. Best-effort: a miss means
+        the policy falls back to the fixed threshold, never an error.
+        """
+        model_config = getattr(main_agent_wrapper, "model_config", None)
+        model_id = getattr(model_config, "model_id", None)
+        if not model_id:
+            return None
+        try:
+            from apis.shared.costs.pricing_config import get_model_by_model_id
+
+            record = await get_model_by_model_id(model_id)
+            value = getattr(record, "max_input_tokens", None) if record is not None else None
+            return int(value) if value else None
+        except Exception as e:  # noqa: BLE001 - never let a lookup break the turn
+            logger.debug(f"Skipping contextWindow lookup for compaction: {e}")
+            return None
+
+    @staticmethod
+    def _history_tokens_from_breakdown(agent: Any) -> Optional[int]:
+        """The ``messages`` partition of this turn's context breakdown, or ``None``.
+
+        Calibrates the compaction policy's per-message estimates against the
+        measured size of the conversation portion of the prompt.
+        """
+        try:
+            from agents.main_agent.session.hooks.context_attribution import get_context_breakdown
+
+            breakdown = get_context_breakdown(agent)
+            for partition in (breakdown or {}).get("partitions", []) or []:
+                if isinstance(partition, dict) and partition.get("key") == "messages":
+                    tokens = partition.get("tokens")
+                    return int(tokens) if tokens is not None else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Skipping history-token calibration: {e}")
+        return None
 
     def _log_cache_metrics(self, usage: Dict[str, Any], session_id: str) -> None:
         """
