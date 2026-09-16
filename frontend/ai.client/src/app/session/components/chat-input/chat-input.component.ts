@@ -424,11 +424,11 @@ export class ChatInputComponent {
     const base = 'flex size-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]';
     switch (status) {
       case 'listening':
-        return `${base} bg-state-danger-100 text-state-danger-600 dark:bg-state-danger-900/30 dark:text-state-danger-400 animate-pulse`;
+        return `${base} bg-state-danger-100 text-state-danger-700 dark:bg-state-danger-900/30 dark:text-state-danger-400 animate-pulse`;
       case 'speaking':
-        return `${base} bg-state-success-100 text-state-success-600 dark:bg-state-success-900/30 dark:text-state-success-400`;
+        return `${base} bg-state-success-100 text-state-success-700 dark:bg-state-success-900/30 dark:text-state-success-400`;
       case 'connecting':
-        return `${base} bg-state-warning-100 text-state-warning-600 dark:bg-state-warning-900/30 dark:text-state-warning-400`;
+        return `${base} bg-state-warning-100 text-state-warning-700 dark:bg-state-warning-900/30 dark:text-state-warning-400`;
       default:
         return `${base} text-gray-500 dark:text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-gray-300`;
     }
