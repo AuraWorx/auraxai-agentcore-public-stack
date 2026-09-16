@@ -1,0 +1,389 @@
+# Compaction relative to the model window — a trigger ceiling, a target floor, and paying the rewrite only when it is free
+
+**Status:** PR-1 in progress (this document rides with it). PR-2 through PR-5
+unbuilt. Written 2026-09-15.
+**Owner:** Phil Merrell
+**Related:** `compaction-over-threshold-cache-spiral.md` (#833 — the incident
+and the summary-cap PR this spec depends on) ·
+`compaction-v2-versioned-prefix.md` (#835 — the frozen-segment redesign; this
+spec implements v2's I3/I4 *policy* on the v1 machinery so it survives either
+way) · `agent-cache-extra-tools-bypass.md` · `document-context-offload.md` ·
+`gpt-5-6-prompt-caching.md` (why `maxInputTokens` is a pricing cap) ·
+`docs/one-pagers/cost-effectiveness-roadmap.md` (W2 row) · the 2026-09-15 prod
+cost audit (top-5 September users + 7 largest conversations, via
+`/admin/costs`), whose measurements §2 quotes
+
+---
+
+## 1. The question this answers
+
+Compaction fires at a fixed 100,000 tokens
+(`AGENTCORE_MEMORY_COMPACTION_TOKEN_THRESHOLD`), regardless of whether the
+model's window is 200k, 272k or 1M. Should the trigger vary with the window?
+
+Yes — but the trigger is the least important number. Under Bedrock prompt
+caching the marginal costs are:
+
+| operation, at a 200k-token prefix (Sonnet 5, `global.*`, $2.00/MTok input) | cost |
+|---|---|
+| keep the history for one more turn (cache read, 0.1× input) | ~$0.04 |
+| change the history once (cache write, 1.25× input) | ~$0.50 |
+
+Retention is ~12× cheaper than mutation *per event*. What compaction spends
+is **prefix rewrites**, and what it saves is **the size of every read after**.
+So the two numbers that matter are (a) how small the conversation is after a
+compaction — the *floor* — and (b) whether the rewrite lands on a turn that
+was going to rewrite anyway. The July replay in the 2026-07-27 measurement
+made this concrete: compacting the ten biggest sessions at 120k down to 25k
+cut input-side cost 64%; deeper-and-rarer beat shallower-and-more-often in
+every trajectory.
+
+A model-relative threshold that merely *raises* the ceiling on 1M models
+would therefore make things worse: every read is larger, every cache bust is
+larger, and long-context quality degrades well before a 1M window fills
+(`document-context-offload.md` §"context rot"). The design below scales the
+trigger with the window but **caps** it, and puts the engineering weight on
+the floor and the scheduling.
+
+## 2. Current state (verified 2026-09-15 on `develop` @ 222e1d26)
+
+- `CompactionConfig.token_threshold` = 100,000 (`constants.py` Defaults),
+  compared in `update_after_turn` against the turn's cache-inclusive input
+  (`inputTokens + cacheRead + cacheWrite`, the only correct context size under
+  caching — see the coordinator comment at the call site).
+- The catalog already carries the window: `ManagedModel.max_input_tokens`
+  (`maxInputTokens`) — 200k on the Claude 4.x rows, 1,000,000 on Sonnet 5,
+  272,000 on the GPT-5.6 family and GPT-6 Astra, 256,000 on Qwen. The stream
+  coordinator looks it up every turn for the badge (`final_metadata["contextWindow"]`)
+  and the storage path. **It is not a capability field on the OpenAI rows: it
+  is the short-context pricing cap** (`curated-models.ts:373`). Deriving
+  thresholds from it therefore keeps us inside short-context pricing for free.
+- The checkpoint is chosen by *turn count*: `cutoffs[-protected_turns]`, i.e.
+  "keep the last 3 user turns". Turn count is uncorrelated with tokens — the
+  byte-stability audit found three cheap turns summarized while a 92k tool
+  result was kept.
+- There is **no hysteresis.** Over threshold, the checkpoint advances on every
+  turn (each new turn pushes `cutoffs[-3]` forward), the LTM summary join is
+  re-fetched and re-persisted, and `Threshold exceeded` logs every turn — the
+  spiral session did this 56 times.
+- `update_after_turn` receives the agent's live list, which on a restored
+  session is *already sliced* at the checkpoint, and compares a slice-relative
+  index against the persisted absolute checkpoint (spiral spec D3; 199 of
+  1,238 rows carry the mismatch).
+- **Strands' default 40-message sliding window runs underneath all of this.**
+  `AgentFactory.create_agent` passes no `conversation_manager`, so the SDK
+  installs `SlidingWindowConversationManager(window_size=40)` and applies it
+  after every event-loop cycle (`agent.py:1631`). Past 40 messages the front
+  of `agent.messages` slides every turn. The 2026-09-15 prod cost audit (20
+  sessions, $127, content-free) measured the consequence: fingerprint
+  `messageCount` pinned at 39–41, every turn start reading only tools+system
+  and re-writing the whole window (session e7e75953 flips exactly at message
+  41), and the checkpoint/anchor coordinate mismatch (`ANCHOR_MISMATCH`) on
+  14 of 20 sessions — because the list the checkpoint indexes into is being
+  mutated by something other than compaction.
+- The same audit's cache-write attribution for September (Sonnet 5 = $683 of
+  $742; cache writes ~54% of it): 36% full re-writes after a >5 min pause
+  (cost scales with the context size at the pause — 17 of 20 sessions
+  peaked above 100k), 22% live re-writes inside over-100k sessions (the
+  spiral, still live), 2.6% the hourly system-prompt tick
+  (`get_current_date_pacific()` renders `%H:00`, so every Pacific hour
+  boundary flips `systemPromptHash`), ~2% the 40-message window in sub-100k
+  sessions. Summaries of 23k–40k tokens were present in 6 of 20 sessions.
+- Compaction changes bytes in two places only: the restore-time slice in
+  `_apply_compaction` (cold starts) and — nowhere on a warm agent. That is the
+  subject of PR-3, not PR-1.
+- Strands 1.55 ships the native form of "trigger as a ratio of the window":
+  `SummarizingConversationManager(proactive_compression={"compression_threshold": r})`
+  reads `model.context_window_limit` (a `BedrockConfig` key we do not set). It
+  has no floor, no cache-aware scheduling and no summary budget, and the
+  2026-05-18 decision bars it as a bare swap. Per v2 §4.2 it is the *engine*
+  we would move onto, not the *policy*.
+
+## 3. Design
+
+### 3.0 Prerequisite: one owner of history size
+
+Compaction cannot express a checkpoint in a list that something else is
+trimming. PR-1 sets the conversation manager explicitly:
+`SlidingWindowConversationManager(window_size=2000, should_truncate_results=True)`
+(`AGENTCORE_CONVERSATION_WINDOW_MESSAGES`; `40` restores the SDK default).
+The manager is kept rather than replaced with `NullConversationManager`
+because its `reduce_context` is the stack's only
+`ContextWindowOverflowException` recovery, and that path is independent of
+the window size. Consequence to state plainly: conversations between 40
+messages and the ceiling now go to the model whole — more *read* tokens per
+turn (0.1×), far fewer *re-writes* (1.25×), and the model sees the
+conversation instead of its last 40 messages. Above the ceiling the
+compaction policy bounds it.
+
+### 3.1 Three numbers per model, derived from `maxInputTokens`
+
+```
+ceiling      = min(window × CEILING_RATIO,       CEILING_CAP_TOKENS)   # trigger
+floor        = ceiling × FLOOR_RATIO                                    # target after a cut
+hard_ceiling = min(window × HARD_CEILING_RATIO,  ceiling × HARD_MULT)   # force, even on a warm cache
+```
+
+Defaults: `CEILING_RATIO 0.5`, `CEILING_CAP_TOKENS 100_000`, `FLOOR_RATIO 0.25`,
+`HARD_CEILING_RATIO 0.7`, `HARD_MULT 1.5`. Which gives:
+
+| `maxInputTokens` | ceiling | floor | hard ceiling |
+|---|---|---|---|
+| 128,000 (a small-window model, for illustration) | 64,000 | 16,000 | 89,600 |
+| 200,000 (Claude 4.x, Haiku 4.5) | 100,000 | 25,000 | 140,000 |
+| 256,000 (Qwen) | 100,000 | 25,000 | 150,000 |
+| 272,000 (GPT-5.6 / GPT-6 pricing cap) | 100,000 | 25,000 | 150,000 |
+| 1,000,000 (Sonnet 5) | 100,000 | 25,000 | 150,000 |
+| unknown (catalog miss) | `token_threshold` (100,000) | 25,000 | 150,000 |
+
+So the window scales the ceiling **down** for small-window models and never
+up: for every model in the catalog today the cap binds at 100k. That is the
+honest answer to "shouldn't the threshold vary with the window" — under
+cache economics, no, not upward. Why:
+
+- **The cap was drafted at 200k for 1M models and moved to 100k on
+  evidence.** The 2026-09-15 replay of the 20 audited Sonnet 5 sessions
+  (input side, this spec's PR-3 scheduling rule applied, priced at the
+  incident's $2.50/$0.20 per MTok) gave: actual today **$102.64**, no
+  compaction **$208.81**, 100k/25k **$73.70**, 200k/50k **$105.30**. The 200k
+  policy was worse on 13 of 20 sessions and never better, and roughly equal
+  to today — raising the ceiling gives back the whole PR-1 win on that cohort.
+  Mechanism: 36% of cache-write dollars are cold re-writes after a >5 min
+  pause, and their size is the context *at the pause*; under 200k/50k most
+  heavy sessions never reach the ceiling and run 100–190k the whole time, so
+  each return costs ~$0.375 instead of $0.08–0.12. Caveats: 20 sessions, all
+  Sonnet 5, all heavy; the "actual" column already benefits from the
+  40-message window that PR-1 removes, so "no compaction" is the baseline
+  PR-1 replaces. Raise the cap only when `compaction_forced` and the cost
+  anatomy show sessions that need more room; it is one constant.
+- **Quality is on the same side.** Every warm turn reads the whole prefix;
+  the offload spec's evidence on context rot says the model is not better at
+  400k of chat history than at 100k plus a good summary.
+- **The floor at a quarter of the ceiling** is the "deeper and rarer" result:
+  a session that compacts to 25k and grows back to 100k pays one rewrite of
+  ~25k and then ~75k tokens' worth of *reads* before the next cut. A session
+  that compacts 100k → 80k pays a rewrite of 80k every few turns.
+- **The hard ceiling** exists so that PR-3's "wait for a free turn" cannot
+  wait forever. 70% of the window leaves room for the turn's own output and
+  for one oversized tool result without an overflow. On a 200k window the 70%
+  term (140k) binds; on larger windows the 1.5× term (150k) does.
+- **These are starting points, not tuned constants.** §5 says how to move
+  them. Every one is an env override (`AGENTCORE_MEMORY_COMPACTION_*`), and
+  `AGENTCORE_MEMORY_COMPACTION_MODEL_RELATIVE_ENABLED=false` reverts to the
+  fixed 100k threshold and the legacy turn-count cut exactly.
+
+### 3.2 A floor-seeking, token-aware checkpoint
+
+When the trigger fires, the cut is chosen to land the retained history **at
+or below the floor**, keeping as much as fits:
+
+1. Estimate tokens per message from the message's serialized size (chars/4;
+   flat 1,500 for an inline image; document bytes are already stripped at
+   restore). Calibrate the estimates so they sum to the turn's *history*
+   tokens — the `messages` partition from the context-attribution breakdown
+   when the turn has one, otherwise the full input count. Over-attributing
+   system/tools tokens to history biases the cut slightly deeper, which is
+   the safe direction.
+2. Candidate cuts are the same tool-pair-safe boundaries as today (user
+   messages that are not tool results), and never newer than
+   `cutoffs[-protected_turns]` — the last N turns are always kept, as today.
+3. Choose the **oldest** candidate whose retained estimate is ≤ floor. If
+   even the minimum-protection cut exceeds the floor (a giant tool result
+   inside the protected tail), take the minimum-protection cut and log it;
+   evicting inside the protected tail is PR-4's escalation, not a deeper cut.
+
+### 3.3 Hysteresis: a cut disarms the trigger
+
+`CompactionState.armed` (persisted, legacy rows default `True`):
+
+- Over the ceiling **and armed** → cut, then `armed = False`.
+- Over the ceiling **and disarmed** → do nothing unless input ≥ hard ceiling,
+  in which case cut anyway and log `compaction_forced`. A forced cut is the
+  signal that the previous cut did not take (the summary is too large, or the
+  slice has not landed on this agent yet) — it is a metric, not a code path
+  we expect to run.
+- At or below the ceiling → `armed = True`.
+
+This makes v2's I3 ("threshold exceeded twice in a row is a bug by
+definition") structural on the v1 code: the spiral's 56 consecutive cuts
+become one cut plus 55 no-ops, and the LTM summary fetch stops being a
+per-turn call.
+
+### 3.4 One coordinate system
+
+`update_after_turn` computes cuts over the agent's live list. The live list
+starts at the absolute index the restore sliced at (or 0). The manager now
+tracks that offset (`_live_offset`, set in `_apply_compaction`) and persists
+`checkpoint = _live_offset + relative_cut`. The persisted checkpoint stays
+absolute — the coordinate `_apply_compaction` slices with — and the D3
+comparison (`new <= current`) is finally like-for-like. The deeper D3
+question (the restore window itself moving — `original=74` frozen) is
+untouched here and stays with spiral-spec PR-3.
+
+### 3.5 Pay the rewrite when it is free (PR-3)
+
+Everything above decides *what* to cut. PR-3 decides *when the bytes change*:
+
+- Post-turn computes and persists the pending checkpoint + summary (the
+  expensive part, off the critical path). Nothing is applied.
+- Pre-call on the next turn, the pending cut is applied to the live list
+  **in place** (`agent.messages[:] = ...`, never rebound — the #741 alias)
+  when any of: the gap since the last call exceeds the Bedrock TTL
+  (`cacheGapSeconds` > 300 — the prefix was going to rewrite anyway), the
+  model or the `@`-mentioned agent changed (prefix already invalid), or the
+  turn's input is projected at or above the hard ceiling.
+- Between the ceiling and the hard ceiling on a warm cache, the cut waits.
+  `rewrite_scheduled` vs `rewrite_forced` is logged per application so I4's
+  effectiveness is measurable.
+- Aliasing the message list across agent instances must also alias the
+  offset; `_adopt_session_conversation` syncs `_live_offset` when it adopts.
+
+### 3.6 The rest of the sequence
+
+- **Bounded summary** (= spiral spec PR-2, unchanged): an 8k-token budget,
+  re-summarized once with the cheap model at cut time. Without it the floor
+  is unreachable — a 40k-token summary is larger than the 25k floor. PR-1's
+  `compaction_forced` metric will show exactly how often this bites until it
+  lands.
+- **Content-class eviction + offload** (PR-4): when the protected tail alone
+  exceeds the floor, move the oversized tool result or document to the
+  session workspace behind the retrieval tool and reference it, rather than
+  cutting deeper or giving up.
+- **`context_window_limit` on the model** (PR-3, small): plumb
+  `maxInputTokens` into `ModelConfig` and set `context_window_limit` in
+  `to_bedrock_config` (a valid `BedrockConfig` key in 1.55), so Strands'
+  own `estimate_utilization` and our policy agree on the window, and the
+  eventual v2 engine swap inherits it.
+- **Per-section cache TTL** (PR-5, experiment): tools + system on `1h`,
+  messages on `5m`, via `CacheConfig(system_prompt_ttl="1h", tools_ttl="1h")`.
+  The 2026-07-27 model said a *blanket* 1h TTL was a wash (2× write premium
+  ate the saving) and a *selective* one was the variant worth testing.
+  Sequence behind the 1.55 cache-point invariant test; measure on
+  `cacheStatus` before and after.
+
+## 4. Cost model
+
+Per-turn input cost for a session sitting at `P` prefix tokens on a model with
+base input rate `r`:
+
+```
+warm turn          ≈ 0.10 r P              (cache read)
+cache-busted turn  ≈ 1.25 r P              (cache write)
+compaction turn    ≈ 1.25 r F  + summarizer call     (F = post-cut size)
+```
+
+For the July cohort (10 sessions, peaks 112k–597k, ~19 cache tokens written
+per output token) the replay gave input-side cost **$90.35 → $32.40** when
+cutting at 120k to 25k. The same replay with the ceiling at 200k and the floor
+at 50k is the number to produce for the Sonnet 5 row before ratifying §3.1 —
+`scan_fleet_prefix_spend.py` and the spiral spec's §4.2 harness already
+replay real trajectories under a policy.
+
+## 5. Quality gate and tuning
+
+- **Veto before default change in prod:** the spiral spec §4.3 long-session
+  eval (constraint retention / revision continuity / reference lookup) runs
+  on PR-1 with the fixed-threshold arm as control. A deeper cut is a bigger
+  context change than the summary cap, so the veto applies with full force.
+- **Tuning knobs move on evidence, not taste:** raise `FLOOR_RATIO` if the
+  eval shows retention loss; lower `CEILING_CAP_TOKENS` if the Sonnet 5
+  cohort's write:read ratio stays worse than 1:5 after PR-3; never raise the
+  cap above 272k while GPT-family rows share the constants (pricing tier).
+- **Summarizer prompt:** preserve standing user instructions and constraints
+  verbatim (kaizen 2026-05-29 item); this is PR-2's prompt, not PR-1's.
+
+## 6. PR breakdown
+
+### PR-1 — policy, floor-seeking cut, hysteresis, coordinates (this PR)
+
+- `AgentFactory.build_conversation_manager()`: the explicit 2000-message
+  window (§3.0) — the prerequisite for every coordinate claim below.
+- `compaction_policy.py`: `CompactionPolicy.resolve(config, context_window)`,
+  `estimate_message_tokens`, `choose_checkpoint`.
+- `CompactionConfig`: `model_relative_enabled` + the five ratio/cap fields,
+  all env-backed; `CompactionState.armed` + a `policy` snapshot of the cut;
+  `CompactionResult` gains `context_window`, `ceiling`, `floor`,
+  `hard_ceiling`, `forced`, `retained_tokens_estimate`.
+- `TurnBasedSessionManager`: `_live_offset`; `update_after_turn(...,
+  context_window=, history_tokens=)` implements §3.2–§3.4. **No change to
+  when bytes change** — the slice still applies at restore only.
+- Stream coordinator passes the catalog window (already looked up for the
+  badge) and the breakdown's `messages` tokens; the `compaction` SSE payload
+  carries the policy fields (additive — the SPA validator ignores extras;
+  the TS interface gains them as optional).
+- Kill switch `AGENTCORE_MEMORY_COMPACTION_MODEL_RELATIVE_ENABLED=false` →
+  fixed threshold, turn-count cut, no arming. Default on (house style).
+
+**Acceptance:** unit tests for the table in §3.1 (including the unknown-window
+and kill-switch rows); a 5-turn conversation with 1,000-token threshold cuts
+to the oldest candidate under the floor; a turn over the ceiling on a disarmed
+state is a no-op and a turn at the hard ceiling is a forced cut; the existing
+byte-stability suite is unchanged; a replayed spiral-shaped sequence (input
+constant above ceiling for 10 turns) produces exactly one checkpoint advance.
+
+### PR-2 — bounded summary (spiral spec PR-2, as written there)
+
+**Sequenced immediately after PR-1, ahead of PR-3, on evidence.** In the
+2026-09-15 audit all 16 over-100k sessions carried `AGENT_CACHE_BYPASS`
+(spreadsheet/word/ppt tools enabled), so they rebuild the agent every turn
+and the restore slice already runs for them; zero were warm-agent
+(`create_artifact`-only) sessions. What bit in every one was the slice
+running and *still* not getting under the threshold — 23k–40k-token summaries
+and the protected tail. Session 65b6d4ab: 17 live full re-writes from message
+15 onward at 40–100k context, before the 40-message window ever engaged —
+the compaction slice re-running on a fresh agent each turn with a changing
+summary. That is this PR's problem, not PR-3's.
+
+### PR-3 — paid-when-free scheduling + `context_window_limit` (§3.5)
+
+Value on the audited cohort is the `create_artifact` (warm-agent) sessions and
+turn latency, not the over-100k dollars — those are PR-1 + PR-2. Two of the
+four window-pinned sessions examined (e7e75953, 0d8ba8f8) never exceeded 100k
+and were pure 40-message-window effects, which PR-1's §3.0 change alone
+recovers.
+
+**Acceptance:** on a warm agent held above the ceiling, the live list shrinks
+on the first turn after a >300s gap and not before (unless hard ceiling);
+`partial_miss` on the cut turn only; `test_second_cache_key_for_a_session_shares_the_conversation`
+still passes with the in-place apply.
+
+### PR-4 — content-class eviction and offload escalation (§3.6)
+
+### PR-5 — selective 1h TTL experiment (§3.6)
+
+## 7. Observability
+
+- Log lines: `compaction_cut` (window, ceiling, floor, hard, relative cut,
+  absolute checkpoint, retained estimate), `compaction_disarmed_noop`,
+  `compaction_forced`, `compaction_rearmed`.
+- The persisted `compaction.policy` map on the session row records what the
+  last cut believed the window and thresholds were, so
+  `GET /admin/costs/sessions/{id}/profile` can show it. The
+  `OVER_COMPACTION_THRESHOLD` diagnosis should read that map instead of the
+  fixed default once PR-1 is live (small follow-up, not in PR-1).
+- **Measurement confounder:** the hourly system-prompt tick (`%H:00` in
+  `get_current_date_pacific()`) re-writes every session's prefix once an hour
+  regardless of compaction. Fix it (render the date only, or the hour in a
+  turn-scoped message) before attributing write:read movement to this spec's
+  PRs; filed separately, not in PR-1.
+- `compactionCount` (already emitted) divided by session-days is the
+  cadence metric v2 §8 asks for; an alarm on >2/day is the spiral detector.
+
+## 8. Non-goals
+
+- Changing the cachePoint layout (tools/system/auto) — v2 §9.
+- Replacing the mutation engine with Strands' conversation manager — that is
+  v2 and stays gated on its §7 criteria; every policy field here maps onto
+  v2's thin policy layer unchanged.
+- Cross-session memory quality; the quota system; model routing.
+
+## 9. Open questions
+
+- Should an explicit `AGENTCORE_MEMORY_COMPACTION_TOKEN_THRESHOLD` in an
+  environment override the model-relative ceiling? PR-1 says no: it is the
+  fallback for an unknown window only. Flip this if an operator needs a
+  per-environment ceiling.
+- Whether Bedrock prices Claude's 1M window in tiers the way it prices
+  GPT-6 Astra. The model cards say no long-context premium for the Claude
+  rows today; if that changes, `CEILING_CAP_TOKENS` is the one constant to
+  move.
