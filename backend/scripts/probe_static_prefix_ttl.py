@@ -29,6 +29,11 @@ Usage:
     cd backend
     AWS_PROFILE=dev-ai uv run python scripts/probe_static_prefix_ttl.py --gap-seconds 420
     AWS_PROFILE=dev-ai uv run python scripts/probe_static_prefix_ttl.py --gap-seconds 60 --model-id us.anthropic.claude-haiku-4-5-20251001-v1:0
+
+Baseline, dev-ai us-west-2, 2026-09-16, Haiku 4.5, gap 420s:
+    5m  first  read 0     write 6251   second  read 0     write 6251
+    1h  first  read 0     write 6251   second  read 5924  write 327   <- honored
+    pair $0.017197 (5m) vs $0.015130 (1h): 1h CHEAPER by 12% at this gap
 """
 
 from __future__ import annotations

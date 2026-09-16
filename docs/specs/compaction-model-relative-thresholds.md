@@ -457,6 +457,30 @@ the last call.
 
 ### PR-5 — selective 1h TTL experiment (§3.6) — BUILT, flag off; enable per the gate above
 
+**Probe run 2026-09-16, dev-ai us-west-2, Haiku 4.5, 420 s gap
+(`scripts/probe_static_prefix_ttl.py --gap-seconds 420`):**
+
+| arm | call | read | write | $ (base $1.10/MTok) |
+|---|---|---|---|---|
+| 5m | first | 0 | 6,251 | 0.008598 |
+| 5m | second | 0 | 6,251 | 0.008598 |
+| 1h | first | 0 | 6,251 | 0.013756 |
+| 1h | second | **5,924** | **327** | 0.001374 |
+
+Bedrock honors `ttl: "1h"` on the tools and system points: after the 5m
+entry expired, the 1h arm **read** the static segment (5,924 tokens) and
+re-wrote only the message segment (327), while the 5m arm re-wrote all
+6,251. Pair cost $0.01513 vs $0.01720 — the 1h arm was **12% cheaper at this
+gap**, having recovered its 60% dearer first write on one return. The
+arithmetic that generalizes: the premium is 0.75× base per static write
+(~$0.0052 on this prefix), the saving 1.15× base per return inside the hour
+but past five minutes (~$0.0075); the arm pays when such returns outnumber
+static writes by more than ~0.7 : 1. Static writes also happen on every
+prefix *change* (a model or tool-set switch, and today the hourly
+system-prompt tick), so the dev-week measurement should run **after** the
+tick fix lands. Not yet run: the 60 s gap (both arms read; the 1h arm pays
+the premium with no saving) — the cost of the arm on bursty sessions.
+
 ## 7. Observability
 
 ### 7.1 What PR-2 adds — one content-free record per cut
