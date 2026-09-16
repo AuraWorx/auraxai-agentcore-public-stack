@@ -682,6 +682,9 @@ class StreamCoordinator:
                         # persisted (one C# record per assistant message).
                         if main_agent_wrapper and hasattr(main_agent_wrapper, "model_config"):
                             model_id = main_agent_wrapper.model_config.model_id
+                            # PR-5: when the static prefix carries the 1h TTL,
+                            # its cache writes are billed at the 1h premium.
+                            long_ttl_static_tokens = self._long_ttl_static_prefix_tokens(main_agent_wrapper, agent)
                             try:
                                 turn_total = 0.0
                                 turn_input_cost = 0.0
@@ -695,6 +698,7 @@ class StreamCoordinator:
                                     msg_cost = await self._calculate_streaming_cost(
                                         model_id=model_id,
                                         usage=msg_usage,
+                                        long_ttl_static_prefix_tokens=long_ttl_static_tokens,
                                     )
                                     if msg_cost is None:
                                         continue
@@ -3012,7 +3016,13 @@ class StreamCoordinator:
 
                 # Calculate cost if we have both usage and pricing
                 if token_usage and pricing_snapshot:
-                    cost_result = self._calculate_message_cost(usage=accumulated_metadata.get("usage", {}), pricing=pricing_snapshot)
+                    cost_result = self._calculate_message_cost(
+                        usage=accumulated_metadata.get("usage", {}),
+                        pricing=pricing_snapshot,
+                        long_ttl_static_prefix_tokens=self._long_ttl_static_prefix_tokens(
+                            agent, getattr(agent, "agent", None)
+                        ),
+                    )
                     if cost_result is not None:
                         cost = cost_result
 
@@ -3040,6 +3050,15 @@ class StreamCoordinator:
                 )
                 if context_window is not None:
                     metadata_kwargs["contextWindow"] = context_window
+                # PR-5 experiment arm marker (extra field via extra="allow"),
+                # so the cost anatomy can split 1h-static-prefix turns from
+                # the 5m baseline without guessing from the write:read shape.
+                try:
+                    if agent is not None and getattr(agent, "model_config", None) is not None and \
+                            getattr(agent.model_config, "long_ttl_static_prefix", lambda: False)():
+                        metadata_kwargs["staticPrefixTtl"] = "1h"
+                except Exception:  # noqa: BLE001
+                    pass
 
                 # Prompt-cache prefix fingerprints for this model call
                 # (extra field via extra="allow"; persisted on the cost row
@@ -3124,6 +3143,35 @@ class StreamCoordinator:
                     return part.split(":")[0]
         return None
 
+    @staticmethod
+    def _long_ttl_static_prefix_tokens(main_agent_wrapper: Any, strands_agent: Any) -> Optional[int]:
+        """Size of the tools + system segment when it carries the 1h cache TTL, else ``None``.
+
+        PR-5 (thresholds spec §3.6): Bedrock bills a 1h cache write at 2x base,
+        not the 1.25x the catalog's cacheWritePricePerMtok carries, and usage
+        does not split writes by TTL. The context-attribution breakdown knows
+        the static segment's size, and the read count tells whether it was
+        written this call (see CostCalculator.calculate_message_cost).
+        """
+        try:
+            model_config = getattr(main_agent_wrapper, "model_config", None)
+            predicate = getattr(model_config, "long_ttl_static_prefix", None)
+            if not callable(predicate) or not predicate():
+                return None
+            from agents.main_agent.session.hooks.context_attribution import get_context_breakdown
+
+            breakdown = get_context_breakdown(strands_agent) if strands_agent is not None else None
+            if not breakdown:
+                return None
+            total = 0
+            for partition in breakdown.get("partitions", []) or []:
+                if isinstance(partition, dict) and partition.get("key") in ("system", "tools"):
+                    total += int(partition.get("tokens") or 0)
+            return total or None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"long-TTL static prefix size unavailable: {e}")
+            return None
+
     async def _get_pricing_snapshot(self, model_id: str) -> Optional[Dict[str, Any]]:
         """
         Get pricing snapshot from managed models database
@@ -3152,7 +3200,12 @@ class StreamCoordinator:
             logger.error(f"Failed to get pricing snapshot for {model_id}: {e}")
             return None
 
-    def _calculate_message_cost(self, usage: Dict[str, Any], pricing: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _calculate_message_cost(
+        self,
+        usage: Dict[str, Any],
+        pricing: Optional[Dict[str, Any]],
+        long_ttl_static_prefix_tokens: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Calculate message cost from usage and pricing
 
@@ -3175,7 +3228,9 @@ class StreamCoordinator:
             else:
                 pricing_dict = pricing
 
-            total_cost, breakdown = CostCalculator.calculate_message_cost(usage, pricing_dict)
+            total_cost, breakdown = CostCalculator.calculate_message_cost(
+                usage, pricing_dict, long_ttl_static_prefix_tokens=long_ttl_static_prefix_tokens
+            )
             return {
                 "total": total_cost,
                 "inputCost": breakdown.input_cost,
@@ -3188,7 +3243,12 @@ class StreamCoordinator:
             logger.error(f"Failed to calculate message cost: {e}")
             return None
 
-    async def _calculate_streaming_cost(self, model_id: str, usage: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _calculate_streaming_cost(
+        self,
+        model_id: str,
+        usage: Dict[str, Any],
+        long_ttl_static_prefix_tokens: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Calculate cost for streaming response to send to client in real-time.
 
@@ -3223,7 +3283,7 @@ class StreamCoordinator:
             )
 
             # Calculate cost using the calculator
-            return self._calculate_message_cost(usage, pricing)
+            return self._calculate_message_cost(usage, pricing, long_ttl_static_prefix_tokens=long_ttl_static_prefix_tokens)
 
         except Exception as e:
             logger.warning(f"Failed to calculate streaming cost: {e}")
