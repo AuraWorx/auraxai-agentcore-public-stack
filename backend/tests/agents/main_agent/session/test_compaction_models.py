@@ -52,6 +52,11 @@ class TestCompactionStateToDict:
             "truncationAnchor",
             "armed",
             "policy",
+            "pendingCheckpoint",
+            "pendingSummary",
+            "pendingHardCeiling",
+            "pendingSince",
+            "lastPrefixKey",
         }
 
     def test_to_dict_values_match(self):

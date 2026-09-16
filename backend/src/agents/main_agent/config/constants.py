@@ -43,6 +43,17 @@ class EnvVars:
     # (a prefix re-write per turn, and it moves the coordinates the compaction
     # checkpoint is expressed in). Setting this to 40 restores the SDK default.
     CONVERSATION_WINDOW_MESSAGES = "AGENTCORE_CONVERSATION_WINDOW_MESSAGES"
+    # Bounded compaction summary (spiral spec PR-2 /
+    # compaction-model-relative-thresholds.md §3.6). Budget in tokens; the
+    # re-summarize call is a Nova Micro side-channel with its own kill switch.
+    COMPACTION_SUMMARY_TOKEN_BUDGET = "AGENTCORE_MEMORY_COMPACTION_SUMMARY_TOKEN_BUDGET"
+    COMPACTION_SUMMARY_MODEL_ENABLED = "AGENTCORE_MEMORY_COMPACTION_SUMMARY_MODEL_ENABLED"
+    COMPACTION_SUMMARY_MODEL_ID = "AGENTCORE_MEMORY_COMPACTION_SUMMARY_MODEL_ID"
+    # Paid-when-free scheduling (thresholds spec §3.5): a cut is computed and
+    # persisted as PENDING post-turn and applied to the live list pre-call only
+    # when the prefix re-write is free (cache expired, model/agent switched)
+    # or unavoidable (hard ceiling). "false" applies cuts immediately (PR-1/2).
+    COMPACTION_DEFERRED_APPLY_ENABLED = "AGENTCORE_MEMORY_COMPACTION_DEFERRED_APPLY_ENABLED"
 
     # --- Restored-history repair ---
     # Kill switch for the restore-time tool-pairing/alternation repair
@@ -148,6 +159,15 @@ class Defaults:
     # prompt. Overflow recovery (reduce_context on ContextWindowOverflow) still
     # works at any window size.
     CONVERSATION_WINDOW_MESSAGES = 2000
+    # 8k tokens ≈ 32k chars: a third of the 25k floor, so a bounded summary
+    # can never by itself hold a session above the ceiling (the incident's
+    # summary was 40k tokens against a 100k threshold). Same figure the admin
+    # SUMMARY_OVER_BUDGET diagnosis reads.
+    COMPACTION_SUMMARY_TOKEN_BUDGET = 8_000
+    COMPACTION_SUMMARY_MODEL_ENABLED = True
+    # Same cheap model as the title and tool-batch side-channels.
+    COMPACTION_SUMMARY_MODEL_ID = "us.amazon.nova-micro-v1:0"
+    COMPACTION_DEFERRED_APPLY_ENABLED = True
 
     # --- DynamoDB Tables ---
     DYNAMODB_QUOTA_TABLE = "UserQuotas"

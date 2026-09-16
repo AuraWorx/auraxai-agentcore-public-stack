@@ -48,6 +48,18 @@ class CompactionState:
     # floor, hard ceiling, whether it was forced) — what the admin session
     # profile reads to explain a compaction after the fact.
     policy: Optional[Dict[str, Any]] = None
+    # Paid-when-free scheduling (spec §3.5). A cut is computed post-turn and
+    # parked here; ``apply_pending_compaction`` promotes it to ``checkpoint``
+    # (and slices the live list in place) pre-call, only when the prefix
+    # re-write is free or unavoidable. ``checkpoint`` above is always the
+    # APPLIED one — what the restore slices at.
+    pending_checkpoint: Optional[int] = None
+    pending_summary: Optional[str] = None
+    pending_hard_ceiling: Optional[int] = None
+    pending_since: Optional[str] = None
+    # model id + agent id of the last turn; a change means the cached prefix
+    # is already invalid, so a pending cut can ride the same re-write.
+    last_prefix_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for DynamoDB storage."""
@@ -60,6 +72,11 @@ class CompactionState:
             "truncationAnchor": self.truncation_anchor,
             "armed": self.armed,
             "policy": self.policy,
+            "pendingCheckpoint": self.pending_checkpoint,
+            "pendingSummary": self.pending_summary,
+            "pendingHardCeiling": self.pending_hard_ceiling,
+            "pendingSince": self.pending_since,
+            "lastPrefixKey": self.last_prefix_key,
         }
 
     @classmethod
@@ -82,6 +99,15 @@ class CompactionState:
             truncation_anchor=int(data.get("truncationAnchor", checkpoint)),
             armed=bool(armed) if armed is not None else True,
             policy=dict(policy) if isinstance(policy, dict) else None,
+            pending_checkpoint=(
+                int(data["pendingCheckpoint"]) if data.get("pendingCheckpoint") is not None else None
+            ),
+            pending_summary=data.get("pendingSummary"),
+            pending_hard_ceiling=(
+                int(data["pendingHardCeiling"]) if data.get("pendingHardCeiling") is not None else None
+            ),
+            pending_since=data.get("pendingSince"),
+            last_prefix_key=data.get("lastPrefixKey"),
         )
 
 
@@ -110,6 +136,9 @@ class CompactionResult:
     # ceiling — the signal that the previous cut did not take.
     forced: bool = False
     retained_tokens_estimate: Optional[int] = None
+    # True when the cut was parked as pending (applied pre-call later under
+    # the paid-when-free rule) rather than promoted to the checkpoint now.
+    deferred: bool = False
 
 
 def _env_flag_default_on(name: str) -> bool:
@@ -142,6 +171,15 @@ class CompactionConfig:
     floor_ratio: float = Defaults.COMPACTION_FLOOR_RATIO
     hard_ceiling_ratio: float = Defaults.COMPACTION_HARD_CEILING_RATIO
     hard_ceiling_multiplier: float = Defaults.COMPACTION_HARD_CEILING_MULTIPLIER
+    # Bounded summary (spec §3.6 / spiral spec PR-2). The persisted summary is
+    # held at or under this many tokens (chars/4), compressed once at cut time
+    # by the cheap model, with newest-first truncation as the fallback.
+    summary_token_budget: int = Defaults.COMPACTION_SUMMARY_TOKEN_BUDGET
+    summary_model_enabled: bool = Defaults.COMPACTION_SUMMARY_MODEL_ENABLED
+    summary_model_id: str = Defaults.COMPACTION_SUMMARY_MODEL_ID
+    # Paid-when-free scheduling (spec §3.5). Only meaningful with the
+    # model-relative policy on; legacy mode always applies immediately.
+    deferred_apply_enabled: bool = Defaults.COMPACTION_DEFERRED_APPLY_ENABLED
 
     @classmethod
     def from_env(cls) -> "CompactionConfig":
@@ -158,4 +196,8 @@ class CompactionConfig:
             floor_ratio=float(os.environ.get(EnvVars.COMPACTION_FLOOR_RATIO, str(Defaults.COMPACTION_FLOOR_RATIO))),
             hard_ceiling_ratio=float(os.environ.get(EnvVars.COMPACTION_HARD_CEILING_RATIO, str(Defaults.COMPACTION_HARD_CEILING_RATIO))),
             hard_ceiling_multiplier=float(os.environ.get(EnvVars.COMPACTION_HARD_CEILING_MULTIPLIER, str(Defaults.COMPACTION_HARD_CEILING_MULTIPLIER))),
+            summary_token_budget=int(os.environ.get(EnvVars.COMPACTION_SUMMARY_TOKEN_BUDGET, str(Defaults.COMPACTION_SUMMARY_TOKEN_BUDGET))),
+            summary_model_enabled=_env_flag_default_on(EnvVars.COMPACTION_SUMMARY_MODEL_ENABLED),
+            summary_model_id=os.environ.get(EnvVars.COMPACTION_SUMMARY_MODEL_ID, "").strip() or Defaults.COMPACTION_SUMMARY_MODEL_ID,
+            deferred_apply_enabled=_env_flag_default_on(EnvVars.COMPACTION_DEFERRED_APPLY_ENABLED),
         )

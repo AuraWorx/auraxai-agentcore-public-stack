@@ -153,7 +153,9 @@ def _adopt_session_conversation(agent: BaseAgent, session_id: str) -> None:
     ``agent.messages`` lives inside ``TurnBasedSessionManager.initialize()``
     (document stripping, content-block sanitizing, compaction slicing, pairing
     repair) and so runs before we get here; after construction the list is only
-    appended to. A future compaction that rebinds mid-life would silently break
+    appended to — or, for the pending-cut apply at the head of a turn, sliced
+    **in place** by slice assignment (``messages[:] = ...``), which keeps the
+    alias. A future compaction that rebinds mid-life would silently break
     the alias — ``test_second_cache_key_for_a_session_shares_the_conversation``
     is what catches that.
 
@@ -174,12 +176,14 @@ def _adopt_session_conversation(agent: BaseAgent, session_id: str) -> None:
         return
 
     live = None
+    live_wrapper = None
     for key, cached in _agent_cache.items():
         if key[0] != session_id:
             continue
         cached_inner = getattr(cached, "agent", None)
         if isinstance(getattr(cached_inner, "messages", None), list):
             live = cached_inner  # newest wins — dict preserves insertion order
+            live_wrapper = cached
 
     if live is None or live.messages is inner.messages:
         return
@@ -202,6 +206,18 @@ def _adopt_session_conversation(agent: BaseAgent, session_id: str) -> None:
         scrub_log(session_id), len(live.messages),
     )
     inner.messages = live.messages
+
+    # The list's coordinate system travels with it. Compaction expresses its
+    # checkpoint as ``_live_offset + index into this list`` and the pending-cut
+    # apply slices the list in place at that offset, so an instance that adopts
+    # the list must adopt the offset too or it would slice at the wrong place.
+    try:
+        src_sm = getattr(live_wrapper, "session_manager", None)
+        dst_sm = getattr(agent, "session_manager", None)
+        if src_sm is not None and dst_sm is not None and hasattr(src_sm, "_live_offset"):
+            dst_sm._live_offset = src_sm._live_offset
+    except Exception:  # noqa: BLE001 - never let bookkeeping break a turn
+        logger.debug("Session %s: could not sync compaction live offset", scrub_log(session_id), exc_info=True)
 
 
 async def get_agent(
