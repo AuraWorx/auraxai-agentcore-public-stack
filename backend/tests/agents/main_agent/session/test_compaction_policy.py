@@ -254,7 +254,7 @@ class TestHysteresis:
 
     @pytest.mark.asyncio
     async def test_legacy_mode_never_disarms_and_uses_turn_count(self, make_session_manager):
-        cfg = CompactionConfig(enabled=True, token_threshold=1000, protected_turns=3, model_relative_enabled=False)
+        cfg = CompactionConfig(enabled=True, deferred_apply_enabled=False, token_threshold=1000, protected_turns=3, model_relative_enabled=False)
         mgr = _armed_manager(make_session_manager, cfg)
         first = await mgr.update_after_turn(1200)
         assert first is not None and first.floor is None
@@ -279,7 +279,7 @@ class TestCoordinates:
 
     @pytest.mark.asyncio
     async def test_context_window_flows_into_policy(self, make_session_manager):
-        cfg = CompactionConfig(enabled=True, protected_turns=3)
+        cfg = CompactionConfig(enabled=True, deferred_apply_enabled=False, protected_turns=3)
         mgr = _armed_manager(make_session_manager, cfg)
         # 128k window → ceiling 64k; 60k is under it → no cut.
         assert await mgr.update_after_turn(60_000, context_window=128_000) is None

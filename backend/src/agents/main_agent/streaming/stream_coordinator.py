@@ -272,6 +272,21 @@ class StreamCoordinator:
         if session_manager is not None:
             session_manager.turn_lease = turn_lease
 
+        # Paid-when-free compaction (spec §3.5): if a cut is parked, apply it
+        # to the live list now — before the first model call — only when the
+        # prefix re-write is free (cache expired, model/agent switched) or
+        # unavoidable (hard ceiling). Runs on cached and freshly restored
+        # agents alike; the session manager decides, this just supplies the
+        # model|agent key. Best-effort: never blocks the turn.
+        if session_manager is not None and hasattr(session_manager, "apply_pending_compaction"):
+            try:
+                _model_for_key = getattr(getattr(main_agent_wrapper, "model_config", None), "model_id", None)
+                session_manager.apply_pending_compaction(
+                    agent, prefix_key=f"{_model_for_key}|{turn_agent_id or 'default'}"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"apply_pending_compaction failed, continuing: {e}")
+
         # Likewise a pause armed by a previous turn: if the user abandoned an
         # OAuth/tool-approval consent and just typed again, the still-armed
         # interrupt state makes Strands reject this turn's prompt outright.

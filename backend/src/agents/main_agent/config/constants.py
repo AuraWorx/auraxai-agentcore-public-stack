@@ -49,6 +49,11 @@ class EnvVars:
     COMPACTION_SUMMARY_TOKEN_BUDGET = "AGENTCORE_MEMORY_COMPACTION_SUMMARY_TOKEN_BUDGET"
     COMPACTION_SUMMARY_MODEL_ENABLED = "AGENTCORE_MEMORY_COMPACTION_SUMMARY_MODEL_ENABLED"
     COMPACTION_SUMMARY_MODEL_ID = "AGENTCORE_MEMORY_COMPACTION_SUMMARY_MODEL_ID"
+    # Paid-when-free scheduling (thresholds spec §3.5): a cut is computed and
+    # persisted as PENDING post-turn and applied to the live list pre-call only
+    # when the prefix re-write is free (cache expired, model/agent switched)
+    # or unavoidable (hard ceiling). "false" applies cuts immediately (PR-1/2).
+    COMPACTION_DEFERRED_APPLY_ENABLED = "AGENTCORE_MEMORY_COMPACTION_DEFERRED_APPLY_ENABLED"
 
     # --- Restored-history repair ---
     # Kill switch for the restore-time tool-pairing/alternation repair
@@ -162,6 +167,7 @@ class Defaults:
     COMPACTION_SUMMARY_MODEL_ENABLED = True
     # Same cheap model as the title and tool-batch side-channels.
     COMPACTION_SUMMARY_MODEL_ID = "us.amazon.nova-micro-v1:0"
+    COMPACTION_DEFERRED_APPLY_ENABLED = True
 
     # --- DynamoDB Tables ---
     DYNAMODB_QUOTA_TABLE = "UserQuotas"

@@ -1,8 +1,8 @@
 # Compaction relative to the model window — a trigger ceiling, a target floor, and paying the rewrite only when it is free
 
 **Status:** PR-1 open (#1125, this document rides with it). PR-2 (bounded
-summary + compaction metrics) built 2026-09-15 on top of it, stacked. PR-3
-through PR-5 unbuilt.
+summary + compaction metrics, #1128) and PR-3 (paid-when-free apply) built
+2026-09-15 on top of it, stacked. PR-4 and PR-5 unbuilt.
 **Owner:** Phil Merrell
 **Related:** `compaction-over-threshold-cache-spiral.md` (#833 — the incident
 and the summary-cap PR this spec depends on) ·
@@ -221,9 +221,46 @@ comparison (`new <= current`) is finally like-for-like. The deeper D3
 question (the restore window itself moving — `original=74` frozen) is
 untouched here and stays with spiral-spec PR-3.
 
-### 3.5 Pay the rewrite when it is free (PR-3)
+### 3.5 Pay the rewrite when it is free (PR-3) — BUILT
 
-Everything above decides *what* to cut. PR-3 decides *when the bytes change*:
+Everything above decides *what* to cut. PR-3 decides *when the bytes change*.
+As built (`apply_pending_compaction` + the `pending*` fields on
+`CompactionState`; kill switch
+`AGENTCORE_MEMORY_COMPACTION_DEFERRED_APPLY_ENABLED=false` applies cuts
+immediately as PR-1/2 did; legacy mode is always immediate):
+
+- **Post-turn parks, never applies.** `update_after_turn` computes the cut and
+  the bounded summary and stores them as `pendingCheckpoint` /
+  `pendingSummary` / `pendingHardCeiling` / `pendingSince`. `checkpoint` stays
+  the *applied* value — the one `_apply_compaction` slices at on restore. A
+  second over-ceiling turn while a cut is parked is a no-op
+  (`compaction_pending_waiting`); it never cuts deeper.
+- **Head of turn decides.** The stream coordinator calls
+  `apply_pending_compaction(agent, prefix_key="<model>|<agent>")` before the
+  first model call of every turn, on cached and freshly restored agents
+  alike. It applies when, in this order: `cache_expired` (more than
+  `cache_ttl_seconds` since the previous turn's save — the entry is gone and
+  the next call re-writes the prefix regardless), `prefix_changed` (the
+  model|agent key differs from the persisted `lastPrefixKey` — the cached
+  prefix is already invalid), or `hard_ceiling` (the previous turn's input
+  reached the hard ceiling the cut was computed under). Otherwise it waits.
+- **Applied in place.** `messages[:] = [first_with_summary] + messages[k+1:]`
+  where `k = pendingCheckpoint − _live_offset`; then `_live_offset` moves to
+  the checkpoint and the state is promoted (`checkpoint`, `truncation_anchor`,
+  `summary`) and persisted. The result is byte-identical to what
+  `_apply_compaction` derives from stored history under the promoted state
+  (pinned by `test_live_apply_matches_a_cold_restore_of_the_same_state`), so
+  a cold restore after a live apply reads the same prefix.
+- **Aliasing carries the offset.** `_adopt_session_conversation` copies
+  `_live_offset` when it points a new agent at the live list.
+- **Measured.** Each application persists `applied` (the reason),
+  `cacheGapSeconds` and `pendingSince` on `compaction.policy`, logs
+  `rewrite_scheduled` vs `rewrite_forced`, and emits `CompactionApplied`,
+  `CompactionAppliedForced` and `CompactionCacheGapSeconds`.
+- **Not done here:** `context_window_limit` on the Strands model config
+  (needs the window at agent construction; small follow-up).
+
+The original design sketch, kept for the record:
 
 - Post-turn computes and persists the pending checkpoint + summary (the
   expensive part, off the critical path). Nothing is applied.
@@ -350,7 +387,7 @@ and the protected tail. Session 65b6d4ab: 17 live full re-writes from message
 the compaction slice re-running on a fresh agent each turn with a changing
 summary. That is this PR's problem, not PR-3's.
 
-### PR-3 — paid-when-free scheduling + `context_window_limit` (§3.5)
+### PR-3 — paid-when-free scheduling (§3.5) — BUILT; `context_window_limit` deferred
 
 Value on the audited cohort is the `create_artifact` (warm-agent) sessions and
 turn latency, not the over-100k dollars — those are PR-1 + PR-2. Two of the
@@ -394,9 +431,8 @@ rows) and, after PR-2, the second, but not joined:
 - **Per-call `checkpoint` / `armed` / `liveOffset` on the `C#` cost row** —
   lets the anatomy page show the context trajectory against the cuts without
   correlating timestamps by hand. Additive fields on an existing write.
-- **`cacheGapSeconds` next to every cut** — the PR-3 scheduling rule is only
-  measurable if each cut records whether it landed on a cold turn
-  (`rewrite_scheduled` vs `rewrite_forced`).
+- ~~**`cacheGapSeconds` next to every cut**~~ — done in PR-3: each application
+  records the reason and the gap.
 - **Retained-vs-actual calibration** — the next turn's measured
   `contextBreakdown.messages` against the cut's `retainedTokensEstimate`. One
   number per cut, and the only way to know whether the estimator is off by 5%

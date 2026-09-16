@@ -121,7 +121,7 @@ class TestThroughUpdateAfterTurn:
     the restore prepends the same bounded bytes."""
 
     def _manager(self, make_session_manager, records, **cfg):
-        config = CompactionConfig(enabled=True, token_threshold=1000, protected_turns=3,
+        config = CompactionConfig(enabled=True, deferred_apply_enabled=False, token_threshold=1000, protected_turns=3,
                                   summary_token_budget=BUDGET, **cfg)
         mgr = make_session_manager(compaction_config=config)
         mgr.compaction_state = CompactionState()
@@ -174,7 +174,7 @@ class TestCompactionMetrics:
         emitted = []
         monkeypatch.setattr(emf, "emit_emf_metrics", lambda ns, metrics, properties=None, units=None: emitted.append((ns, metrics, properties)))
         monkeypatch.delenv("PROMPT_CACHE_OBSERVABILITY_ENABLED", raising=False)
-        config = CompactionConfig(enabled=True, token_threshold=1000, protected_turns=3, summary_token_budget=BUDGET)
+        config = CompactionConfig(enabled=True, deferred_apply_enabled=False, token_threshold=1000, protected_turns=3, summary_token_budget=BUDGET)
         mgr = make_session_manager(compaction_config=config)
         mgr.compaction_state = CompactionState()
         mgr._save_compaction_state = MagicMock()
@@ -199,7 +199,7 @@ class TestCompactionMetrics:
         emitted = []
         monkeypatch.setattr(emf, "emit_emf_metrics", lambda *a, **k: emitted.append(a))
         monkeypatch.setenv("PROMPT_CACHE_OBSERVABILITY_ENABLED", "false")
-        config = CompactionConfig(enabled=True, token_threshold=1000, protected_turns=3)
+        config = CompactionConfig(enabled=True, deferred_apply_enabled=False, token_threshold=1000, protected_turns=3)
         mgr = make_session_manager(compaction_config=config)
         mgr.compaction_state = CompactionState()
         mgr._save_compaction_state = MagicMock()
