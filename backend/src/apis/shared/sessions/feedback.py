@@ -15,7 +15,12 @@ row-family summary in ``apis.shared.sessions.metadata``)::
     SK:      F#{session_id}#{message_id}
     GSI_PK:  SESSION#{session_id}      (SessionLookupIndex)
     GSI_SK:  F#{message_id}
-    sessionId, messageId, userId, value, reason?, updatedAt, ttl
+    sessionId, messageId, userId, value, reason?, signal, updatedAt, ttl
+
+``signal`` is ``"explicit"`` for a thumb. ``docs/specs/response-feedback.md``
+§10 adds implicit signals (copy, continue, edit-and-resend, abandonment) to
+this same row family under ``signal: "implicit"``; every reader here filters
+to explicit rows so that phase needs no backfill and the two are never summed.
 
 ``messageId`` is the same 0-based index the ``C#`` cost row carries for the
 assistant message, so an admin read joins feedback to the call's turn class
@@ -30,7 +35,7 @@ attribute reads "not tracked", never 0). A replace adjusts both counters so
 the rollup always equals the count of live ``F#`` rows written while the
 diagnostics were on.
 
-Everything is gated by :func:`apis.shared.feature_flags.message_feedback_enabled`
+Everything is gated by :func:`apis.shared.feature_flags.response_feedback_enabled`
 at the route; this module is deliberately flag-free so a backfill or a test
 can drive it directly.
 """
@@ -148,6 +153,7 @@ async def put_message_feedback(
         "messageId": int(message_id),
         "userId": user_id,
         "value": int(value),
+        "signal": "explicit",
         "updatedAt": now,
         "ttl": ttl,
     }
@@ -209,6 +215,8 @@ def query_session_feedback(table, session_id: str, user_id: Optional[str] = None
         for item in response.get("Items", []):
             if user_id is not None and item.get("userId") != user_id:
                 continue
+            if not is_explicit(item):
+                continue
             raw_id = item.get("messageId")
             try:
                 message_id = str(int(raw_id))
@@ -219,6 +227,12 @@ def query_session_feedback(table, session_id: str, user_id: Optional[str] = None
         if not last_key:
             break
     return out
+
+
+def is_explicit(row: Dict[str, Any]) -> bool:
+    """A thumb, as opposed to a §10 implicit signal. Rows written before the
+    discriminator existed carry none and are explicit by construction."""
+    return row.get("signal") in (None, "explicit")
 
 
 def _now() -> str:

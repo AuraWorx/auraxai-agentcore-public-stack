@@ -117,11 +117,15 @@ class Citation(BaseModel):
     text: str = Field(..., description="Relevant text excerpt from the document")
 
 
-#: Reason codes a down-thumb may carry. A closed enum, never free text — the
-#: row is content-free by construction so it can sit beside the ``C#`` cost
-#: row and be read by the admin profile without reading the conversation.
-FEEDBACK_REASONS = ("wrong", "incomplete", "slow", "other")
-FeedbackReason = Literal["wrong", "incomplete", "slow", "other"]
+#: Reason codes a down-thumb may carry — the six buckets of
+#: ``docs/specs/response-feedback.md`` §6, each of which routes to an
+#: evaluator or an ops signal. A closed enum, never free text: the row is
+#: content-free by construction so it can sit beside the ``C#`` cost row and
+#: be read by the admin profile without reading the conversation. The spec's
+#: "something else → free text" is deliberately not here; that hand-off is
+#: the existing Agent report dialog (spec §3), which already has moderation.
+FEEDBACK_REASONS = ("wrong", "instructions", "length", "tool_failed", "outdated", "other")
+FeedbackReason = Literal["wrong", "instructions", "length", "tool_failed", "outdated", "other"]
 
 
 class MessageFeedback(BaseModel):

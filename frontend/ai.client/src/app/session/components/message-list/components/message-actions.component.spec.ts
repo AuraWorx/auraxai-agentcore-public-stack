@@ -208,9 +208,16 @@ describe('MessageActionsComponent — thumbs feedback', () => {
     const group = fixture.nativeElement.querySelector('[role="group"]');
     expect(group).not.toBeNull();
     const chips = Array.from(group.querySelectorAll('button')) as HTMLButtonElement[];
-    expect(chips.map((c) => c.textContent!.trim())).toEqual(['Wrong', 'Incomplete', 'Slow', 'Other']);
+    expect(chips.map((c) => c.textContent!.trim())).toEqual([
+      'Wrong or made up',
+      'Ignored instructions',
+      'Too long / short',
+      'A tool failed',
+      'Out of date',
+      'Something else',
+    ]);
     chips[1].click();
-    expect(feedback.set).toEqual([{ id: 'msg-sess-1-3', value: -1, reason: 'incomplete' }]);
+    expect(feedback.set).toEqual([{ id: 'msg-sess-1-3', value: -1, reason: 'instructions' }]);
   });
 
   it('reason codes stay hidden on a thumbs up', () => {

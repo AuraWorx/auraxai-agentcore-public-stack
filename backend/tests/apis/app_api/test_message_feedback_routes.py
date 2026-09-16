@@ -2,7 +2,7 @@
 
 - PUT    /sessions/{id}/messages/{messageId}/feedback → 200 with the stored thumb
 - DELETE /sessions/{id}/messages/{messageId}/feedback → 204
-- 404 for another user's session, 404 while MESSAGE_FEEDBACK_ENABLED=false,
+- 404 for another user's session, 404 while RESPONSE_FEEDBACK_ENABLED=false,
   422 for anything but ±1 / a fixed reason code, 503 with no table.
 
 Auth is the cookie-aware `get_current_user_from_session` (SPA-facing route);
@@ -29,7 +29,7 @@ def _user() -> User:
 
 
 def _client(monkeypatch, put=None, delete=None) -> TestClient:
-    monkeypatch.delenv("MESSAGE_FEEDBACK_ENABLED", raising=False)
+    monkeypatch.delenv("RESPONSE_FEEDBACK_ENABLED", raising=False)
     monkeypatch.setattr(session_routes, "put_message_feedback", put or AsyncMock(
         return_value=MessageFeedback(value=1, updated_at="2026-09-16T00:00:00Z")
     ))
@@ -41,19 +41,19 @@ def _client(monkeypatch, put=None, delete=None) -> TestClient:
 
 
 def test_put_stores_and_echoes_the_thumb(monkeypatch):
-    put = AsyncMock(return_value=MessageFeedback(value=-1, reason="incomplete", updated_at="2026-09-16T00:00:00Z"))
+    put = AsyncMock(return_value=MessageFeedback(value=-1, reason="instructions", updated_at="2026-09-16T00:00:00Z"))
     client = _client(monkeypatch, put=put)
 
-    resp = client.put("/sessions/s1/messages/3/feedback", json={"value": -1, "reason": "incomplete"})
+    resp = client.put("/sessions/s1/messages/3/feedback", json={"value": -1, "reason": "instructions"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"value": -1, "reason": "incomplete", "updatedAt": "2026-09-16T00:00:00Z"}
-    put.assert_awaited_once_with(session_id="s1", user_id="user-1", message_id=3, value=-1, reason="incomplete")
+    assert resp.json() == {"value": -1, "reason": "instructions", "updatedAt": "2026-09-16T00:00:00Z"}
+    put.assert_awaited_once_with(session_id="s1", user_id="user-1", message_id=3, value=-1, reason="instructions")
 
 
 def test_put_rejects_free_text_and_out_of_range_values(monkeypatch):
     client = _client(monkeypatch)
-    assert client.put("/sessions/s1/messages/3/feedback", json={"value": 1, "reason": "it lied"}).status_code == 422
+    assert client.put("/sessions/s1/messages/3/feedback", json={"value": 1, "reason": "it lied to me"}).status_code == 422
     assert client.put("/sessions/s1/messages/3/feedback", json={"value": 0}).status_code == 422
     assert client.put("/sessions/s1/messages/3/feedback", json={"value": 5}).status_code == 422
     assert client.put("/sessions/s1/messages/three/feedback", json={"value": 1}).status_code == 422
@@ -81,7 +81,7 @@ def test_another_users_session_is_404(monkeypatch):
 def test_kill_switch_hides_the_surface(monkeypatch):
     put = AsyncMock()
     client = _client(monkeypatch, put=put)
-    monkeypatch.setenv("MESSAGE_FEEDBACK_ENABLED", "false")
+    monkeypatch.setenv("RESPONSE_FEEDBACK_ENABLED", "false")
     assert client.put("/sessions/s1/messages/3/feedback", json={"value": 1}).status_code == 404
     assert client.delete("/sessions/s1/messages/3/feedback").status_code == 404
     put.assert_not_awaited()

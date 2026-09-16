@@ -148,7 +148,7 @@ export function readPersistedFeedback(message: Message): MessageFeedback | null 
   };
 }
 
-export const FEEDBACK_REASONS: readonly FeedbackReason[] = ['wrong', 'incomplete', 'slow', 'other'];
+export const FEEDBACK_REASONS: readonly FeedbackReason[] = ['wrong', 'instructions', 'length', 'tool_failed', 'outdated', 'other'];
 
 export function isFeedbackReason(value: unknown): value is FeedbackReason {
   return typeof value === 'string' && (FEEDBACK_REASONS as readonly string[]).includes(value);

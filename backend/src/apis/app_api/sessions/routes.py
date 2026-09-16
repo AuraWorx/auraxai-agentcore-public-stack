@@ -42,7 +42,7 @@ from .services.session_service import SessionService
 from apis.app_api.shares.service import get_share_service
 from apis.app_api.artifacts.service import get_artifact_share_service
 from apis.shared.auth.dependencies import get_current_user_from_session
-from apis.shared.feature_flags import message_feedback_enabled, mid_turn_steering_enabled
+from apis.shared.feature_flags import response_feedback_enabled, mid_turn_steering_enabled
 from apis.shared.auth.models import User
 from apis.shared.system_prompts.service import get_system_prompts_service
 
@@ -670,8 +670,8 @@ async def get_session_messages_endpoint(
 
 
 def _require_message_feedback() -> None:
-    """404 while ``MESSAGE_FEEDBACK_ENABLED=false`` — the surface does not exist."""
-    if not message_feedback_enabled():
+    """404 while ``RESPONSE_FEEDBACK_ENABLED=false`` — the surface does not exist."""
+    if not response_feedback_enabled():
         raise HTTPException(status_code=404, detail="Not found")
 
 

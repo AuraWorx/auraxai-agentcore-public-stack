@@ -2138,9 +2138,9 @@ async def _get_all_message_metadata_cloud(session_id: str, user_id: str, table_n
 
         # Merge this user's thumbs (F# rows) so a reload restores the SPA's
         # pressed state. Skipped while the feature is off — the rows stay.
-        from apis.shared.feature_flags import message_feedback_enabled
+        from apis.shared.feature_flags import response_feedback_enabled
 
-        if message_feedback_enabled():
+        if response_feedback_enabled():
             from .feedback import query_session_feedback
 
             try:

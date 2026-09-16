@@ -354,7 +354,7 @@ def ask_user_question_enabled() -> bool:
     return os.environ.get("ASK_USER_QUESTION_ENABLED", "").strip().lower() != "false"
 
 
-def message_feedback_enabled() -> bool:
+def response_feedback_enabled() -> bool:
     """Whether users can thumb an assistant message up or down.
 
     Covers the ``PUT`` / ``DELETE /sessions/{id}/messages/{messageId}/feedback``
@@ -363,7 +363,8 @@ def message_feedback_enabled() -> bool:
     kill switch** (house style, mirroring ``cost_diagnostics_enabled``): unset
     or empty resolves to enabled; only the literal ``"false"`` (case-
     insensitive) disables. While off the write routes 404 and the read merge
-    is skipped; rows already written stay in the table.
+    is skipped; rows already written stay in the table. Name and default per
+    ``docs/specs/response-feedback.md`` §5.
 
     The signal is content-free by construction (a ±1, a timestamp and an
     optional reason *code* from a fixed enum — never free text), which is
@@ -371,4 +372,4 @@ def message_feedback_enabled() -> bool:
     profile without the profile ever reading the conversation. See
     ``docs/specs/document-context-offload.md`` §5 row 7 / §6.1.
     """
-    return os.environ.get("MESSAGE_FEEDBACK_ENABLED", "").strip().lower() != "false"
+    return os.environ.get("RESPONSE_FEEDBACK_ENABLED", "").strip().lower() != "false"

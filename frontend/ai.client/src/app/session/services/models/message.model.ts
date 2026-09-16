@@ -103,8 +103,9 @@ export interface ContentBlock {
   fileAttachment?: FileAttachmentData | null;
 }
 
-/** Reason codes a thumbs-down may carry — a closed enum, never free text. */
-export type FeedbackReason = 'wrong' | 'incomplete' | 'slow' | 'other';
+/** Reason codes a thumbs-down may carry — the six buckets of
+ * docs/specs/response-feedback.md §6. A closed enum, never free text. */
+export type FeedbackReason = 'wrong' | 'instructions' | 'length' | 'tool_failed' | 'outdated' | 'other';
 
 /**
  * A user's thumb on an assistant message. Persisted content-free on the

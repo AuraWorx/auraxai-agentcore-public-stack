@@ -292,7 +292,7 @@ async def test_feedback_joins_the_turn_class_when_the_rows_carry_it():
         _feedback(0, 1),
         _feedback(1, -1, "wrong"),
         _feedback(2, 1),
-        _feedback(3, -1, "slow"),
+        _feedback(3, -1, "tool_failed"),
         _feedback(9, -1),  # no cost row for this message
     ]
     p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
@@ -313,7 +313,7 @@ async def test_feedback_joins_the_turn_class_when_the_rows_carry_it():
 @pytest.mark.asyncio
 async def test_feedback_counts_without_turn_class_when_rows_predate_1137():
     records = [_call(0), _call(1)]  # no hasDocuments / documentDigests / documentReads
-    feedback = [_feedback(0, 1), _feedback(1, -1, "incomplete")]
+    feedback = [_feedback(0, 1), _feedback(1, -1, "instructions")]
     p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
     assert (p.feedback.up, p.feedback.down) == (1, 1)
     assert p.feedback.by_turn_class is None, "turn class is 'not tracked', not 'none'"
@@ -331,6 +331,16 @@ async def test_no_feedback_rows_falls_back_to_rollups_and_coverage_is_honest():
     assert (p.feedback.up, p.feedback.down) == (2, 1)
     assert p.data_coverage.feedback is True
     assert p.feedback.by_turn_class is None
+
+
+@pytest.mark.asyncio
+async def test_implicit_signal_rows_are_never_summed_into_the_thumb_counts():
+    records = [_call(0)]
+    records[0]["hasDocuments"] = True
+    feedback = [_feedback(0, 1), {**_feedback(0, -1), "signal": "implicit"}, {**_feedback(0, -1), "signal": "explicit"}]
+    p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
+    assert (p.feedback.up, p.feedback.down) == (1, 1)
+    assert (p.feedback.by_turn_class.full.up, p.feedback.by_turn_class.full.down) == (1, 1)
 
 
 @pytest.mark.asyncio

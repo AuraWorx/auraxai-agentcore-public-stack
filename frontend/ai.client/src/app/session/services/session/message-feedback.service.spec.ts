@@ -62,15 +62,15 @@ describe('MessageFeedbackService', () => {
 
   it('PUTs a content-free body to the message index and keeps the optimistic value', async () => {
     const m = message('msg-s-3');
-    const done = service.setFeedback(m, -1, 'slow');
+    const done = service.setFeedback(m, -1, 'tool_failed');
     expect(service.feedbackFor(m)?.value).toBe(-1);
 
     const req = http.expectOne('http://api.test/sessions/s/messages/3/feedback');
     expect(req.request.method).toBe('PUT');
-    expect(req.request.body).toEqual({ value: -1, reason: 'slow' });
-    req.flush({ value: -1, reason: 'slow', updatedAt: '2026-09-16T00:00:00Z' });
+    expect(req.request.body).toEqual({ value: -1, reason: 'tool_failed' });
+    req.flush({ value: -1, reason: 'tool_failed', updatedAt: '2026-09-16T00:00:00Z' });
     await done;
-    expect(service.feedbackFor(m)).toEqual({ value: -1, reason: 'slow', updatedAt: '2026-09-16T00:00:00Z' });
+    expect(service.feedbackFor(m)).toEqual({ value: -1, reason: 'tool_failed', updatedAt: '2026-09-16T00:00:00Z' });
   });
 
   it('rolls back to the last confirmed value when the write fails', async () => {

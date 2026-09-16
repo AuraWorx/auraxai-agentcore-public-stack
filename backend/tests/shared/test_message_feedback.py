@@ -72,7 +72,8 @@ async def test_put_writes_one_row_keyed_beside_the_cost_row(table):
     assert "reason" not in row
     assert "ttl" in row
     # Content-free: nothing on the row but ids, a number, a timestamp and keys.
-    assert set(row) <= {"PK", "SK", "GSI_PK", "GSI_SK", "sessionId", "messageId", "userId", "value", "updatedAt", "ttl"}
+    assert row["signal"] == "explicit"
+    assert set(row) <= {"PK", "SK", "GSI_PK", "GSI_SK", "sessionId", "messageId", "userId", "value", "signal", "updatedAt", "ttl"}
 
 
 @pytest.mark.asyncio
@@ -80,12 +81,12 @@ async def test_second_thumb_replaces_the_first_and_rollups_follow(table):
     await fb.put_message_feedback(SESSION, OWNER, 3, 1)
     assert _session_row()["thumbsUp"] == 1 and _session_row()["thumbsDown"] == 0
 
-    result = await fb.put_message_feedback(SESSION, OWNER, 3, -1, reason="incomplete")
-    assert result.value == -1 and result.reason == "incomplete"
+    result = await fb.put_message_feedback(SESSION, OWNER, 3, -1, reason="instructions")
+    assert result.value == -1 and result.reason == "instructions"
 
     items = _feedback_items()
     assert len(items) == 1, "a second click replaces, never appends"
-    assert int(items[0]["value"]) == -1 and items[0]["reason"] == "incomplete"
+    assert int(items[0]["value"]) == -1 and items[0]["reason"] == "instructions"
     row = _session_row()
     assert row["thumbsUp"] == 0 and row["thumbsDown"] == 1
 
@@ -98,7 +99,7 @@ async def test_second_thumb_replaces_the_first_and_rollups_follow(table):
 
 @pytest.mark.asyncio
 async def test_delete_removes_the_row_and_decrements(table):
-    await fb.put_message_feedback(SESSION, OWNER, 1, -1, reason="slow")
+    await fb.put_message_feedback(SESSION, OWNER, 1, -1, reason="tool_failed")
     await fb.put_message_feedback(SESSION, OWNER, 3, 1)
     assert await fb.delete_message_feedback(SESSION, OWNER, 1) is True
     assert [int(i["messageId"]) for i in _feedback_items()] == [3]
@@ -157,6 +158,23 @@ async def test_query_filters_by_user_unless_admin(table):
 
 
 @pytest.mark.asyncio
+async def test_implicit_signal_rows_share_the_family_but_never_read_as_thumbs(table):
+    """Spec §10: implicit signals land in the same F# family under
+    signal="implicit"; every thumb reader skips them and never sums the two."""
+    await fb.put_message_feedback(SESSION, OWNER, 3, 1)
+    table.put_item(Item={
+        "PK": f"USER#{OWNER}", "SK": f"F#{SESSION}#5", "GSI_PK": f"SESSION#{SESSION}", "GSI_SK": "F#5",
+        "sessionId": SESSION, "messageId": 5, "userId": OWNER, "value": 1, "signal": "implicit",
+        "updatedAt": "2026-09-16T00:00:00Z",
+    })
+    assert set(fb.query_session_feedback(table, SESSION, OWNER)) == {"3"}
+    index = await md.get_all_message_metadata(SESSION, OWNER)
+    assert "5" not in index
+    # A row written before the discriminator existed is explicit.
+    assert fb.is_explicit({"value": 1}) and not fb.is_explicit({"value": 1, "signal": "implicit"})
+
+
+@pytest.mark.asyncio
 async def test_messages_list_metadata_index_carries_feedback(table, monkeypatch):
     """The read path the SPA uses on reload: F# rows merge into the metadata
     index by message id, beside (or in place of) the cost record."""
@@ -174,7 +192,7 @@ async def test_messages_list_metadata_index_carries_feedback(table, monkeypatch)
     assert index["3"]["feedback"] == {"value": -1, "reason": "wrong", "updatedAt": index["3"]["feedback"]["updatedAt"]}
     assert index["5"] == {"feedback": {"value": 1, "updatedAt": index["5"]["feedback"]["updatedAt"]}}
 
-    monkeypatch.setenv("MESSAGE_FEEDBACK_ENABLED", "false")
+    monkeypatch.setenv("RESPONSE_FEEDBACK_ENABLED", "false")
     index = await md.get_all_message_metadata(SESSION, OWNER)
     assert "feedback" not in index["3"] and "5" not in index
 

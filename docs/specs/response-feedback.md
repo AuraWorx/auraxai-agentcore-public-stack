@@ -1,7 +1,9 @@
 # Response feedback
 
-**Status:** PROPOSED — no code. Written 2026-09-04 from the "how would we
-benefit?" conversation.
+**Status:** PARTIALLY BUILT — capture and the read model shipped in PR #1142
+(2026-09-16, as document-context-offload PR-7); the consequence (§11 PR-1's
+retry-with-correction), implicit signals and eval sampling are not built.
+See §13. Written 2026-09-04 from the "how would we benefit?" conversation.
 **Refs:** `docs/specs/agentcore-evaluations-spike-findings.md` (the eval
 harness this feeds), `docs/specs/mid-turn-steering.md` (the injection path
 Phase 1 reuses), `docs/specs/agent-marketplace.md` D15 (the *other* feedback
@@ -320,3 +322,39 @@ if PR-3 proves the signal is real.
    than copying whichever neighbour is read first. Agent Designer previews are
    exactly where an author would want to thumb their own work, but that data
    must never reach fleet aggregates.
+
+## 13. Built — PR #1142 (2026-09-16)
+
+Shipped as the outcome signal of `document-context-offload.md` §5 row 7, so
+it was built against that spec's content-free rule first and reconciled with
+this one after. What landed, and the decisions it took on this spec's open
+points:
+
+- **Storage exactly per §5**: `F#{session_id}#{message_id}` on
+  `sessions-metadata`, `GSI_SK F#{message_id}`, idempotent upsert, overwrite
+  in place, never on the message object (`apis/shared/sessions/feedback.py`).
+  Rows carry `signal: "explicit"` from day one so §10's implicit rows can
+  join the family without a backfill; every thumb reader filters on it, so
+  the two are never summed (§10's rule, enforced).
+- **Routes** `PUT`/`DELETE /sessions/{id}/messages/{message_id}/feedback` on
+  app-api (PUT rather than POST: the write is an upsert). Flag
+  `RESPONSE_FEEDBACK_ENABLED`, default on with a kill switch.
+- **Reason set = §6's six buckets as codes** (`wrong`, `instructions`,
+  `length`, `tool_failed`, `outdated`, `other`). **Free text is not stored,
+  and this is a decision, not an omission**: the row sits beside the `C#`
+  cost row and is read by the content-free admin profile, whose test walks
+  the projection against the denylist. "Something else → free text" is
+  served by the §3 hand-off to the Agent report dialog, which already has
+  moderation and a scope. Revisit only together with §8 rule 1.
+- **Read model**: the session profile (`GET /admin/costs/sessions/{id}/profile`)
+  joins thumbs to the call's document turn class with `n` per bucket
+  (§9's "every response carries its n"); `dataCoverage.feedback` says when
+  nothing is tracked. The other §7 attribution axes (model, compaction,
+  `agentSwitched`, skills) are further buckets in the same join loop.
+- **Open question 4 settled**: preview sessions echo the thumb and persist
+  nothing, matching the `D#` write. Preview data never reaches aggregates.
+- **Not built**: retry-with-correction (§11 PR-1's consequence — open
+  question 1 still stands), implicit signals (PR-2), eval sampling (PR-4),
+  author/marketplace surfaces (PR-5), the report-dialog escape hatch in the
+  reason row.
+

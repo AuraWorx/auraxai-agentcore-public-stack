@@ -186,7 +186,7 @@ async def test_feedback_rows_come_back_content_free_and_keyed_to_the_call(storag
         "PK": f"USER#{USER_ID}", "SK": f"F#{SESSION_ID}#3",
         "GSI_PK": f"SESSION#{SESSION_ID}", "GSI_SK": "F#3",
         "sessionId": SESSION_ID, "messageId": Decimal(3), "userId": USER_ID,
-        "value": Decimal(-1), "reason": "wrong", "updatedAt": "2026-09-16T00:00:00Z",
+        "value": Decimal(-1), "reason": "wrong", "signal": "explicit", "updatedAt": "2026-09-16T00:00:00Z",
         "ttl": Decimal(1_800_000_000),
         # A stray content-bearing attribute must never leave the reader even
         # if something wrote one (the writer cannot, but the reader is the guard).
@@ -196,7 +196,7 @@ async def test_feedback_rows_come_back_content_free_and_keyed_to_the_call(storag
     assert len(rows) == 1
     row = rows[0]
     assert content_bearing_paths(row) == []
-    assert row == {"sessionId": SESSION_ID, "messageId": 3, "value": -1, "reason": "wrong", "updatedAt": "2026-09-16T00:00:00Z"}
+    assert row == {"sessionId": SESSION_ID, "messageId": 3, "value": -1, "reason": "wrong", "signal": "explicit", "updatedAt": "2026-09-16T00:00:00Z"}
     # Joins the C# row on messageId.
     records = await storage.get_session_cost_records(SESSION_ID)
     assert records[0]["messageId"] == row["messageId"]

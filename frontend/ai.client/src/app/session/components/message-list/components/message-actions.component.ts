@@ -82,7 +82,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
 
         @if (feedbackValue() === -1) {
           <!-- Reason codes only — a closed set, no text field, by design. -->
-          <div class="flex items-center gap-1 pl-1" role="group" aria-label="Why was this response bad?">
+          <div class="flex flex-wrap items-center gap-1 pl-1" role="group" aria-label="Why was this response bad?">
             @for (reason of reasons; track reason) {
               <button
                 type="button"
@@ -196,10 +196,12 @@ export class MessageActionsComponent {
   // describes the finished answer — see message-list.component.html).
   protected readonly reasons = FEEDBACK_REASONS;
   protected readonly reasonLabels: Record<FeedbackReason, string> = {
-    wrong: 'Wrong',
-    incomplete: 'Incomplete',
-    slow: 'Slow',
-    other: 'Other',
+    wrong: 'Wrong or made up',
+    instructions: 'Ignored instructions',
+    length: 'Too long / short',
+    tool_failed: 'A tool failed',
+    outdated: 'Out of date',
+    other: 'Something else',
   };
 
   private lastMessage = computed<Message | null>(() => {

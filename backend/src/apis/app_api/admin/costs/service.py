@@ -111,7 +111,8 @@ def _join_feedback(
     feedback_rows: List[Dict[str, Any]],
 ) -> FeedbackProfile:
     """Join ``F#`` rows to ``C#`` rows on ``messageId`` and bucket by turn
-    class. Pure; the profile's numbers, never any content."""
+    class. Pure; the profile's numbers, never any content. Explicit thumbs
+    only (``signal`` absent or ``"explicit"``)."""
     by_message: Dict[int, Dict[str, Any]] = {}
     for record in records:
         message_id = _as_int(record.get("messageId"))
@@ -125,6 +126,10 @@ def _join_feedback(
     buckets = FeedbackByTurnClass() if any_turn_class else None
     profile = FeedbackProfile()
     for row in feedback_rows:
+        # Explicit thumbs only — implicit signals (spec §10) share the row
+        # family but answer a different question and must never be summed in.
+        if row.get("signal") not in (None, "explicit"):
+            continue
         value = _as_int(row.get("value"))
         if value not in (1, -1):
             continue

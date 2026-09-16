@@ -183,13 +183,15 @@ FILE_ROW_PROJECTION: Tuple[str, ...] = (
 )
 
 #: F# rows for the session profile's feedback join. A thumb is a ±1, an
-#: optional reason *code* and a timestamp — never text, by the request
+#: optional reason *code*, a `signal` discriminator (explicit / implicit,
+#: response-feedback spec §10) and a timestamp — never text, by the request
 #: model's closed enum (`apis.shared.sessions.models.FEEDBACK_REASONS`).
 FEEDBACK_ROW_PROJECTION: Tuple[str, ...] = (
     "sessionId",
     "messageId",
     "value",
     "reason",
+    "signal",
     "updatedAt",
 )
 
