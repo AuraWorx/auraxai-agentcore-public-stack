@@ -204,6 +204,14 @@ class FileMetadata(BaseModel):
     # never part of an access decision.
     source: str = Field(default="upload", description="Origin of the file")
 
+    # DocumentDigest (docs/specs/document-context-offload.md §4A), built once
+    # when a document upload completes and stored as a plain map — see
+    # ``apis.shared.files.document_digest``. ``None`` = never generated (files
+    # uploaded before PR-2, non-documents, or the flag off). Carries model
+    # prose (``abstract``) and heading text (``sections``): content-bearing,
+    # denylisted in the admin projections.
+    digest: Optional[dict] = Field(None, description="DocumentDigest map, when generated")
+
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -230,7 +238,7 @@ class FileMetadata(BaseModel):
         if ttl_value is None:
             ttl_value = int(self.created_at.timestamp()) + (365 * 24 * 60 * 60)
 
-        return {
+        item = {
             "PK": f"USER#{self.user_id}",
             "SK": f"FILE#{self.upload_id}",
             "GSI1PK": f"CONV#{self.session_id}",
@@ -250,6 +258,9 @@ class FileMetadata(BaseModel):
             "updatedAt": to_iso(self.updated_at),
             "ttl": ttl_value,
         }
+        if self.digest:
+            item["digest"] = self.digest
+        return item
 
     @classmethod
     def from_dynamo_item(cls, item: dict) -> "FileMetadata":
@@ -271,6 +282,7 @@ class FileMetadata(BaseModel):
             created_at=from_iso(created_at) if created_at else datetime.now(timezone.utc),
             updated_at=from_iso(updated_at) if updated_at else datetime.now(timezone.utc),
             ttl=item.get("ttl"),
+            digest=item.get("digest") if isinstance(item.get("digest"), dict) else None,
         )
 
 

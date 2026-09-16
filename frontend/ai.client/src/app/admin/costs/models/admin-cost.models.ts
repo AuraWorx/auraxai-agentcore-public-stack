@@ -369,6 +369,9 @@ export interface AttachmentProfile {
   count: number;
   totalBytes: number;
   byMime: Record<string, number>;
+  /** Uploads with a ready DocumentDigest, and the rendered tokens they would cost in context. */
+  digested?: number;
+  digestTokens?: number;
 }
 
 /** One model call's context occupancy (input + cacheRead + cacheWrite). */

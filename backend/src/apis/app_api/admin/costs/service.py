@@ -1020,13 +1020,20 @@ class AdminCostService:
             return AttachmentProfile()
         by_mime: Counter = Counter()
         total_bytes = 0
+        digested = digest_tokens = 0
         for item in stats:
             by_mime[item.get("mimeType") or "unknown"] += 1
             total_bytes += _as_int(item.get("sizeBytes")) or 0
+            digest = item.get("digest")
+            if isinstance(digest, dict) and digest.get("status") == "ready":
+                digested += 1
+                digest_tokens += _as_int(digest.get("tokens")) or 0
         return AttachmentProfile(
             count=len(stats),
             total_bytes=total_bytes,
             by_mime=dict(by_mime),
+            digested=digested,
+            digest_tokens=digest_tokens,
         )
 
     async def get_session_profile(self, session_id: str) -> Optional[SessionProfile]:

@@ -402,7 +402,7 @@ currently allows (see the outcome-signal row).
 | PR | Scope | Gate |
 |----|-------|------|
 | 1 — **built** | `document_read` (page-range + pattern + bounded text; native `document` block reassembly), **gated on the session having a readable attachment**, id kept out of `INJECTED_TOOL_IDS`, presence carried in the agent-cache key; **analytics**: per-call document context on `C#` rows, the `documentReads` ledger entry, the `document_stripped` ledger event, session-row rollups, anatomy + profile surfaces, EMF; `document_read` results exempt from the tool-result offloader | 12-page PDF: `page_range="4-7"` returns 4 pages as one native block whose page 1 is original page 4; `max_pages` and the hard cap hold; tool built for a session with no grants and no picker toggle; content-policy test walks the new fields; full backend suite green |
-| 2 | `DocumentDigest` model + cheap-model extractor + persist on `FileMetadata`, generated at upload; **not yet used in context** | digest ≤1,500 tok for a 200-page PDF; extractor p95 < 8s; no chat-path change |
+| 2 — **built** (`feature/document-offload-pr2`, stacked on PR-1) | `DocumentDigest` (`apis/shared/files/document_digest.py`): a deterministic outline (headings with page / paragraph / line anchors, table and figure mentions, counts) plus a 3–5-sentence abstract from the cheap text model (Nova Micro, `DOCUMENT_DIGEST_MODEL_ID`), built off the request path when a document upload completes and persisted as `FileMetadata.digest`; `render_digest` produces the `<document-digest …>` block under a hard 1,500-token budget (sections dropped first, then the abstract) and stores the estimate as `digest.tokens`; `digest.abstract` / `digest.sections` denylisted, coverage on the attachment profile; **not yet used in context** | 200-page PDF digest ≤1,500 tokens (tested); extraction and abstract each fail open; kill switch `DOCUMENT_DIGEST_ENABLED`; no chat-path change; p95 latency to be read from `DocumentDigestMs` in dev |
 | 3 | `_strip_document_bytes` → digest + live `document_read` handle instead of the placeholder (restore path only); the ledger event becomes `document_rehydrated` | a session with `analyze_spreadsheet` enabled answers a document question correctly on **turn 2**; `document_stripped` events go to zero; re-upload rate starts falling |
 | 4 | Offload trigger in `update_after_turn` + pinning, behind `DOCUMENT_OFFLOAD_ENABLED` as a percentage rollout keyed on `hash(session_id)`; records `document_offload` with `cacheGapSeconds`; old `document_read` slices in history treated like documents | slice-assignment guard test passes; offload fires at most once per document; **zero** `document_offload` events with `cacheGapSeconds` under the TTL |
 | 5 | Fix the cache-live guard on the *existing* truncation deferral (same predicate as PR-4) | truncation events while cache live: 72% → ~0 |
@@ -657,6 +657,34 @@ visual fidelity before any digest comparison is scored.
     `apis/shared/tools/injected.py` (line drifted); `WORKSPACE_READ_MAX_BYTES`
     lives in `apis/shared/files/workspace.py`. Citations remain out of PR-1
     (§6 probe note).
+
+**PR-2 (2026-09-16)**
+
+12. **Outline is deterministic; only the abstract uses a model.** Page /
+    paragraph / line counts, headings (numbered, ALL CAPS, or title-cased
+    short lines; markdown `#`), table / figure mentions and a text sample
+    come from `pypdfium2` and the PR-1 DOCX extractor. The abstract is 3–5
+    sentences from Nova Micro over the sample plus outline — the same cheap
+    text model the tool-batch summaries and the compaction summary run on,
+    and the extraction step never needs a frontier model. The §4A sketch said
+    Haiku over the document; a text model over extracted text is cheaper,
+    text-only is enough for an abstract, and the visual channel is preserved
+    by `document_read`, not by the digest.
+13. **Built at `complete_upload` only, fire-and-forget.** The SPA upload flow
+    is where documents enter; agent-written files (`workspace_write`, Word /
+    Excel / PowerPoint tools) register `FileMetadata` directly and get no
+    digest. Uploads that predate PR-2 have none either. **PR-3 must generate
+    lazily on the restore path when `digest` is absent** (same builder,
+    `with_abstract` optional under a latency budget) rather than assume it.
+14. **The digest is content-bearing.** `digest.abstract` and
+    `digest.sections` are denylisted; `digest.status` / `format` / `count` /
+    `tokens` are projected so the attachment profile can report coverage and
+    the per-file token cost the 1,500 ceiling is enforced against.
+15. **Budget enforcement is in the renderer**, not the extractor: sections
+    are dropped from the end, then the abstract is truncated, and the opening
+    tag (the `document_read` handle) always survives. `digest.tokens` records
+    the rendered estimate, so "digest ≤1,500 tokens" is a stored fact per
+    file rather than a claim.
 
 ---
 

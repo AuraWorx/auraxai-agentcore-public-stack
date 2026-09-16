@@ -139,6 +139,32 @@ class FileUploadRepository:
             logger.error(f"Error updating file status {upload_id}: {e}")
             raise
 
+    async def update_file_digest(
+        self, user_id: str, upload_id: str, digest: dict
+    ) -> Optional[FileMetadata]:
+        """Store a ``DocumentDigest`` map on the file row (``SET digest``).
+
+        Idempotent last-write-wins; ``None`` when the row no longer exists
+        (the file was deleted while the digest was being built).
+        """
+        try:
+            response = self._table.update_item(
+                Key={"PK": f"USER#{user_id}", "SK": f"FILE#{upload_id}"},
+                UpdateExpression="SET digest = :digest, updatedAt = :now",
+                ExpressionAttributeValues={
+                    ":digest": self._convert_floats_to_decimals(dict(digest)),
+                    ":now": utc_now_iso(),
+                },
+                ConditionExpression="attribute_exists(PK)",
+                ReturnValues="ALL_NEW",
+            )
+            return FileMetadata.from_dynamo_item(response["Attributes"])
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return None
+            logger.error(f"Error updating file digest {upload_id}: {e}")
+            raise
+
     async def delete_file(self, user_id: str, upload_id: str) -> Optional[FileMetadata]:
         """
         Delete a file metadata record.
