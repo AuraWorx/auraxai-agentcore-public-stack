@@ -1126,6 +1126,9 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 summaryTokens=len(state.summary or "") // 4,
                 retainedMessages=len(messages),
                 cacheGapSeconds=gap_seconds or 0,
+                # Distinguishes the head-of-turn promotion from the restore
+                # slice's own "applied" event (both are real byte changes).
+                promoted=1,
             )
             logger.info(
                 "compaction_applied: reason=%s checkpoint=%d gap=%ss live_len=%d (%s)",

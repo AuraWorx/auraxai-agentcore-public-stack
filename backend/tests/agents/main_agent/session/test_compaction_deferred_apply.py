@@ -236,6 +236,7 @@ class TestLedger:
         fields = mgr.record_compaction_event.call_args.kwargs
         assert fields["checkpoint"] == 4 and fields["retainedMessages"] == 6
         assert fields["cacheGapSeconds"] >= 599 and fields["summaryTokens"] >= 0
+        assert fields["promoted"] == 1
 
 
 class TestStateRoundTrip:
