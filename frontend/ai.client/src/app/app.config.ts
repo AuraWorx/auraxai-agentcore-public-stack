@@ -14,6 +14,7 @@ import { AnnouncementModalService } from './services/announcements/announcement-
 import { ConfigService } from './services/config.service';
 import { durableDownloadUrlFromHref } from './shared/utils/file-download-url';
 import { installLazyMermaid } from './shared/utils/lazy-mermaid';
+import { installKatexMathExtensions } from './shared/utils/katex-math-markdown';
 
 function markedOptionsFactory(config: ConfigService): MarkedOptions {
   const renderer = new MarkedRenderer();
@@ -88,5 +89,10 @@ export const appConfig: ApplicationConfig = {
     // markdown renders lets the real 3.57 MB library stay in a lazy chunk that
     // is only fetched when a message actually contains a diagram.
     provideAppInitializer(() => { installLazyMermaid(); }),
+
+    // marked reads `\(` as an escaped paren and drops the backslash, so
+    // LaTeX's inline-math delimiters never reached KaTeX. These tokenizers
+    // claim the span first and pass the delimiters through verbatim.
+    provideAppInitializer(() => { installKatexMathExtensions(); }),
   ]
 };
