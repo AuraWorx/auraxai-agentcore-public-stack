@@ -148,12 +148,32 @@ async def test_top_sessions_reader_keeps_title_by_decision(storage):
     assert "compaction" not in rows[0]  # and it never widened into the diagnostic fields
 
 
-@pytest.mark.asyncio
-async def test_deleted_sessions_are_excluded_from_the_diagnostic_list(storage):
-    _seed(storage)
+def _seed_deleted(storage):
     storage.sessions_metadata_table.put_item(Item={
         "PK": f"USER#{USER_ID}", "SK": "S#gone", "GSI_PK": "SESSION#gone", "GSI_SK": "META",
-        "sessionId": "gone", "userId": USER_ID, "deleted": True, "totalCost": Decimal("9"),
+        "sessionId": "gone", "userId": USER_ID, "deleted": True, "status": "deleted",
+        "totalCost": Decimal("9"), "title": "DELETED TITLE",
     })
+
+
+@pytest.mark.asyncio
+async def test_deleted_sessions_are_excluded_from_the_diagnostic_list_by_default(storage):
+    _seed(storage)
+    _seed_deleted(storage)
     rows = await storage.get_user_session_diagnostics(USER_ID)
     assert [r["sessionId"] for r in rows] == [SESSION_ID]
+
+
+@pytest.mark.asyncio
+async def test_deleted_sessions_are_listed_on_request_and_stay_content_free(storage):
+    # A delete is a tombstone, not a refund: the row's cost survives it, so
+    # the audit must be able to see it to account for the period total.
+    _seed(storage)
+    _seed_deleted(storage)
+    rows = await storage.get_user_session_diagnostics(USER_ID, include_deleted=True)
+    by_id = {r["sessionId"]: r for r in rows}
+    assert set(by_id) == {SESSION_ID, "gone"}
+    assert by_id["gone"]["deleted"] is True
+    assert by_id["gone"]["status"] == "deleted"
+    assert by_id["gone"]["totalCost"] == 9
+    assert "title" not in by_id["gone"]
