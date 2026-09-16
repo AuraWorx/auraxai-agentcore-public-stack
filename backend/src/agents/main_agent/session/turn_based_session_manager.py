@@ -1457,7 +1457,8 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         return sanitized
 
     def _strip_document_bytes(self, messages: List[Dict]) -> List[Dict]:
-        """Replace document content blocks' inline bytes with a text placeholder.
+        """Replace document content blocks' inline bytes with their digest — or,
+        when the block cannot be matched to an upload, a text placeholder.
 
         Called unconditionally on every session restore — independent of whether
         compaction is enabled. Document blocks with ``source.bytes`` must never
@@ -1465,56 +1466,45 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         document blocks share the same sanitized name across the conversation
         (ValidationException: "Messages can't contain duplicate document names").
 
+        Since PR-3 of the offload spec the replacement is a ``<document-digest …>``
+        block carrying the document's outline, abstract and ``upload_id``, so the
+        model still knows what the document says and can pull any page back with
+        ``document_read`` (see ``document_rehydration.py``). Blocks with no
+        upload row keep the contentless placeholder, exactly as before.
+
         Images are handled the same way inside ``_truncate_tool_contents``, but
         that method is gated on compaction being enabled. This one is not.
 
-        The ``[Attached files: …]`` text marker already present in the user
-        message preserves the reference for the model without re-sending bytes.
+        Two content-free ledger events record what happened on the next cost
+        row: ``document_rehydrated`` (documents and their digest tokens) and
+        ``document_stripped`` (documents that fell back to the placeholder and
+        the tokens they were). The second going to zero is PR-3's gate.
         """
-        stripped_messages = copy.deepcopy(messages)
-        strip_count = 0
-        stripped_bytes = 0
+        from agents.main_agent.session.document_rehydration import rehydrate_documents
 
-        for msg in stripped_messages:
-            content = msg.get("content", [])
-            if not isinstance(content, list):
-                continue
-            for block_idx, block in enumerate(content):
-                if not isinstance(block, dict) or "document" not in block:
-                    continue
-                doc_data = block["document"]
-                source = doc_data.get("source", {})
-                # Only replace blocks that carry inline bytes — s3Location
-                # blocks (enhancement #401) have no bytes to strip and are
-                # safe to leave as-is since they don't accumulate in history.
-                if "bytes" not in source:
-                    continue
-                doc_name = doc_data.get("name", "unknown")
-                doc_format = doc_data.get("format", "unknown")
-                original_bytes = source.get("bytes", b"")
-                original_size = len(original_bytes) if isinstance(original_bytes, bytes) else 0
-                content[block_idx] = {
-                    "text": f"[Document placeholder: name={doc_name}, format={doc_format}, original_size={original_size} bytes]"
-                }
-                strip_count += 1
-                stripped_bytes += original_size
-
-        if strip_count > 0:
-            logger.debug(f"Stripped inline bytes from {strip_count} document block(s) in history")
-            # Content-free record on the next cost row: how many documents this
-            # restore discarded and roughly how many tokens they were (same
-            # bytes/4 heuristic as the compaction estimator). This is the
-            # defect the digest rehydration (PR-3) fixes; recording it now is
-            # what shows its reach before and after.
-            from agents.main_agent.session.compaction_policy import CHARS_PER_TOKEN
-
+        result = rehydrate_documents(
+            messages,
+            session_id=getattr(self.config, "session_id", None),
+            user_id=self.user_id,
+        )
+        if result.rehydrated:
+            logger.info(
+                "Rehydrated %d document block(s) as digests (%d built lazily) in restored history",
+                result.rehydrated, result.lazy_digests,
+            )
+            self.record_compaction_event(
+                "document_rehydrated",
+                documents=result.rehydrated,
+                documentTokens=result.digest_tokens,
+            )
+        if result.stripped:
+            logger.debug(f"Stripped inline bytes from {result.stripped} unmatched document block(s) in history")
             self.record_compaction_event(
                 "document_stripped",
-                documents=strip_count,
-                documentTokens=stripped_bytes // CHARS_PER_TOKEN,
+                documents=result.stripped,
+                documentTokens=result.stripped_tokens,
             )
-
-        return stripped_messages
+        return result.messages
 
     # =========================================================================
     # Tool-pairing / role-alternation repair (restore-time safety net)
