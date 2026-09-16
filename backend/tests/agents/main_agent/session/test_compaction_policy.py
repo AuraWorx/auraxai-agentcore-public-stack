@@ -310,7 +310,11 @@ class TestCompactionLedgerEvents:
         assert floor_call.kwargs["retainedTokens"] > 250
 
     @pytest.mark.asyncio
-    async def test_no_ledger_is_a_noop(self, make_session_manager, compaction_config):
+    async def test_no_ledger_is_a_noop(self, make_session_manager, compaction_config, monkeypatch):
+        # The cost-diagnostics ledger now ships on this class, so absence has to
+        # be simulated: strip the recorder and prove the cut still lands rather
+        # than raising through ``_record_ledger_event``'s getattr seam.
         mgr = _armed_manager(make_session_manager, compaction_config)
+        monkeypatch.delattr(type(mgr), "record_compaction_event")
         assert not hasattr(mgr, "record_compaction_event")
         assert await mgr.update_after_turn(1200) is not None  # no AttributeError

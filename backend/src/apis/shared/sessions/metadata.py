@@ -1742,6 +1742,14 @@ async def _bump_session_aggregates(
             update_parts_add.append("toolErrorCount :toolErrors")
             values[":toolCalls"] = tool_calls_total
             values[":toolErrors"] = tool_errors_total
+            # Compaction decisions, counted per kind from the call's
+            # `compactionEvents` ledger. `checkpoint` is deliberately not
+            # here — `_save_compaction_state(record_event=True)` already
+            # bumps `compactionCount` for it, and two counters for one event
+            # would disagree under concurrency.
+            for kind, attr in _COMPACTION_EVENT_COUNTERS.items():
+                update_parts_add.append(f"{attr} :{attr}")
+                values[f":{attr}"] = _compaction_event_count(message_metadata, kind)
 
         update_expression = (
             "ADD " + ", ".join(update_parts_add) + " SET " + ", ".join(update_parts_set)
@@ -1762,6 +1770,29 @@ async def _bump_session_aggregates(
     except Exception as e:
         # Non-fatal — lazy backfill compensates on next read.
         logger.debug("bump_session_aggregates failed (will be backfilled on read): %s", e)
+
+
+#: Session-row counter per compaction event kind (see
+#: ``TurnBasedSessionManager.record_compaction_event``). Written as 0 while
+#: the diagnostics are on so the attribute exists from the first call.
+_COMPACTION_EVENT_COUNTERS = {
+    "applied": "compactionAppliedCount",
+    "forced": "compactionForcedCount",
+    "floor_unreachable": "compactionFloorUnreachableCount",
+}
+
+
+def _compaction_event_count(message_metadata: Any, kind: str) -> int:
+    """How many events of ``kind`` the call's ``compactionEvents`` extra carries.
+
+    Malformed entries count as zero rather than raising — the aggregate bump
+    must never fail on them.
+    """
+    extra = getattr(message_metadata, "model_extra", None)
+    events = extra.get("compactionEvents") if isinstance(extra, dict) else None
+    if not isinstance(events, list):
+        return 0
+    return sum(1 for e in events if isinstance(e, dict) and e.get("kind") == kind)
 
 
 def _tool_census_totals(message_metadata: Any) -> tuple[int, int]:

@@ -127,6 +127,11 @@ SESSION_ROW_PROJECTION: Tuple[str, ...] = (
     "toolCallCount",
     "toolErrorCount",
     "compactionCount",
+    # Compaction decisions by kind (per-call ledger rolled up; see
+    # `TurnBasedSessionManager.record_compaction_event`)
+    "compactionAppliedCount",
+    "compactionForcedCount",
+    "compactionFloorUnreachableCount",
 )
 
 #: C# rows for the cost anatomy and the session profile's trajectory.
@@ -146,6 +151,13 @@ CALL_ROW_PROJECTION: Tuple[str, ...] = (
     "prefixFingerprints",
     "contextWindow",
     "toolCalls",            # per-call census, optional (PR-3)
+    # Context ledger, optional: the agent's stable prefix split
+    # ({system, tools} tokens), the conversation window's cumulative trim
+    # count, and the compaction decisions taken before this call — all
+    # numbers, never text.
+    "prefixTokens",
+    "windowRemovedMessages",
+    "compactionEvents",
 )
 
 #: FILE# rows for the session profile's attachment summary.

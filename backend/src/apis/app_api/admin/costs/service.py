@@ -20,6 +20,8 @@ from .diagnoses import (
     top_severity,
 )
 from .models import (
+    CompactionEvent,
+    PrefixTokens,
     AttachmentProfile,
     ContextTrajectoryPoint,
     DataCoverage,
@@ -84,6 +86,53 @@ def _context_tokens(record: Dict[str, Any]) -> int:
         + int(usage.get("cacheReadInputTokens") or 0)
         + int(usage.get("cacheWriteInputTokens") or 0)
     )
+
+
+from dataclasses import dataclass as _dataclass, field as _field
+
+
+@_dataclass
+class _CallLedger:
+    """The context-ledger fields of one cost row, decoded and diffed."""
+
+    prefix_tokens: Optional[PrefixTokens] = None
+    removed: Optional[int] = None
+    trimmed: Optional[int] = None
+    events: List[CompactionEvent] = _field(default_factory=list)
+
+
+def _call_ledger(record: Dict[str, Any], previous_removed: Optional[int]) -> _CallLedger:
+    """Decode a cost row's ``prefixTokens`` / ``windowRemovedMessages`` /
+    ``compactionEvents`` and derive ``trimmed`` (messages removed since the
+    previous ledger-bearing row). Absent fields stay ``None`` — "not tracked",
+    never 0 — and malformed ones are ignored rather than raised.
+    """
+    ledger = _CallLedger()
+    raw_prefix = record.get("prefixTokens")
+    if isinstance(raw_prefix, dict):
+        try:
+            ledger.prefix_tokens = PrefixTokens(
+                system=int(raw_prefix.get("system") or 0),
+                tools=int(raw_prefix.get("tools") or 0),
+            )
+        except (TypeError, ValueError):
+            ledger.prefix_tokens = None
+    removed = _as_int(record.get("windowRemovedMessages"))
+    if removed is not None:
+        ledger.removed = removed
+        ledger.trimmed = (
+            max(removed - previous_removed, 0) if previous_removed is not None else 0
+        )
+    raw_events = record.get("compactionEvents")
+    if isinstance(raw_events, list):
+        for entry in raw_events:
+            if not isinstance(entry, dict) or not entry.get("kind"):
+                continue
+            try:
+                ledger.events.append(CompactionEvent(**entry))
+            except (TypeError, ValueError):
+                continue
+    return ledger
 
 
 class AdminCostService:
@@ -614,11 +663,15 @@ class AdminCostService:
         wasted_usd = 0.0
         agent_switch_misses = 0
         agent_switch_usd = 0.0
+        previous_removed: Optional[int] = None
 
         for record in records:
             token_usage = record.get("tokenUsage") or {}
             model_info = record.get("modelInfo") or {}
             fingerprints_raw = record.get("prefixFingerprints")
+            ledger = _call_ledger(record, previous_removed)
+            if ledger.removed is not None:
+                previous_removed = ledger.removed
 
             # cost is a breakdown dict ({"total": ...}) on the streaming path
             # or a bare float on the legacy path.
@@ -675,6 +728,10 @@ class AdminCostService:
                     PrefixFingerprints(**fingerprints_raw)
                     if isinstance(fingerprints_raw, dict) else None
                 ),
+                prefix_tokens=ledger.prefix_tokens,
+                window_removed_messages=ledger.removed,
+                window_trimmed=ledger.trimmed,
+                compaction_events=ledger.events or None,
             ))
 
         cache_traffic = total_cache_read + total_cache_write
@@ -800,6 +857,11 @@ class AdminCostService:
             tool_call_count=_as_int(row.get("toolCallCount")),
             tool_error_count=_as_int(row.get("toolErrorCount")),
             compaction_count=_as_int(row.get("compactionCount")),
+            compaction_applied_count=_as_int(row.get("compactionAppliedCount")),
+            compaction_forced_count=_as_int(row.get("compactionForcedCount")),
+            compaction_floor_unreachable_count=_as_int(
+                row.get("compactionFloorUnreachableCount")
+            ),
             diagnosis_count=len(findings),
             top_diagnosis_severity=top_severity(findings),
         )
@@ -936,6 +998,13 @@ class AdminCostService:
         read_total = write_total = 0
         any_fingerprints = any_census = False
         previous_fp: Optional[Dict[str, Any]] = None
+        any_prefix_tokens = any_window = any_compaction_events = False
+        prefix_tokens: Optional[PrefixTokens] = None
+        previous_removed: Optional[int] = None
+        last_removed: Optional[int] = None
+        window_trim_calls = 0
+        compaction_event_counts: Counter = Counter()
+        last_summary_tokens: Optional[int] = None
 
         for index, record in enumerate(records):
             usage = record.get("tokenUsage") or {}
@@ -981,6 +1050,21 @@ class AdminCostService:
                     slot.calls += calls
                     slot.errors += errors
 
+            ledger = _call_ledger(record, previous_removed)
+            if ledger.prefix_tokens is not None:
+                any_prefix_tokens = True
+                prefix_tokens = ledger.prefix_tokens
+            if ledger.removed is not None:
+                any_window = True
+                previous_removed = last_removed = ledger.removed
+            if ledger.trimmed:
+                window_trim_calls += 1
+            if ledger.events:
+                any_compaction_events = True
+                for event in ledger.events:
+                    compaction_event_counts[event.kind] += 1
+                    if event.summary_tokens is not None:
+                        last_summary_tokens = event.summary_tokens
             trajectory.append(ContextTrajectoryPoint(
                 call_index=index,
                 timestamp=record.get("timestamp", ""),
@@ -989,6 +1073,8 @@ class AdminCostService:
                 model_id=model_id,
                 cost=_record_cost(record),
                 tool_calls=point_tool_calls,
+                window_trimmed=ledger.trimmed,
+                compaction=[e.kind for e in ledger.events] or None,
             ))
 
         # Cache totals: the rows are authoritative when present, else the
@@ -1051,7 +1137,17 @@ class AdminCostService:
                 compaction_count=row.get("compactionCount") is not None,
                 fingerprints=any_fingerprints,
                 cost=total_cost is not None,
+                prefix_tokens=any_prefix_tokens,
+                window_trim=any_window,
+                compaction_events=(
+                    any_compaction_events or row.get("compactionAppliedCount") is not None
+                ),
             ),
+            prefix_tokens=prefix_tokens,
+            window_trim_calls=window_trim_calls,
+            window_removed_messages=last_removed,
+            compaction_event_counts=dict(compaction_event_counts),
+            last_summary_tokens=last_summary_tokens,
         )
 
     async def get_dashboard(

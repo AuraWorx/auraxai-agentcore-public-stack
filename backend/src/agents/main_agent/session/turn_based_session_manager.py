@@ -49,6 +49,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Compaction decisions the per-call ledger will record. Reserved kinds exist
+#: so a scheduling policy can report them without a schema change.
+COMPACTION_EVENT_KINDS = frozenset({"applied", "checkpoint", "forced", "floor_unreachable"})
+_MAX_PENDING_COMPACTION_EVENTS = 8
+
+
+def _approx_tokens(text: Any) -> int:
+    """~4 chars/token; the same estimate the admin profile uses for summaries."""
+    if not text:
+        return 0
+    try:
+        return len(text) // 4
+    except TypeError:
+        return 0
+
 
 class TurnBasedSessionManager(AgentCoreMemorySessionManager):
     """
@@ -108,6 +123,9 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # Cached data for checkpoint calculation
         self._valid_cutoff_indices: List[int] = []
         self._all_messages_for_summary: List[Dict] = []
+        # Compaction decisions taken since the last model call, drained by
+        # ``ContextLedgerHook`` onto that call's cost row. Bounded; content-free.
+        self._pending_compaction_events: List[Dict[str, Any]] = []
         self._total_message_count_at_init: int = 0
         # Absolute index (into the stored history) of ``agent.messages[0]``.
         # The restore slice sets it to the applied checkpoint; the persisted
@@ -368,6 +386,15 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
 
         agent.messages = messages_to_process
 
+        if checkpoint > 0 and offset > 0:
+            self.record_compaction_event(
+                "applied",
+                checkpoint=checkpoint,
+                summaryTokens=_approx_tokens(self.compaction_state.summary),
+                retainedMessages=len(agent.messages),
+                truncatedToolResults=truncation_count,
+            )
+
         logger.info(
             f"Compaction initialized: stage={stage}, "
             f"original={self._total_message_count_at_init}, "
@@ -602,6 +629,48 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             persisted.truncation_anchor, current.truncation_anchor
         )
         self.compaction_state = persisted
+
+    # ------------------------------------------------------------------
+    # Compaction event ledger (content-free; persisted per model call)
+    # ------------------------------------------------------------------
+
+    def record_compaction_event(self, kind: str, **fields: Any) -> None:
+        """Queue a compaction decision for the next model call's cost row.
+
+        ``kind`` is one of the ``COMPACTION_EVENT_KINDS`` — ``applied`` (the
+        restore-time slice ran), ``checkpoint`` (a new checkpoint was cut
+        post-turn), ``forced`` and ``floor_unreachable`` (reserved for the
+        scheduling policy: a cut taken at the hard ceiling because the previous
+        one did not take, and a cut that could not reach its floor because the
+        protected tail alone exceeds it). ``fields`` are numbers only —
+        ``summaryTokens`` in particular is what proves a summary cap works
+        without another table scan. Anything else is dropped here so the
+        ledger can never carry content.
+
+        No-op when ``COST_DIAGNOSTICS_ENABLED`` is off, so a row without the
+        field reads "not tracked", never "0". Bounded so a runaway caller
+        cannot grow a cost row.
+        """
+        from apis.shared.feature_flags import cost_diagnostics_enabled
+
+        if not cost_diagnostics_enabled():
+            return
+        if kind not in COMPACTION_EVENT_KINDS:
+            logger.debug("Ignoring unknown compaction event kind %r", kind)
+            return
+        if len(self._pending_compaction_events) >= _MAX_PENDING_COMPACTION_EVENTS:
+            return
+        event: Dict[str, Any] = {"kind": kind}
+        for key, value in fields.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            event[key] = int(value)
+        self._pending_compaction_events.append(event)
+
+    def drain_compaction_events(self) -> List[Dict[str, Any]]:
+        """Return and clear the queued events (called by ``ContextLedgerHook``)."""
+        events, self._pending_compaction_events = self._pending_compaction_events, []
+        return events
 
     def _save_compaction_state(self, state: CompactionState, record_event: bool = False) -> None:
         """Save compaction state to DynamoDB session metadata.
@@ -1011,6 +1080,17 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # This save is the compaction event itself — count it.
         self._save_compaction_state(state, record_event=True)
         self._emit_compaction_metrics(state, policy, forced, retained_estimate, bounded, deferred)
+        # Routed through the defensive seam rather than calling the recorder
+        # directly: same no-op-without-a-ledger contract as every other cut
+        # decision. Queued when the cut is *decided* — when ``deferred`` the
+        # bytes do not move until ``apply_pending_compaction`` runs.
+        self._record_ledger_event(
+            "checkpoint",
+            checkpoint=new_checkpoint,
+            summaryTokens=_approx_tokens(summary),
+            summarizedTurns=summarized_turns,
+            inputTokens=input_tokens,
+        )
 
         logger.info(
             f"Compaction checkpoint set: {new_checkpoint}, "
