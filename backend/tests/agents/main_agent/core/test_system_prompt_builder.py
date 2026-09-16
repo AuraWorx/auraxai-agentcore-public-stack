@@ -32,17 +32,17 @@ class TestBuildWithDateTrue:
 
     @patch(
         "agents.main_agent.core.system_prompt_builder.get_current_date_pacific",
-        return_value="2024-06-15 (Saturday) 10:00 PDT",
+        return_value="2024-06-15 (Saturday) PDT",
     )
     def test_appends_current_date_line(self, mock_date):
         builder = SystemPromptBuilder()
         result = builder.build(include_date=True)
 
-        assert result.endswith("Current date: 2024-06-15 (Saturday) 10:00 PDT")
+        assert result.endswith("Current date: 2024-06-15 (Saturday) PDT")
 
     @patch(
         "agents.main_agent.core.system_prompt_builder.get_current_date_pacific",
-        return_value="2024-06-15 (Saturday) 10:00 PDT",
+        return_value="2024-06-15 (Saturday) PDT",
     )
     def test_includes_base_prompt(self, mock_date):
         builder = SystemPromptBuilder()
@@ -52,13 +52,13 @@ class TestBuildWithDateTrue:
 
     @patch(
         "agents.main_agent.core.system_prompt_builder.get_current_date_pacific",
-        return_value="2024-01-01 (Monday) 08:00 PST",
+        return_value="2024-01-01 (Monday) PST",
     )
     def test_date_separated_by_blank_line(self, mock_date):
         builder = SystemPromptBuilder()
         result = builder.build(include_date=True)
 
-        expected = f"{DEFAULT_SYSTEM_PROMPT}\n\nCurrent date: 2024-01-01 (Monday) 08:00 PST"
+        expected = f"{DEFAULT_SYSTEM_PROMPT}\n\nCurrent date: 2024-01-01 (Monday) PST"
         assert result == expected
 
 
@@ -102,14 +102,14 @@ class TestCustomBasePrompt:
 
     @patch(
         "agents.main_agent.core.system_prompt_builder.get_current_date_pacific",
-        return_value="2024-03-20 (Wednesday) 15:00 PDT",
+        return_value="2024-03-20 (Wednesday) PDT",
     )
     def test_build_with_date_uses_custom_prompt(self, mock_date):
         custom = "Custom prompt."
         builder = SystemPromptBuilder(base_prompt=custom)
         result = builder.build(include_date=True)
 
-        assert result == "Custom prompt.\n\nCurrent date: 2024-03-20 (Wednesday) 15:00 PDT"
+        assert result == "Custom prompt.\n\nCurrent date: 2024-03-20 (Wednesday) PDT"
 
     def test_none_base_prompt_falls_back_to_default(self):
         builder = SystemPromptBuilder(base_prompt=None)

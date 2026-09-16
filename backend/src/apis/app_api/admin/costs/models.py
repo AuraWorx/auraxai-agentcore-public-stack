@@ -369,6 +369,12 @@ class UserSessionsResponse(BaseModel):
     # Sessions excluded because their cost is unrecorded (they are still listed,
     # with costKnown=False, when sort != "cost"; under cost-sort they trail).
     unknown_cost_count: int = Field(0, alias="unknownCostCount")
+    # Soft-deleted conversations in the list (status="deleted"). Listed, not
+    # hidden: a delete removes the row from the user's sidebar, not its cost
+    # rows or its share of `userPeriodCost`, so an audit that dropped them
+    # could not account for the period total.
+    deleted_session_count: int = Field(0, alias="deletedSessionCount")
+    deleted_session_cost: float = Field(0.0, alias="deletedSessionCost")
 
 
 class AttachmentProfile(BaseModel):

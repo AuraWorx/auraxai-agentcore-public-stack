@@ -893,15 +893,23 @@ class AdminCostService:
         period = None if all_time else (period or self._get_current_period())
         active_since = self._get_period_date_range(period)[0] if period else None
 
+        # Deleted conversations stay in the list: their cost rows and their
+        # share of the period total outlive the delete, so hiding them left
+        # a user's spend unaccounted for (one $3.77 row against $20.32).
         rows = await self.storage.get_user_session_diagnostics(
             user_id=user_id,
             active_since=active_since,
+            include_deleted=True,
         )
         user_period_cost = await self._user_period_cost(user_id, period)
         threshold = compaction_token_threshold()
 
         summaries: List[UserSessionSummary] = []
         for row in rows:
+            if row.get("deleted") or row.get("status") == "deleted":
+                # Legacy tombstones carry `deleted` without the status flip;
+                # normalise so the page has one signal to render.
+                row["status"] = "deleted"
             share = self._share(_as_float(row.get("totalCost")), user_period_cost)
             findings = run_diagnoses(self._row_facts(row, threshold, share))
             summaries.append(self._session_summary(row, findings, share))
@@ -922,9 +930,11 @@ class AdminCostService:
             )
 
         unknown = sum(1 for s in summaries if not s.cost_known)
+        deleted = [s for s in summaries if s.status == "deleted"]
+        deleted_cost = sum(s.total_cost for s in deleted if s.total_cost is not None)
         logger.info(
-            f"User sessions: {len(summaries)} rows ({unknown} unknown-cost), "
-            f"returning {min(limit, len(summaries))}"
+            f"User sessions: {len(summaries)} rows ({unknown} unknown-cost, "
+            f"{len(deleted)} deleted), returning {min(limit, len(summaries))}"
         )
         return UserSessionsResponse(
             user_id=user_id,
@@ -933,6 +943,8 @@ class AdminCostService:
             sessions=summaries[:limit],
             total=len(summaries),
             unknown_cost_count=unknown,
+            deleted_session_count=len(deleted),
+            deleted_session_cost=round(deleted_cost, 6),
         )
 
     async def _attachment_profile(self, session_id: str) -> AttachmentProfile:

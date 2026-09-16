@@ -274,6 +274,21 @@ class StreamCoordinator:
         if session_manager is not None:
             session_manager.turn_lease = turn_lease
 
+        # Paid-when-free compaction (spec §3.5): if a cut is parked, apply it
+        # to the live list now — before the first model call — only when the
+        # prefix re-write is free (cache expired, model/agent switched) or
+        # unavoidable (hard ceiling). Runs on cached and freshly restored
+        # agents alike; the session manager decides, this just supplies the
+        # model|agent key. Best-effort: never blocks the turn.
+        if session_manager is not None and hasattr(session_manager, "apply_pending_compaction"):
+            try:
+                _model_for_key = getattr(getattr(main_agent_wrapper, "model_config", None), "model_id", None)
+                session_manager.apply_pending_compaction(
+                    agent, prefix_key=f"{_model_for_key}|{turn_agent_id or 'default'}"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"apply_pending_compaction failed, continuing: {e}")
+
         # Likewise a pause armed by a previous turn: if the user abandoned an
         # OAuth/tool-approval consent and just typed again, the still-armed
         # interrupt state makes Strands reject this turn's prompt outright.
@@ -669,6 +684,9 @@ class StreamCoordinator:
                         # persisted (one C# record per assistant message).
                         if main_agent_wrapper and hasattr(main_agent_wrapper, "model_config"):
                             model_id = main_agent_wrapper.model_config.model_id
+                            # PR-5: when the static prefix carries the 1h TTL,
+                            # its cache writes are billed at the 1h premium.
+                            long_ttl_static_tokens = self._long_ttl_static_prefix_tokens(main_agent_wrapper, agent)
                             try:
                                 turn_total = 0.0
                                 turn_input_cost = 0.0
@@ -682,6 +700,7 @@ class StreamCoordinator:
                                     msg_cost = await self._calculate_streaming_cost(
                                         model_id=model_id,
                                         usage=msg_usage,
+                                        long_ttl_static_prefix_tokens=long_ttl_static_tokens,
                                     )
                                     if msg_cost is None:
                                         continue
@@ -773,9 +792,18 @@ class StreamCoordinator:
                         if total_input_tokens > 0:
                             try:
                                 current_messages = getattr(agent, "messages", None)
+                                # Model-relative policy inputs: the catalog
+                                # window (same lookup the badge uses — the
+                                # catalog is cached) and the measured size of
+                                # the conversation portion of the prompt.
+                                # See docs/specs/compaction-model-relative-thresholds.md.
+                                turn_context_window = await self._resolve_context_window(main_agent_wrapper)
+                                history_tokens = self._history_tokens_from_breakdown(agent)
                                 compaction_result = await session_manager.update_after_turn(
                                     total_input_tokens,
                                     current_messages=current_messages,
+                                    context_window=turn_context_window,
+                                    history_tokens=history_tokens,
                                 )
                                 logger.info(f"   Compaction state updated: {total_input_tokens:,} input tokens")
                                 if compaction_result is not None:
@@ -785,6 +813,14 @@ class StreamCoordinator:
                                         "newCheckpoint": compaction_result.new_checkpoint,
                                         "summarizedTurns": compaction_result.summarized_turns,
                                         "inputTokens": compaction_result.input_tokens,
+                                        # Additive policy fields (the SPA
+                                        # validator ignores unknown keys).
+                                        "contextWindow": compaction_result.context_window,
+                                        "ceiling": compaction_result.ceiling,
+                                        "floor": compaction_result.floor,
+                                        "hardCeiling": compaction_result.hard_ceiling,
+                                        "forced": compaction_result.forced,
+                                        "retainedTokensEstimate": compaction_result.retained_tokens_estimate,
                                     }
                                     yield f"event: compaction\ndata: {json.dumps(compaction_payload)}\n\n"
                             except Exception as e:
@@ -2574,6 +2610,46 @@ class StreamCoordinator:
             logger.error(f"Failed to serialize event: {e}")
             return f"event: error\ndata: {json.dumps({'error': f'Serialization error: {str(e)}'})}\n\n"
 
+    @staticmethod
+    async def _resolve_context_window(main_agent_wrapper: Any) -> Optional[int]:
+        """The serving model's ``maxInputTokens`` from the catalog, or ``None``.
+
+        Feeds the model-relative compaction policy. Best-effort: a miss means
+        the policy falls back to the fixed threshold, never an error.
+        """
+        model_config = getattr(main_agent_wrapper, "model_config", None)
+        model_id = getattr(model_config, "model_id", None)
+        if not model_id:
+            return None
+        try:
+            from apis.shared.costs.pricing_config import get_model_by_model_id
+
+            record = await get_model_by_model_id(model_id)
+            value = getattr(record, "max_input_tokens", None) if record is not None else None
+            return int(value) if value else None
+        except Exception as e:  # noqa: BLE001 - never let a lookup break the turn
+            logger.debug(f"Skipping contextWindow lookup for compaction: {e}")
+            return None
+
+    @staticmethod
+    def _history_tokens_from_breakdown(agent: Any) -> Optional[int]:
+        """The ``messages`` partition of this turn's context breakdown, or ``None``.
+
+        Calibrates the compaction policy's per-message estimates against the
+        measured size of the conversation portion of the prompt.
+        """
+        try:
+            from agents.main_agent.session.hooks.context_attribution import get_context_breakdown
+
+            breakdown = get_context_breakdown(agent)
+            for partition in (breakdown or {}).get("partitions", []) or []:
+                if isinstance(partition, dict) and partition.get("key") == "messages":
+                    tokens = partition.get("tokens")
+                    return int(tokens) if tokens is not None else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Skipping history-token calibration: {e}")
+        return None
+
     def _log_cache_metrics(self, usage: Dict[str, Any], session_id: str) -> None:
         """
         Log cache performance metrics for monitoring and optimization.
@@ -2950,7 +3026,13 @@ class StreamCoordinator:
 
                 # Calculate cost if we have both usage and pricing
                 if token_usage and pricing_snapshot:
-                    cost_result = self._calculate_message_cost(usage=accumulated_metadata.get("usage", {}), pricing=pricing_snapshot)
+                    cost_result = self._calculate_message_cost(
+                        usage=accumulated_metadata.get("usage", {}),
+                        pricing=pricing_snapshot,
+                        long_ttl_static_prefix_tokens=self._long_ttl_static_prefix_tokens(
+                            agent, getattr(agent, "agent", None)
+                        ),
+                    )
                     if cost_result is not None:
                         cost = cost_result
 
@@ -2978,6 +3060,15 @@ class StreamCoordinator:
                 )
                 if context_window is not None:
                     metadata_kwargs["contextWindow"] = context_window
+                # PR-5 experiment arm marker (extra field via extra="allow"),
+                # so the cost anatomy can split 1h-static-prefix turns from
+                # the 5m baseline without guessing from the write:read shape.
+                try:
+                    if agent is not None and getattr(agent, "model_config", None) is not None and \
+                            getattr(agent.model_config, "long_ttl_static_prefix", lambda: False)():
+                        metadata_kwargs["staticPrefixTtl"] = "1h"
+                except Exception:  # noqa: BLE001
+                    pass
 
                 # Prompt-cache prefix fingerprints for this model call
                 # (extra field via extra="allow"; persisted on the cost row
@@ -3081,6 +3172,35 @@ class StreamCoordinator:
                     return part.split(":")[0]
         return None
 
+    @staticmethod
+    def _long_ttl_static_prefix_tokens(main_agent_wrapper: Any, strands_agent: Any) -> Optional[int]:
+        """Size of the tools + system segment when it carries the 1h cache TTL, else ``None``.
+
+        PR-5 (thresholds spec §3.6): Bedrock bills a 1h cache write at 2x base,
+        not the 1.25x the catalog's cacheWritePricePerMtok carries, and usage
+        does not split writes by TTL. The context-attribution breakdown knows
+        the static segment's size, and the read count tells whether it was
+        written this call (see CostCalculator.calculate_message_cost).
+        """
+        try:
+            model_config = getattr(main_agent_wrapper, "model_config", None)
+            predicate = getattr(model_config, "long_ttl_static_prefix", None)
+            if not callable(predicate) or not predicate():
+                return None
+            from agents.main_agent.session.hooks.context_attribution import get_context_breakdown
+
+            breakdown = get_context_breakdown(strands_agent) if strands_agent is not None else None
+            if not breakdown:
+                return None
+            total = 0
+            for partition in breakdown.get("partitions", []) or []:
+                if isinstance(partition, dict) and partition.get("key") in ("system", "tools"):
+                    total += int(partition.get("tokens") or 0)
+            return total or None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"long-TTL static prefix size unavailable: {e}")
+            return None
+
     async def _get_pricing_snapshot(self, model_id: str) -> Optional[Dict[str, Any]]:
         """
         Get pricing snapshot from managed models database
@@ -3109,7 +3229,12 @@ class StreamCoordinator:
             logger.error(f"Failed to get pricing snapshot for {model_id}: {e}")
             return None
 
-    def _calculate_message_cost(self, usage: Dict[str, Any], pricing: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _calculate_message_cost(
+        self,
+        usage: Dict[str, Any],
+        pricing: Optional[Dict[str, Any]],
+        long_ttl_static_prefix_tokens: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Calculate message cost from usage and pricing
 
@@ -3132,7 +3257,9 @@ class StreamCoordinator:
             else:
                 pricing_dict = pricing
 
-            total_cost, breakdown = CostCalculator.calculate_message_cost(usage, pricing_dict)
+            total_cost, breakdown = CostCalculator.calculate_message_cost(
+                usage, pricing_dict, long_ttl_static_prefix_tokens=long_ttl_static_prefix_tokens
+            )
             return {
                 "total": total_cost,
                 "inputCost": breakdown.input_cost,
@@ -3145,7 +3272,12 @@ class StreamCoordinator:
             logger.error(f"Failed to calculate message cost: {e}")
             return None
 
-    async def _calculate_streaming_cost(self, model_id: str, usage: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _calculate_streaming_cost(
+        self,
+        model_id: str,
+        usage: Dict[str, Any],
+        long_ttl_static_prefix_tokens: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Calculate cost for streaming response to send to client in real-time.
 
@@ -3180,7 +3312,7 @@ class StreamCoordinator:
             )
 
             # Calculate cost using the calculator
-            return self._calculate_message_cost(usage, pricing)
+            return self._calculate_message_cost(usage, pricing, long_ttl_static_prefix_tokens=long_ttl_static_prefix_tokens)
 
         except Exception as e:
             logger.warning(f"Failed to calculate streaming cost: {e}")

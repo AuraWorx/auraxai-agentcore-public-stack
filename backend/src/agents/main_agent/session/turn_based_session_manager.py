@@ -10,7 +10,11 @@ Compaction Strategy (two-feature approach):
 - Stage 1: Tool content truncation — applied only below the persisted
   truncation anchor, which moves at checkpoint advances or when the Bedrock
   prompt cache has already expired between turns
-- Stage 2: Checkpoint + Summary — triggered when token threshold exceeded
+- Stage 2: Checkpoint + Summary — triggered when the turn's context exceeds
+  the model-relative ceiling (compaction_policy.py; the cut lands retained
+  history at the policy floor, and a cut disarms the trigger until the
+  context drops back under the ceiling — spec:
+  docs/specs/compaction-model-relative-thresholds.md)
 
 Byte-stability contract: between compaction-state changes, restoring the same
 stored history must produce byte-identical ``agent.messages``. Bedrock prompt
@@ -37,6 +41,8 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import AgentC
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 
 from .compaction_models import CompactionState, CompactionConfig, CompactionResult
+from .compaction_policy import CompactionPolicy, choose_checkpoint
+from .compaction_summary import bound_summary
 
 if TYPE_CHECKING:
     from strands.agent.agent import Agent
@@ -121,6 +127,16 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # ``ContextLedgerHook`` onto that call's cost row. Bounded; content-free.
         self._pending_compaction_events: List[Dict[str, Any]] = []
         self._total_message_count_at_init: int = 0
+        # Absolute index (into the stored history) of ``agent.messages[0]``.
+        # The restore slice sets it to the applied checkpoint; the persisted
+        # checkpoint is always ``_live_offset + <index into the live list>``,
+        # so cuts computed over the live list and the slice applied at restore
+        # share one coordinate system (spec §3.4).
+        self._live_offset: int = 0
+        # model|agent key stamped at the head of each turn by the coordinator;
+        # persisted at turn end so the next head-of-turn can tell whether the
+        # cached prefix is already invalid (spec §3.5).
+        self._current_prefix_key: Optional[str] = None
 
         # Session control
         self.cancelled = False
@@ -279,6 +295,7 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             self.compaction_state = CompactionState()
             self._valid_cutoff_indices = []
             self._all_messages_for_summary = []
+            self._live_offset = 0
 
         # Repair tool-use/tool-result pairing and role alternation on the FINAL
         # restored list — after compaction slicing/truncation — so it is always
@@ -351,6 +368,9 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             stage = "checkpoint"
         else:
             messages_to_process = all_messages
+
+        # The live list now starts at this absolute index.
+        self._live_offset = offset
 
         # Truncate only messages strictly below the anchor (absolute index),
         # translated into post-slice coordinates via the checkpoint offset.
@@ -433,6 +453,25 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         if last.tzinfo is None:
             last = last.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - last).total_seconds() > ttl_seconds
+
+    def _record_ledger_event(self, kind: str, **fields: Any) -> None:
+        """Hand a compaction decision to the per-call compaction ledger, if present.
+
+        The cost-diagnostics ledger (``record_compaction_event`` /
+        ``drain_compaction_events`` + ``ContextLedgerHook``) lands whatever is
+        recorded here on the NEXT model call's ``C#`` cost row as
+        ``compactionEvents``, next to ``windowRemovedMessages`` and the prefix
+        token split — the evidence the summary cap and the scheduling rule are
+        judged on. Resolved by attribute so this is a no-op on a build without
+        the ledger; fields are ints. Never raises.
+        """
+        recorder = getattr(self, "record_compaction_event", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(kind, **{k: int(v) for k, v in fields.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("compaction ledger event skipped: %s", e)
 
     # =========================================================================
     # Compaction State Persistence
@@ -800,21 +839,35 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         self,
         input_tokens: int,
         current_messages: Optional[List[Dict]] = None,
+        context_window: Optional[int] = None,
+        history_tokens: Optional[int] = None,
     ) -> Optional[CompactionResult]:
         """
         Update compaction state after a turn completes.
 
-        Called by StreamCoordinator with input token count from model response.
-        Triggers checkpoint creation when token threshold exceeded.
+        Called by StreamCoordinator with the turn's cache-inclusive input token
+        count. Resolves the model-relative policy (ceiling / floor / hard
+        ceiling — spec §3.1), applies the hysteresis rule (§3.3) and, when a
+        cut is due, chooses a floor-seeking checkpoint (§3.2) in absolute
+        coordinates (§3.4). Persists the new checkpoint + summary; the slice
+        itself is applied at the next restore by ``_apply_compaction``.
 
         Returns a ``CompactionResult`` when the checkpoint advances on this
         turn so the caller can emit a ``compaction`` SSE event; otherwise
         returns ``None``.
 
-        ``current_messages`` is the agent's live message list. When provided,
-        the cutoff cache is re-derived from it so compaction works even when
-        AgentCoreMemory loads messages via hooks (skipping the initialize-time
-        prime path).
+        Args:
+            input_tokens: cache-inclusive input tokens of the turn's last call.
+            current_messages: the agent's live message list. When provided,
+                the cutoff cache is re-derived from it so compaction works even
+                when AgentCoreMemory loads messages via hooks (skipping the
+                initialize-time prime path).
+            context_window: the model's ``maxInputTokens`` from the catalog,
+                or ``None`` when unknown (falls back to the fixed threshold).
+            history_tokens: measured size of the conversation portion of the
+                prompt (the ``messages`` partition of the context breakdown);
+                calibrates the per-message estimates. ``None`` → use
+                ``input_tokens``, which biases the cut slightly deeper.
         """
         if not self.compaction_config or not self.compaction_config.enabled:
             return None
@@ -822,16 +875,60 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # Re-read persisted state before touching it — on EVERY turn, not just
         # the first. See ``_adopt_persisted_compaction_state`` (#751).
         self._adopt_persisted_compaction_state()
+        state = self.compaction_state
+        state.last_input_tokens = input_tokens
+        if self._current_prefix_key:
+            state.last_prefix_key = self._current_prefix_key
 
-        self.compaction_state.last_input_tokens = input_tokens
+        policy = CompactionPolicy.resolve(self.compaction_config, context_window)
 
-        if input_tokens <= self.compaction_config.token_threshold:
-            self._save_compaction_state(self.compaction_state)
+        if input_tokens <= policy.ceiling:
+            if policy.hysteresis_enabled and not state.armed:
+                logger.info(
+                    "compaction_rearmed: input=%d <= ceiling=%d (source=%s)",
+                    input_tokens, policy.ceiling, policy.source,
+                )
+                state.armed = True
+            self._save_compaction_state(state)
             return None
+
+        at_hard_ceiling = policy.hard_ceiling is not None and input_tokens >= policy.hard_ceiling
+        # "Forced" is the spiral signal: a cut that ran while DISARMED because
+        # the hard ceiling was reached. An armed cut above the hard ceiling is
+        # just a large ordinary cut.
+        forced = policy.hysteresis_enabled and not state.armed and at_hard_ceiling
+        if state.pending_checkpoint is not None and policy.hysteresis_enabled:
+            # A cut is already parked. Cutting deeper now would be the spiral;
+            # the head of the next turn applies it (hard ceiling included).
+            logger.info(
+                "compaction_pending_waiting: input=%d > ceiling=%d, pending_checkpoint=%d, hard=%s",
+                input_tokens, policy.ceiling, state.pending_checkpoint, policy.hard_ceiling,
+            )
+            self._save_compaction_state(state)
+            return None
+        if policy.hysteresis_enabled and not state.armed and not at_hard_ceiling:
+            # The previous cut has not been observed to take effect yet (the
+            # slice lands at the next restore) — cutting again now is exactly
+            # the spiral. Wait for the context to drop under the ceiling, or
+            # for the hard ceiling.
+            logger.info(
+                "compaction_disarmed_noop: input=%d > ceiling=%d, hard=%d (source=%s)",
+                input_tokens, policy.ceiling, policy.hard_ceiling, policy.source,
+            )
+            self._save_compaction_state(state)
+            return None
+        if forced:
+            logger.warning(
+                "compaction_forced: input=%d >= hard_ceiling=%d while disarmed — "
+                "the previous cut did not bring the context under the ceiling "
+                "(summary too large, or slice not yet applied on this agent)",
+                input_tokens, policy.hard_ceiling,
+            )
 
         logger.info(
             f"Threshold exceeded: {input_tokens:,} > "
-            f"{self.compaction_config.token_threshold:,}"
+            f"{policy.ceiling:,} (floor={policy.floor}, hard={policy.hard_ceiling}, "
+            f"window={policy.context_window}, source={policy.source})"
         )
 
         # Refresh cutoff cache from the agent's current messages — at this
@@ -849,10 +946,11 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
 
         if not self._valid_cutoff_indices:
             logger.info("No valid cutoff points cached, skipping checkpoint update")
-            self._save_compaction_state(self.compaction_state)
+            self._save_compaction_state(state)
             return None
 
-        total_turns = len(self._valid_cutoff_indices)
+        cutoffs = self._valid_cutoff_indices
+        total_turns = len(cutoffs)
         protected_turns = self.compaction_config.protected_turns
 
         if total_turns <= protected_turns:
@@ -860,47 +958,133 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 f"Only {total_turns} turns available (need > {protected_turns}), "
                 f"keeping all messages"
             )
-            self._save_compaction_state(self.compaction_state)
+            self._save_compaction_state(state)
             return None
 
-        new_checkpoint = self._valid_cutoff_indices[-protected_turns]
-        current_checkpoint = self.compaction_state.checkpoint
+        # Choose the cut in LIVE-LIST coordinates, then translate to absolute.
+        messages = self._all_messages_for_summary
+        retained_estimate: Optional[int] = None
+        if policy.floor is None:
+            # Legacy (kill switch): keep the last N turns, whatever their size.
+            relative_cut = cutoffs[-protected_turns]
+        else:
+            relative_cut, retained_estimate = choose_checkpoint(
+                messages,
+                cutoffs,
+                protected_turns,
+                policy.floor,
+                history_tokens if history_tokens is not None else input_tokens,
+            )
+
+        if relative_cut <= 0:
+            # Everything already fits under the floor — the excess is system
+            # prompt / tools, which a history cut cannot fix.
+            logger.info(
+                "compaction_nothing_to_cut: retained≈%s <= floor=%s with input=%d",
+                retained_estimate, policy.floor, input_tokens,
+            )
+            self._save_compaction_state(state)
+            return None
+
+        new_checkpoint = self._live_offset + relative_cut
+        current_checkpoint = state.checkpoint
 
         if new_checkpoint <= current_checkpoint:
-            self._save_compaction_state(self.compaction_state)
+            self._save_compaction_state(state)
             return None
 
-        logger.info(f"Checkpoint update: {current_checkpoint} -> {new_checkpoint}")
+        logger.info(
+            "compaction_cut: checkpoint %d -> %d (live_offset=%d, relative_cut=%d, "
+            "retained≈%s, floor=%s, ceiling=%d, hard=%s, window=%s, forced=%s)",
+            current_checkpoint, new_checkpoint, self._live_offset, relative_cut,
+            retained_estimate, policy.floor, policy.ceiling, policy.hard_ceiling,
+            policy.context_window, forced,
+        )
+        # Per-call compaction ledger: the two decisions the spec asks to see
+        # on the anatomy — a cut that ran while disarmed, and a cut that could
+        # not reach the floor because the protected tail alone exceeds it.
+        if forced:
+            self._record_ledger_event("forced", checkpoint=new_checkpoint, inputTokens=input_tokens)
+        if policy.floor is not None and retained_estimate is not None and retained_estimate > policy.floor:
+            self._record_ledger_event(
+                "floor_unreachable",
+                checkpoint=new_checkpoint, inputTokens=input_tokens, retainedTokens=retained_estimate,
+            )
 
         # Count turns rolled into the summary on THIS event (delta, not
-        # cumulative) — each inline divider stands on its own.
+        # cumulative) — each inline divider stands on its own. In absolute
+        # coordinates: turn starts at or after the previous checkpoint (they
+        # were retained by the last slice) and before the new one.
         summarized_turns = sum(
-            1 for idx in self._valid_cutoff_indices
-            if current_checkpoint < idx <= new_checkpoint
+            1 for idx in cutoffs
+            if current_checkpoint <= self._live_offset + idx < new_checkpoint
         )
 
-        # Retrieve or generate summary for compacted messages
+        # Retrieve or generate the summary for the retired messages, then
+        # hold it at the budget (spec §3.6 / spiral spec PR-2). Compression
+        # runs here — once, at checkpoint advance, the turn that already pays
+        # a prefix re-write — and the result is persisted verbatim so every
+        # restore prepends identical bytes.
         summaries = self._retrieve_session_summaries()
         if summaries:
-            summary = "\n\n".join(summaries)
+            records = list(summaries)
+            summary_source = "ltm"
         else:
-            messages_to_summarize = self._all_messages_for_summary[:new_checkpoint]
-            summary = self._generate_fallback_summary(messages_to_summarize)
-
-        self.compaction_state.checkpoint = new_checkpoint
-        # The anchor rides the checkpoint: everything the slice retains stays
-        # byte-identical until the next compaction-state change, so the single
-        # mutation (slice + summary) is paid with exactly one cache re-write.
-        self.compaction_state.truncation_anchor = max(
-            self.compaction_state.truncation_anchor, new_checkpoint
+            fallback = self._generate_fallback_summary(messages[:relative_cut])
+            records = [fallback] if fallback else []
+            summary_source = "fallback"
+        bounded = await bound_summary(
+            records,
+            self.compaction_config.summary_token_budget,
+            model_enabled=self.compaction_config.summary_model_enabled,
+            model_id=self.compaction_config.summary_model_id,
+            region=self.region_name,
         )
-        self.compaction_state.summary = summary
+        summary = bounded.text
+
+        deferred = bool(self.compaction_config.deferred_apply_enabled and policy.hysteresis_enabled)
+        if deferred:
+            # Park the cut. The bytes the model sees do not change until
+            # ``apply_pending_compaction`` decides the re-write is free or
+            # unavoidable (spec §3.5).
+            state.pending_checkpoint = new_checkpoint
+            state.pending_summary = summary
+            state.pending_hard_ceiling = policy.hard_ceiling
+            state.pending_since = datetime.now(timezone.utc).isoformat()
+        else:
+            state.checkpoint = new_checkpoint
+            # The anchor rides the checkpoint: everything the slice retains stays
+            # byte-identical until the next compaction-state change, so the single
+            # mutation (slice + summary) is paid with exactly one cache re-write.
+            state.truncation_anchor = max(state.truncation_anchor, new_checkpoint)
+            state.summary = summary
         # Running total persisted alongside the rest of the compaction state
         # so a refresh can rehydrate the end-of-conversation summary indicator.
-        self.compaction_state.total_summarized_turns += summarized_turns
+        state.total_summarized_turns += summarized_turns
+        if policy.hysteresis_enabled:
+            state.armed = False
+        state.policy = {
+            **policy.to_dict(),
+            "forced": forced,
+            "inputTokens": input_tokens,
+            "retainedTokensEstimate": retained_estimate,
+            # Summary provenance — what the admin profile and the cost
+            # anatomy read to explain a cut without reading the conversation.
+            "summarySource": summary_source,
+            "summaryOutcome": bounded.outcome,
+            "summaryTokensBefore": bounded.tokens_before,
+            "summaryTokensAfter": bounded.tokens_after,
+            "summaryTokenBudget": self.compaction_config.summary_token_budget,
+            "deferred": deferred,
+        }
         # This save is the compaction event itself — count it.
-        self._save_compaction_state(self.compaction_state, record_event=True)
-        self.record_compaction_event(
+        self._save_compaction_state(state, record_event=True)
+        self._emit_compaction_metrics(state, policy, forced, retained_estimate, bounded, deferred)
+        # Routed through the defensive seam rather than calling the recorder
+        # directly: same no-op-without-a-ledger contract as every other cut
+        # decision. Queued when the cut is *decided* — when ``deferred`` the
+        # bytes do not move until ``apply_pending_compaction`` runs.
+        self._record_ledger_event(
             "checkpoint",
             checkpoint=new_checkpoint,
             summaryTokens=_approx_tokens(summary),
@@ -912,7 +1096,7 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             f"Compaction checkpoint set: {new_checkpoint}, "
             f"summary_length={len(summary) if summary else 0}, "
             f"summarized_turns={summarized_turns}, "
-            f"total_summarized_turns={self.compaction_state.total_summarized_turns}"
+            f"total_summarized_turns={state.total_summarized_turns}"
         )
 
         return CompactionResult(
@@ -920,6 +1104,222 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             new_checkpoint=new_checkpoint,
             summarized_turns=summarized_turns,
             input_tokens=input_tokens,
+            context_window=policy.context_window,
+            ceiling=policy.ceiling,
+            floor=policy.floor,
+            hard_ceiling=policy.hard_ceiling,
+            forced=forced,
+            retained_tokens_estimate=retained_estimate,
+            deferred=deferred,
+        )
+
+    # =========================================================================
+    # Paid-when-free application (spec §3.5)
+    # =========================================================================
+
+    def apply_pending_compaction(self, agent: "Agent", *, prefix_key: Optional[str] = None) -> Optional[str]:
+        """Head-of-turn: apply a parked cut to the live list if the re-write is free.
+
+        Called by the stream coordinator before the first model call of every
+        turn, on cached and freshly restored agents alike. Promotes
+        ``pending_checkpoint`` to ``checkpoint`` and slices ``agent.messages``
+        **in place** (slice assignment, never rebinding — the #741 alias) when
+        one of these holds, in this order:
+
+        - ``cache_expired`` — more than ``cache_ttl_seconds`` since the last
+          turn: the Bedrock entry is gone and the next call re-writes the
+          prefix anyway, so the cut rides for free;
+        - ``prefix_changed`` — ``prefix_key`` (model|agent) differs from the
+          last turn's: the cached prefix is already invalid;
+        - ``hard_ceiling`` — the last turn's input reached the hard ceiling
+          the cut was computed under: waiting is no longer affordable.
+
+        Otherwise the cut keeps waiting (``compaction_pending_waiting``). Returns
+        the reason applied, or ``None``. Never raises.
+        """
+        if not self.compaction_config or not self.compaction_config.enabled:
+            return None
+        try:
+            self._adopt_persisted_compaction_state()
+            state = self.compaction_state
+            if state is None:
+                return None
+
+            previous_key = state.last_prefix_key
+            self._current_prefix_key = prefix_key
+            if state.pending_checkpoint is None:
+                return None
+
+            config = self.compaction_config
+            gap_seconds = self._seconds_since(state.updated_at)
+            reason: Optional[str] = None
+            if self._cache_window_expired(state.updated_at, config.cache_ttl_seconds):
+                reason = "cache_expired"
+            elif prefix_key and previous_key and prefix_key != previous_key:
+                reason = "prefix_changed"
+            elif state.pending_hard_ceiling is not None and state.last_input_tokens >= state.pending_hard_ceiling:
+                reason = "hard_ceiling"
+
+            if reason is None:
+                logger.info(
+                    "compaction_pending_waiting: pending_checkpoint=%d, gap=%ss, last_input=%d, hard=%s",
+                    state.pending_checkpoint, gap_seconds, state.last_input_tokens, state.pending_hard_ceiling,
+                )
+                return None
+
+            messages = getattr(agent, "messages", None)
+            if not isinstance(messages, list):
+                return None
+            applied = self._apply_pending_in_place(messages, state)
+            if not applied:
+                # Unusable pending (would drop the whole live list): clear it
+                # rather than leave a cut that can never land.
+                state.pending_checkpoint = None
+                state.pending_summary = None
+                state.pending_hard_ceiling = None
+                state.pending_since = None
+                self._save_compaction_state(state)
+                return None
+
+            promoted = state.pending_checkpoint
+            state.checkpoint = promoted
+            state.truncation_anchor = max(state.truncation_anchor, promoted)
+            state.summary = state.pending_summary
+            state.pending_checkpoint = None
+            state.pending_summary = None
+            state.pending_hard_ceiling = None
+            pending_since = state.pending_since
+            state.pending_since = None
+            state.policy = {
+                **(state.policy or {}),
+                "applied": reason,
+                "appliedAt": datetime.now(timezone.utc).isoformat(),
+                "cacheGapSeconds": gap_seconds,
+                "pendingSince": pending_since,
+            }
+            self._save_compaction_state(state)
+            # Per-call compaction ledger: the apply is the moment the bytes
+            # the model sees change, so it is the event the anatomy marks.
+            self._record_ledger_event(
+                "applied",
+                checkpoint=promoted,
+                summaryTokens=len(state.summary or "") // 4,
+                retainedMessages=len(messages),
+                cacheGapSeconds=gap_seconds or 0,
+                # Distinguishes the head-of-turn promotion from the restore
+                # slice's own "applied" event (both are real byte changes).
+                promoted=1,
+            )
+            logger.info(
+                "compaction_applied: reason=%s checkpoint=%d gap=%ss live_len=%d (%s)",
+                reason, promoted, gap_seconds, len(messages),
+                "rewrite_forced" if reason == "hard_ceiling" else "rewrite_scheduled",
+            )
+            self._emit_emf(
+                {
+                    "CompactionApplied": 1,
+                    "CompactionAppliedForced": 1 if reason == "hard_ceiling" else 0,
+                    "CompactionCacheGapSeconds": int(gap_seconds or 0),
+                },
+                {"applyReason": reason, "checkpoint": promoted},
+                {"CompactionCacheGapSeconds": "Seconds"},
+            )
+            return reason
+        except Exception as e:  # noqa: BLE001 - never break a turn
+            logger.warning(f"apply_pending_compaction skipped: {e}", exc_info=True)
+            return None
+
+    def _apply_pending_in_place(self, messages: List[Dict], state: CompactionState) -> bool:
+        """Slice the live list at the pending checkpoint, in place.
+
+        ``messages[0]`` sits at absolute index ``_live_offset``; the pending
+        checkpoint is absolute. Produces the same bytes ``_apply_compaction``
+        would derive from stored history with the promoted state (slice, then
+        the summary prepended to the new first user message), so a later cold
+        restore matches the live prefix.
+        """
+        pending = state.pending_checkpoint
+        if pending is None:
+            return False
+        k = pending - self._live_offset
+        if k <= 0:
+            # Live list already starts at/after the cut (e.g. a restore that
+            # sliced there). Nothing to remove; promotion still records it.
+            return True
+        if k >= len(messages):
+            logger.warning(
+                "compaction pending checkpoint %d is beyond the live list (offset=%d, len=%d); dropping it",
+                pending, self._live_offset, len(messages),
+            )
+            return False
+        head = messages[k]
+        if state.pending_summary:
+            head = self._prepend_summary_to_first_message([head], state.pending_summary)[0]
+        messages[:] = [head] + messages[k + 1:]
+        self._live_offset = pending
+        return True
+
+    @staticmethod
+    def _seconds_since(updated_at: Optional[str]) -> Optional[int]:
+        if not updated_at:
+            return None
+        try:
+            last = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return int((datetime.now(timezone.utc) - last).total_seconds())
+
+    @staticmethod
+    def _emit_emf(metrics: Dict[str, Any], properties: Dict[str, Any], units: Optional[Dict[str, str]] = None) -> None:
+        """One content-free EMF record in ``AgentCoreStack/Compaction``. Never raises.
+
+        ``PROMPT_CACHE_OBSERVABILITY_ENABLED=false`` silences it with the rest
+        of the cost observability layer.
+        """
+        try:
+            from apis.shared.observability.prompt_cache import prompt_cache_observability_enabled
+            from apis.shared.observability.emf import emit_emf_metrics
+
+            if not prompt_cache_observability_enabled():
+                return
+            emit_emf_metrics("AgentCoreStack/Compaction", metrics=metrics, properties=properties, units=units or {})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Compaction EMF skipped: %s", e)
+
+    def _emit_compaction_metrics(self, state, policy, forced, retained_estimate, bounded, deferred=False) -> None:
+        """One record per cut: how often cuts fire, how often they are forced
+        (the spiral detector), how big the summary is against its budget, how
+        deep cuts land, and whether the cut was parked for a free turn."""
+        self._emit_emf(
+            {
+                "CompactionCut": 1,
+                "CompactionForced": 1 if forced else 0,
+                "CompactionDeferred": 1 if deferred else 0,
+                "CompactionInputTokens": int(state.last_input_tokens or 0),
+                "CompactionRetainedTokens": int(retained_estimate or 0),
+                "CompactionSummaryTokens": int(bounded.tokens_after or 0),
+                "CompactionSummaryOverBudget": 1 if bounded.tokens_before > bounded.tokens_after else 0,
+                # The protected tail alone exceeded the floor: the residual
+                # case after intake offload (attachments, sub-gate results).
+                "CompactionFloorUnreachable": (
+                    1 if (policy.floor is not None and retained_estimate is not None and retained_estimate > policy.floor) else 0
+                ),
+            },
+            {
+                "policySource": policy.source,
+                "contextWindow": policy.context_window,
+                "ceiling": policy.ceiling,
+                "floor": policy.floor,
+                "summaryOutcome": bounded.outcome,
+                "summaryTokensBefore": bounded.tokens_before,
+            },
+            {
+                "CompactionInputTokens": "Count",
+                "CompactionRetainedTokens": "Count",
+                "CompactionSummaryTokens": "Count",
+            },
         )
 
     # =========================================================================

@@ -22,17 +22,26 @@ import {
 import { ConfigService } from '../../../../../services/config.service';
 import { downloadUrlFor } from '../../../../../shared/utils/file-download-url';
 import { TooltipDirective } from '../../../../../components/tooltip/tooltip.directive';
+import { CsvViewerComponent } from './csv-viewer.component';
 import { DocxViewerComponent } from './docx-viewer.component';
 import { PptxViewerComponent } from './pptx-viewer.component';
+import { XlsxViewerComponent } from './xlsx-viewer.component';
 import {
   PREVIEW_KIND_LABELS,
   PreviewKind,
+  previewFetchesBytes,
   previewKindFor,
 } from '../../../../services/file-preview/file-preview.model';
 
 /**
- * Right-docked pane that previews one uploaded Office file in the
- * browser — `.docx` and `.pptx` today.
+ * Right-docked pane that previews one uploaded file in the browser —
+ * `.docx`, `.pptx`, `.csv` and `.xlsx` today.
+ *
+ * Three of those four are read here from bytes the pane fetched through
+ * a presigned URL. `.xlsx` is not: no client-side workbook reader was
+ * shippable, so app-api reads it and its viewer takes an upload id
+ * instead. `previewFetchesBytes` is what keeps the two paths from
+ * treading on each other.
  *
  * Shares the rail with `ArtifactPanelComponent` through
  * `DockedPaneService` — same width, same resize affordance, same
@@ -52,7 +61,14 @@ import {
 @Component({
   selector: 'app-file-preview-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [NgIcon, TooltipDirective, DocxViewerComponent, PptxViewerComponent],
+  imports: [
+    NgIcon,
+    TooltipDirective,
+    CsvViewerComponent,
+    DocxViewerComponent,
+    PptxViewerComponent,
+    XlsxViewerComponent,
+  ],
   providers: [
     provideIcons({
       heroArrowDownTray,
@@ -166,6 +182,26 @@ import {
                   (rendered)="onRendered()"
                 />
               }
+              @case ('csv') {
+                <app-csv-viewer
+                  [bytes]="bytes()"
+                  (renderFailed)="onRenderFailed($event)"
+                  (rendered)="onRendered()"
+                />
+              }
+              @case ('xlsx') {
+                <!--
+                  Takes the id, not bytes: this viewer asks app-api for
+                  rows rather than reading a workbook the browser cannot
+                  parse. The panel's own load() never ran for this kind,
+                  so bytes() is null by design.
+                -->
+                <app-xlsx-viewer
+                  [uploadId]="ref.uploadId"
+                  (renderFailed)="onRenderFailed($event)"
+                  (rendered)="onRendered()"
+                />
+              }
               @default {
                 <app-docx-viewer
                   [bytes]="bytes()"
@@ -251,11 +287,18 @@ export class FilePreviewPanelComponent {
   constructor() {
     effect(() => {
       const ref = this.open();
-      if (!ref) {
-        this.requestSeq++;
-        this.reset();
-        return;
-      }
+      this.requestSeq++;
+      this.reset();
+      if (!ref) return;
+
+      // An .xlsx is read by app-api, so there is nothing to fetch here
+      // — running the presigned-URL leg anyway would pull the whole
+      // workbook into the browser only to ignore it. Its viewer owns
+      // both the request and the failure, and reports them through the
+      // same (rendered)/(renderFailed) pair as every other viewer.
+      const kind = previewKindFor(ref.filename);
+      if (kind && !previewFetchesBytes(kind)) return;
+
       void this.load(ref.uploadId);
     });
   }
@@ -288,7 +331,17 @@ export class FilePreviewPanelComponent {
 
   protected retry(): void {
     const ref = this.open();
-    if (ref) void this.load(ref.uploadId);
+    if (!ref) return;
+
+    const kind = previewKindFor(ref.filename);
+    if (kind && !previewFetchesBytes(kind)) {
+      // Nothing to refetch here — clearing the error re-creates the
+      // viewer, whose own effect issues the request again.
+      this.reset();
+      return;
+    }
+
+    void this.load(ref.uploadId);
   }
 
   protected onRendered(): void {

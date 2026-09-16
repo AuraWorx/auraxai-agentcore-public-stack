@@ -315,6 +315,13 @@ export interface UserSessionsResponse {
   total: number;
   /** Rows whose cost is unrecorded (listed, flagged, trailing under cost-sort). */
   unknownCostCount: number;
+  /**
+   * Soft-deleted conversations in the list (`status === 'deleted'`). Listed,
+   * not hidden: a delete removes the row from the user's sidebar, not its cost
+   * rows or its share of `userPeriodCost`.
+   */
+  deletedSessionCount?: number;
+  deletedSessionCost?: number;
 }
 
 export type UserSessionsSort = 'cost' | 'recent' | 'context' | 'messages';
