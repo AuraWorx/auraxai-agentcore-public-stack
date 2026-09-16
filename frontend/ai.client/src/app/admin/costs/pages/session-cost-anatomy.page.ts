@@ -35,6 +35,8 @@ import {
 import {
   SEVERITY_LABELS,
   buildDiagnosticJson,
+  downRate,
+  feedbackByTurnClassLine,
   formatBytes,
   formatEvidenceValue,
   humanizeKey,
@@ -217,6 +219,36 @@ import {
                 {{ profile.writeReadRatio != null ? profile.writeReadRatio.toFixed(2) : '—' }}
               </p>
               <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">healthy ≈ 0.1</p>
+            </div>
+            <div class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <p class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Feedback</p>
+              @if (profile.dataCoverage.feedback && profile.feedback; as feedback) {
+                <!-- The outcome signal: thumbs joined to the call they rate.
+                     Headline is the down-thumb rate; the line under it splits
+                     it by document turn class (offload spec §6.1) once the
+                     cost rows carry one. -->
+                <p
+                  class="mt-1 text-lg/7 font-semibold"
+                  [class]="
+                    (feedbackDownRate() ?? 0) >= 50
+                      ? 'text-state-danger-600 dark:text-state-danger-400'
+                      : 'text-gray-900 dark:text-white'
+                  "
+                >
+                  {{ feedbackDownRate() != null ? feedbackDownRate() + '% down' : '—' }}
+                </p>
+                <p class="mt-1 truncate text-xs/5 text-gray-500 dark:text-gray-400" [title]="feedbackTurnClassLine() ?? ''">
+                  {{ feedback.up }} up · {{ feedback.down }} down
+                  @if (feedbackTurnClassLine(); as byClass) {
+                    · {{ byClass }}
+                  } @else {
+                    · turn class not tracked
+                  }
+                </p>
+              } @else {
+                <p class="mt-1 text-lg/7 font-semibold text-gray-400 dark:text-gray-500">—</p>
+                <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">not tracked</p>
+              }
             </div>
           </div>
         </section>
@@ -775,6 +807,16 @@ export class SessionCostAnatomyPage {
    * deducting it, so the page does the subtraction where a reader can see both halves.
    */
   /** "3 applied · 1 forced · summary 2.3K" — the compaction decisions by kind. */
+  readonly feedbackDownRate = computed(() => {
+    if (!this.profileResource.hasValue()) return null;
+    const feedback = this.profileResource.value().feedback;
+    return feedback ? downRate(feedback) : null;
+  });
+
+  readonly feedbackTurnClassLine = computed(() =>
+    this.profileResource.hasValue() ? feedbackByTurnClassLine(this.profileResource.value().feedback) : null,
+  );
+
   readonly compactionEventsLine = computed(() => {
     if (!this.profileResource.hasValue()) return '';
     const p = this.profileResource.value();

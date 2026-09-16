@@ -103,6 +103,21 @@ export interface ContentBlock {
   fileAttachment?: FileAttachmentData | null;
 }
 
+/** Reason codes a thumbs-down may carry — a closed enum, never free text. */
+export type FeedbackReason = 'wrong' | 'incomplete' | 'slow' | 'other';
+
+/**
+ * A user's thumb on an assistant message. Persisted content-free on the
+ * sessions-metadata table beside the message's cost row and merged onto
+ * `metadata.feedback` by `GET /sessions/{id}/messages`.
+ */
+export interface MessageFeedback {
+  /** +1 thumbs up, -1 thumbs down */
+  value: 1 | -1;
+  reason?: FeedbackReason;
+  updatedAt: string;
+}
+
 /**
  * Message model matching the backend API MessageResponse.
  * This is the canonical Message type used throughout the application.

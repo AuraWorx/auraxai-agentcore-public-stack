@@ -254,3 +254,88 @@ async def test_session_row_counters_alone_mark_compaction_events_as_tracked():
     p = await _service(_row(compactionAppliedCount=0), [_call(0)]).get_session_profile("s1")
     assert p.data_coverage.compaction_events
     assert p.session.compaction_applied_count == 0
+
+
+# ── feedback join (document-context offload PR-7) ───────────────────────────
+
+
+def _feedback(message_id, value, reason=None):
+    row = {"sessionId": "s1", "messageId": message_id, "value": value, "updatedAt": "2026-09-16T00:00:00Z"}
+    if reason:
+        row["reason"] = reason
+    return row
+
+
+def _service_with_feedback(row, records, feedback):
+    service = _service(row, records)
+    service.storage.get_session_feedback_rows = AsyncMock(return_value=feedback)
+    return service
+
+
+@pytest.mark.asyncio
+async def test_feedback_joins_the_turn_class_when_the_rows_carry_it():
+    records = [
+        _call(0),  # attach turn: full document inline
+        _call(1),  # follow-up: digest only
+        _call(2),  # follow-up that read pages back
+        _call(3),  # no documents at all
+    ]
+    records[0]["hasDocuments"] = True
+    records[1]["hasDocuments"] = False
+    records[1]["documentDigests"] = 1
+    records[2]["hasDocuments"] = False
+    records[2]["documentDigests"] = 1
+    records[2]["documentReads"] = {"calls": 1, "pages": 4, "bytes": 1000}
+    records[3]["hasDocuments"] = False
+    records[3]["documentDigests"] = 0
+    feedback = [
+        _feedback(0, 1),
+        _feedback(1, -1, "wrong"),
+        _feedback(2, 1),
+        _feedback(3, -1, "slow"),
+        _feedback(9, -1),  # no cost row for this message
+    ]
+    p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
+
+    assert (p.feedback.up, p.feedback.down, p.feedback.unjoined) == (2, 3, 1)
+    by = p.feedback.by_turn_class
+    assert by is not None
+    assert (by.full.up, by.full.down) == (1, 0)
+    assert (by.digest_only.up, by.digest_only.down) == (0, 1)
+    assert (by.retrieved.up, by.retrieved.down) == (1, 0)
+    assert (by.none.up, by.none.down) == (0, 1)
+    assert p.data_coverage.feedback is True
+    # Wire shape the SPA reads.
+    wire = p.model_dump(by_alias=True)["feedback"]
+    assert wire["byTurnClass"]["digestOnly"] == {"up": 0, "down": 1}
+
+
+@pytest.mark.asyncio
+async def test_feedback_counts_without_turn_class_when_rows_predate_1137():
+    records = [_call(0), _call(1)]  # no hasDocuments / documentDigests / documentReads
+    feedback = [_feedback(0, 1), _feedback(1, -1, "incomplete")]
+    p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
+    assert (p.feedback.up, p.feedback.down) == (1, 1)
+    assert p.feedback.by_turn_class is None, "turn class is 'not tracked', not 'none'"
+    assert p.feedback.unjoined == 0
+    assert p.data_coverage.feedback is True
+
+
+@pytest.mark.asyncio
+async def test_no_feedback_rows_falls_back_to_rollups_and_coverage_is_honest():
+    p = await _service_with_feedback(_row(), [_call(0)], []).get_session_profile("s1")
+    assert (p.feedback.up, p.feedback.down) == (0, 0)
+    assert p.data_coverage.feedback is False
+
+    p = await _service_with_feedback(_row(thumbsUp=2, thumbsDown=1), [_call(0)], []).get_session_profile("s1")
+    assert (p.feedback.up, p.feedback.down) == (2, 1)
+    assert p.data_coverage.feedback is True
+    assert p.feedback.by_turn_class is None
+
+
+@pytest.mark.asyncio
+async def test_feedback_reader_failure_never_breaks_the_profile():
+    service = _service(_row(), [_call(0)])
+    service.storage.get_session_feedback_rows = AsyncMock(side_effect=RuntimeError("boom"))
+    p = await service.get_session_profile("s1")
+    assert p is not None and p.feedback.up == 0 and p.data_coverage.feedback is False

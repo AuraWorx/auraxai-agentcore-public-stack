@@ -2,8 +2,10 @@ import {
   CacheStatus,
   ContextTrajectoryPoint,
   DiagnosisSeverity,
+  FeedbackProfile,
   SessionCostAnatomy,
   SessionProfile,
+  TurnClass,
 } from '../models';
 
 /**
@@ -206,4 +208,39 @@ export function buildDiagnosticJson(
     null,
     2,
   );
+}
+
+// ── feedback ────────────────────────────────────────────────────────────────
+
+export const TURN_CLASS_LABELS: Record<TurnClass, string> = {
+  full: 'full',
+  digestOnly: 'digest',
+  retrieved: 'retrieved',
+  none: 'no docs',
+};
+
+const TURN_CLASS_ORDER: TurnClass[] = ['full', 'digestOnly', 'retrieved', 'none'];
+
+/** Down-thumb rate as a percentage, or null with nothing to rate. */
+export function downRate(counts: { up: number; down: number }): number | null {
+  const n = counts.up + counts.down;
+  return n > 0 ? Math.round((counts.down / n) * 100) : null;
+}
+
+/**
+ * One line of down-thumb rate per turn class, with n per class
+ * (`full 50% of 4 · digest 0% of 2`). Classes with no thumbs are skipped;
+ * null when the turn class is not tracked or nothing was thumbed.
+ */
+export function feedbackByTurnClassLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const by = feedback?.byTurnClass;
+  if (!by) return null;
+  const parts = TURN_CLASS_ORDER.flatMap((klass) => {
+    const counts = by[klass];
+    if (!counts) return [];
+    const n = counts.up + counts.down;
+    if (n === 0) return [];
+    return [`${TURN_CLASS_LABELS[klass]} ${downRate(counts)}% of ${n}`];
+  });
+  return parts.length > 0 ? parts.join(' · ') : null;
 }

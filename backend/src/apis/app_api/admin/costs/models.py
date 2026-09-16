@@ -421,6 +421,44 @@ class ToolCensusEntry(BaseModel):
     errors: int = 0
 
 
+class FeedbackCounts(BaseModel):
+    """Thumbs on one bucket of calls: ``up`` / ``down`` are counts of live
+    feedback rows, never the text of anything."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    up: int = 0
+    down: int = 0
+
+
+class FeedbackByTurnClass(BaseModel):
+    """Feedback split by the call's document turn class (document-context
+    offload spec §6.1): *full* (``hasDocuments``), *retrieved*
+    (``documentReads.pages > 0``), *digestOnly* (``documentDigests > 0``),
+    else *none* — in that precedence, since a retrieving call still holds
+    the digest. ``n`` per class is ``up + down``; the down-thumb rate is
+    ``down / n``."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    full: FeedbackCounts = Field(default_factory=FeedbackCounts)
+    digest_only: FeedbackCounts = Field(default_factory=FeedbackCounts, alias="digestOnly")
+    retrieved: FeedbackCounts = Field(default_factory=FeedbackCounts)
+    none: FeedbackCounts = Field(default_factory=FeedbackCounts)
+
+
+class FeedbackProfile(BaseModel):
+    """The outcome signal joined to the session's cost rows. ``byTurnClass``
+    is ``None`` when no cost row carries the turn-class fields (they arrive
+    with #1137; rows written before it have none) — "not tracked", not zero.
+    ``unjoined`` counts thumbs whose message has no cost row at all (the row
+    expired, or the call was never recorded)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    up: int = 0
+    down: int = 0
+    by_turn_class: Optional[FeedbackByTurnClass] = Field(None, alias="byTurnClass")
+    unjoined: int = 0
+
+
 class DataCoverage(BaseModel):
     """Which optional signals this session actually has, so the UI can say
     "not tracked" instead of rendering an honest-looking zero."""
@@ -433,6 +471,8 @@ class DataCoverage(BaseModel):
     prefix_tokens: bool = Field(False, alias="prefixTokens")
     window_trim: bool = Field(False, alias="windowTrim")
     compaction_events: bool = Field(False, alias="compactionEvents")
+    # Any F# row, or a session rollup written while diagnostics were on.
+    feedback: bool = False
 
 
 class SessionProfile(BaseModel):
@@ -475,3 +515,5 @@ class SessionProfile(BaseModel):
     )
     # The summary's token size at the most recent compaction decision.
     last_summary_tokens: Optional[int] = Field(None, alias="lastSummaryTokens")
+    # Thumbs up/down joined to the cost rows by (sessionId, messageId).
+    feedback: FeedbackProfile = Field(default_factory=FeedbackProfile)

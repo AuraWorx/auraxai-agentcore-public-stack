@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildDiagnosticJson,
   cleanCeiling,
+  downRate,
+  feedbackByTurnClassLine,
   formatBytes,
   formatEvidenceValue,
   formatTokensShort,
@@ -20,6 +22,41 @@ function point(callIndex: number, contextTokens: number, cacheStatus: ContextTra
 }
 
 describe('session-profile.util', () => {
+  describe('feedback', () => {
+    it('downRate is a whole percentage, null with nothing to rate', () => {
+      expect(downRate({ up: 0, down: 0 })).toBeNull();
+      expect(downRate({ up: 3, down: 1 })).toBe(25);
+      expect(downRate({ up: 0, down: 2 })).toBe(100);
+    });
+
+    it('feedbackByTurnClassLine reports rate and n per class, skipping empty classes', () => {
+      const line = feedbackByTurnClassLine({
+        up: 3,
+        down: 2,
+        byTurnClass: {
+          full: { up: 1, down: 1 },
+          digestOnly: { up: 2, down: 0 },
+          retrieved: { up: 0, down: 0 },
+          none: { up: 0, down: 1 },
+        },
+      });
+      expect(line).toBe('full 50% of 2 · digest 0% of 2 · no docs 100% of 1');
+    });
+
+    it('feedbackByTurnClassLine is null when the turn class is not tracked', () => {
+      expect(feedbackByTurnClassLine({ up: 1, down: 1, byTurnClass: null })).toBeNull();
+      expect(feedbackByTurnClassLine({ up: 1, down: 1 })).toBeNull();
+      expect(feedbackByTurnClassLine(undefined)).toBeNull();
+      expect(
+        feedbackByTurnClassLine({
+          up: 0,
+          down: 0,
+          byTurnClass: { full: { up: 0, down: 0 }, digestOnly: { up: 0, down: 0 }, retrieved: { up: 0, down: 0 }, none: { up: 0, down: 0 } },
+        }),
+      ).toBeNull();
+    });
+  });
+
   describe('cleanCeiling', () => {
     it('rounds up to a 1/2/2.5/5/10 step of the magnitude', () => {
       expect(cleanCeiling(0)).toBe(1);

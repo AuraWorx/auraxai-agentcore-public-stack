@@ -132,6 +132,10 @@ SESSION_ROW_PROJECTION: Tuple[str, ...] = (
     "compactionAppliedCount",
     "compactionForcedCount",
     "compactionFloorUnreachableCount",
+    # Message-feedback rollups (live F# rows written while diagnostics were
+    # on; see `apis.shared.sessions.feedback`)
+    "thumbsUp",
+    "thumbsDown",
 )
 
 #: C# rows for the cost anatomy and the session profile's trajectory.
@@ -158,6 +162,13 @@ CALL_ROW_PROJECTION: Tuple[str, ...] = (
     "prefixTokens",
     "windowRemovedMessages",
     "compactionEvents",
+    # Turn class for the feedback join (document-context offload §6.1). The
+    # rows carry these from #1137 (offload PR-1), which also widens this
+    # projection to the full document-context field set; a row written before
+    # that lacks them and the profile reports the class as not tracked.
+    "hasDocuments",
+    "documentDigests",
+    "documentReads",
 )
 
 #: FILE# rows for the session profile's attachment summary.
@@ -171,10 +182,22 @@ FILE_ROW_PROJECTION: Tuple[str, ...] = (
     "createdAt",
 )
 
+#: F# rows for the session profile's feedback join. A thumb is a ±1, an
+#: optional reason *code* and a timestamp — never text, by the request
+#: model's closed enum (`apis.shared.sessions.models.FEEDBACK_REASONS`).
+FEEDBACK_ROW_PROJECTION: Tuple[str, ...] = (
+    "sessionId",
+    "messageId",
+    "value",
+    "reason",
+    "updatedAt",
+)
+
 ALL_PROJECTIONS: Dict[str, Tuple[str, ...]] = {
     "SESSION_ROW_PROJECTION": SESSION_ROW_PROJECTION,
     "CALL_ROW_PROJECTION": CALL_ROW_PROJECTION,
     "FILE_ROW_PROJECTION": FILE_ROW_PROJECTION,
+    "FEEDBACK_ROW_PROJECTION": FEEDBACK_ROW_PROJECTION,
 }
 
 

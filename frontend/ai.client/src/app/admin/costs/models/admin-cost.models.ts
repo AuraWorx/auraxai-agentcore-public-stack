@@ -377,6 +377,29 @@ export interface DataCoverage {
   prefixTokens?: boolean;
   windowTrim?: boolean;
   compactionEvents?: boolean;
+  /** Any thumbs row, or a session rollup written while diagnostics were on. */
+  feedback?: boolean;
+}
+
+/** Thumbs on one bucket of calls — counts, never content. */
+export interface FeedbackCounts {
+  up: number;
+  down: number;
+}
+
+/** Turn classes from the document-context offload spec §6.1. */
+export type TurnClass = 'full' | 'digestOnly' | 'retrieved' | 'none';
+
+/**
+ * The outcome signal joined to the cost rows. `byTurnClass` is null when no
+ * cost row carries the turn-class fields (they arrive with offload PR-1);
+ * that is "not tracked", not zero. `unjoined` thumbs have no cost row.
+ */
+export interface FeedbackProfile {
+  up: number;
+  down: number;
+  byTurnClass?: Record<TurnClass, FeedbackCounts> | null;
+  unjoined?: number;
 }
 
 /** The content-free diagnostic profile of one conversation. */
@@ -405,6 +428,8 @@ export interface SessionProfile {
   compactionEventCounts?: Record<string, number>;
   /** The summary's token size at the most recent compaction decision. */
   lastSummaryTokens?: number | null;
+  /** Thumbs up/down joined to the cost rows by (sessionId, messageId). */
+  feedback?: FeedbackProfile;
 }
 
 // ========== API Request Options ==========
