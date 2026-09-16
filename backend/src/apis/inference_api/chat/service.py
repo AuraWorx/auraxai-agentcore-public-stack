@@ -61,9 +61,18 @@ def _create_cache_key(
     freshness_hash: str,
     agent_type: Optional[str],
     skills_hash: str = "",
+    document_tools: bool = False,
 ) -> Tuple:
     """
     Create a cache key for agent instances.
+
+    `document_tools` is whether the turn built the session-state-gated
+    ``document_read`` tool (the session has a readable attachment). It is not
+    in `enabled_tools`, so without this element an agent cached before the
+    first upload would be served — without the tool — to every turn after it.
+    The gate is monotonic in practice (files stay once uploaded), so the key
+    flips at most once per session, on the attach turn, when restored history
+    carries no document yet to lose.
 
     `freshness_hash` is a short digest of the enabled tools' current
     `updated_at` values (see `freshness.get_freshness_hash`). When an
@@ -95,6 +104,7 @@ def _create_cache_key(
         provider or "bedrock",
         freshness_hash,
         agent_type or "chat",
+        bool(document_tools),
         skills_hash,
     )
 
@@ -240,6 +250,7 @@ async def get_agent(
     accessible_skill_ids: Optional[List[str]] = None,
     extra_tools_key_described: bool = False,
     cache_write: bool = True,
+    has_document_tools: bool = False,
 ) -> BaseAgent:
     """
     Get or create agent instance with current configuration for session
@@ -314,6 +325,7 @@ async def get_agent(
         freshness_hash=freshness_hash,
         agent_type=agent_type,
         skills_hash=skills_hash,
+        document_tools=has_document_tools,
     )
 
     # Whether this turn's injected tools (if any) let it use the cache at all.

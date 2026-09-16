@@ -1750,6 +1750,13 @@ async def _bump_session_aggregates(
             for kind, attr in _COMPACTION_EVENT_COUNTERS.items():
                 update_parts_add.append(f"{attr} :{attr}")
                 values[f":{attr}"] = _compaction_event_count(message_metadata, kind)
+            # Document lifecycle rollups (docs/specs/document-context-offload.md
+            # §6.1): how many calls ran with the full document inline vs. a
+            # digest only, and how much document_read pulled back. Written
+            # as 0 while the diagnostics are on, like the counters above.
+            for attr, value in _document_rollups(message_metadata).items():
+                update_parts_add.append(f"{attr} :{attr}")
+                values[f":{attr}"] = value
 
         update_expression = (
             "ADD " + ", ".join(update_parts_add) + " SET " + ", ".join(update_parts_set)
@@ -1780,6 +1787,40 @@ _COMPACTION_EVENT_COUNTERS = {
     "forced": "compactionForcedCount",
     "floor_unreachable": "compactionFloorUnreachableCount",
 }
+
+
+#: Session-row counters derived from a call's document fields. ``fullDocumentCalls``
+#: and ``digestOnlyCalls`` are the digest-vs-full turn shares; the two
+#: ``documentRead*`` counters sum the call's ``documentReads`` ledger entry.
+DOCUMENT_ROLLUP_ATTRS = ("fullDocumentCalls", "digestOnlyCalls", "documentReadCalls", "documentReadPages")
+
+
+def _document_rollups(message_metadata: Any) -> Dict[str, int]:
+    """``{attr: delta}`` for every ``DOCUMENT_ROLLUP_ATTRS`` entry, from the
+    call's ``hasDocuments`` / ``documentDigests`` / ``documentReads`` extras.
+    Absent or malformed fields count as zero — the bump must never fail."""
+    extra = getattr(message_metadata, "model_extra", None)
+    extra = extra if isinstance(extra, dict) else {}
+    has_documents = bool(extra.get("hasDocuments"))
+    try:
+        digests = int(extra.get("documentDigests") or 0)
+    except (TypeError, ValueError):
+        digests = 0
+    reads = extra.get("documentReads")
+    reads = reads if isinstance(reads, dict) else {}
+
+    def _int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "fullDocumentCalls": 1 if has_documents else 0,
+        "digestOnlyCalls": 1 if (digests > 0 and not has_documents) else 0,
+        "documentReadCalls": _int(reads.get("calls")),
+        "documentReadPages": _int(reads.get("pages")),
+    }
 
 
 def _compaction_event_count(message_metadata: Any, kind: str) -> int:
