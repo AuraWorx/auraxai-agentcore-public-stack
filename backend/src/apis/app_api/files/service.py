@@ -25,6 +25,8 @@ from apis.shared.files.models import (
     PresignResponse,
     CompleteUploadResponse,
     PreviewUrlResponse,
+    SheetPreviewResponse,
+    SHEET_PREVIEW_MIME_TYPES,
     TextSnippetResponse,
     ThumbnailResponse,
     THUMBNAIL_SUPPORTED_MIME_TYPES,
@@ -34,6 +36,12 @@ from apis.shared.files.models import (
     is_allowed_mime_type,
     is_presentation_file,
     ALLOWED_MIME_TYPES,
+)
+from .sheet_preview import (
+    MAX_WORKBOOK_BYTES,
+    WorkbookTooLargeError,
+    WorkbookUnreadableError,
+    read_workbook_preview,
 )
 from .thumbnails import (
     ThumbnailRenderer,
@@ -538,6 +546,77 @@ class FileUploadService:
             snippet=text,
             truncated=truncated,
             mime_type=file_meta.mime_type,
+        )
+
+    # =========================================================================
+    # Spreadsheet preview
+    # =========================================================================
+
+    async def get_sheet_preview(
+        self, user_id: str, upload_id: str
+    ) -> SheetPreviewResponse:
+        """Read an .xlsx into rows the UI can draw in its data grid.
+
+        The workbook never reaches the browser. Unlike the `.docx`,
+        `.pptx` and `.csv` previews — which fetch the bytes through a
+        presigned URL and parse them client-side — there is no
+        client-side spreadsheet reader we are willing to ship, so the
+        parse happens here and only values cross the wire.
+
+        Args:
+            user_id: The owner's user ID
+            upload_id: The upload identifier
+
+        Returns:
+            SheetPreviewResponse with one entry per visible worksheet
+
+        Raises:
+            FileNotFoundError: not found, not owned, or not ready
+            ThumbnailUnsupportedError: MIME type is not a readable workbook
+            WorkbookTooLargeError: past the reader's byte cap
+            WorkbookUnreadableError: corrupt, encrypted, or not OOXML
+        """
+        file_meta = await self.repository.get_file(user_id, upload_id)
+        if not file_meta:
+            raise FileNotFoundError(f"File {upload_id} not found")
+
+        if file_meta.status != FileStatus.READY:
+            raise FileNotFoundError(
+                f"File {upload_id} is not ready (status: {file_meta.status})"
+            )
+
+        if file_meta.mime_type not in SHEET_PREVIEW_MIME_TYPES:
+            raise ThumbnailUnsupportedError(
+                f"No spreadsheet reader for {file_meta.mime_type}"
+            )
+
+        # Checked before the download so an oversized workbook costs a
+        # metadata read rather than a transfer into memory.
+        if file_meta.size_bytes > MAX_WORKBOOK_BYTES:
+            raise WorkbookTooLargeError(file_meta.size_bytes)
+
+        try:
+            response = self._s3_client.get_object(
+                Bucket=self.bucket_name,
+                Key=file_meta.s3_key,
+            )
+            data = response["Body"].read()
+        except ClientError as e:
+            logger.warning(
+                f"Failed to read workbook {scrub_log(upload_id)}: {scrub_log(e)}"
+            )
+            raise FileNotFoundError(f"File {upload_id} could not be read")
+
+        # openpyxl is CPU-bound and blocking, so it runs off the event
+        # loop. A 20 MB workbook parses for long enough to stall every
+        # other request on this worker if it does not.
+        sheets = await asyncio.to_thread(read_workbook_preview, data)
+
+        return SheetPreviewResponse(
+            upload_id=upload_id,
+            filename=file_meta.filename,
+            sheets=sheets,
+            truncated=any(sheet.truncated for sheet in sheets),
         )
 
     # =========================================================================

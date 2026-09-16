@@ -85,10 +85,19 @@ describe('StreamParserService — auto-opening the file preview pane', () => {
     expect(preview.openFile()?.filename).toBe('report.docx');
   });
 
+  it('opens a generated .xlsx too, now that the pane can read one', () => {
+    // The pane reads a workbook server-side, so a spreadsheet the agent
+    // just produced opens on the same terms as a .docx or .pptx.
+    streamFile({ filename: 'budget.xlsx', upload_id: 'up3' });
+
+    expect(preview.openFile()?.filename).toBe('budget.xlsx');
+  });
+
   it('leaves a format the pane cannot render alone', () => {
     // Opening a pane that could only show an error is worse than letting
-    // the download card speak for itself.
-    streamFile({ filename: 'budget.xlsx', upload_id: 'up3' });
+    // the download card speak for itself. .xls is the pre-2007 binary
+    // format, which no reader here can open.
+    streamFile({ filename: 'legacy.xls', upload_id: 'up3b' });
 
     expect(preview.openFile()).toBeNull();
   });

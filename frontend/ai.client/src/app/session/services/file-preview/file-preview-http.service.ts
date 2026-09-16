@@ -5,8 +5,10 @@ import { ConfigService } from '../../../services/config.service';
 import {
   PREVIEW_KIND_MIMES,
   PreviewKind,
+  previewFetchesBytes,
   previewKindFor,
 } from './file-preview.model';
+import { SheetPreviewResponse } from './sheet-preview.model';
 
 /** `GET /files/{uploadId}/preview-url` — camelCase aliases on the wire. */
 interface PreviewUrlResponseDto {
@@ -88,9 +90,21 @@ export class FilePreviewHttpService {
     const meta = await this.requestPreviewUrl(uploadId);
 
     const kind = previewKindFor(meta.filename);
-    if (kind === null || meta.mimeType !== PREVIEW_KIND_MIMES[kind]) {
+    if (kind === null || !PREVIEW_KIND_MIMES[kind].includes(meta.mimeType)) {
       throw new FilePreviewError(
         `This file is a ${meta.mimeType || 'unknown type'}, which can't be previewed here.`,
+        false,
+      );
+    }
+
+    // A kind that is read server-side must never reach the byte path.
+    // Nothing here could render the result, and the cost of finding out
+    // is a whole workbook pulled into the browser and thrown away — so
+    // this fails loudly rather than wasting the transfer. `fetchSheets`
+    // is the route for those.
+    if (!previewFetchesBytes(kind)) {
+      throw new FilePreviewError(
+        'This file is read on the server; use fetchSheets instead.',
         false,
       );
     }
@@ -121,6 +135,28 @@ export class FilePreviewHttpService {
     }
   }
 
+  /**
+   * Fetch an `.xlsx` as rows, rather than as bytes.
+   *
+   * The only preview that does not go through `fetchDocument`, and the
+   * reason is the renderer landscape rather than anything about the
+   * file: there is no client-side workbook reader we are willing to
+   * ship, so app-api reads it with openpyxl and sends values. No
+   * presigned URL and no second leg — the workbook never reaches the
+   * browser at all.
+   */
+  async fetchSheets(uploadId: string): Promise<SheetPreviewResponse> {
+    try {
+      return await firstValueFrom(
+        this.http.get<SheetPreviewResponse>(
+          `${this.config.appApiUrl()}/files/${encodeURIComponent(uploadId)}/sheet-preview`,
+        ),
+      );
+    } catch (e) {
+      throw sheetPreviewError(e);
+    }
+  }
+
   private async fetchBytes(url: string): Promise<ArrayBuffer> {
     let response: Response;
     try {
@@ -140,5 +176,42 @@ export class FilePreviewHttpService {
     }
 
     return response.arrayBuffer();
+  }
+}
+
+/**
+ * Turn a `/sheet-preview` failure into something the pane can show.
+ *
+ * The route distinguishes its failures on purpose, and each one means a
+ * different thing to the user: 413 and 422 are permanent facts about the
+ * file that no retry changes, while a 5xx or a dropped connection is
+ * worth another go. 415 should be unreachable — the extension chose this
+ * viewer — so it reads as the mislabelled file it is.
+ */
+function sheetPreviewError(e: unknown): FilePreviewError {
+  const status = (e as { status?: number })?.status ?? 0;
+  switch (status) {
+    case 404:
+      return new FilePreviewError('This workbook is no longer available.', true);
+    case 413:
+      return new FilePreviewError(
+        'This workbook is too large to preview. Download it to open in Excel.',
+        false,
+      );
+    case 415:
+      return new FilePreviewError(
+        "This file isn't a spreadsheet the preview can read.",
+        false,
+      );
+    case 422:
+      return new FilePreviewError(
+        'This workbook could not be read. It may be corrupt or password-protected.',
+        false,
+      );
+    default:
+      return new FilePreviewError(
+        "Couldn't load this workbook. Check your connection and try again.",
+        true,
+      );
   }
 }
