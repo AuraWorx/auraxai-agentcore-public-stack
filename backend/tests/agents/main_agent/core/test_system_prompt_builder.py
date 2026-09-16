@@ -159,3 +159,28 @@ class TestFromUserPrompt:
 
         assert result.startswith(PLATFORM_SAFETY_FLOOR)
         assert user_prompt in result
+
+
+# ---------------------------------------------------------------------------
+# KaTeX guidance: the SPA does not treat a bare "$" as a math delimiter
+# ---------------------------------------------------------------------------
+class TestKatexGuidance:
+    """The prompt must not resurrect the HTML-entity workaround for "$".
+
+    The prompt once told the model to write other uses of "$" as "&#36;".
+    That never worked: marked emits the entity into innerHTML, the browser
+    decodes it to a literal "$" in the text node, and KaTeX walks the DOM
+    afterwards -- so the entity form broke identically. It did, however, leak
+    the 9-character string "&#36;100K" into generated .pptx/.xlsx cells. The
+    real fix is in the SPA (see katex-delimiters.ts), which drops the bare
+    "$...$" delimiter, so the model should write currency as a plain "$".
+    """
+
+    def test_does_not_tell_the_model_to_escape_dollar_signs(self):
+        assert "&#36;" not in DEFAULT_SYSTEM_PROMPT
+
+    def test_names_the_supported_inline_math_delimiters(self):
+        assert r"$...$ or \(...\) for inline math" in DEFAULT_SYSTEM_PROMPT
+
+    def test_still_offers_katex_for_equations(self):
+        assert "KaTeX" in DEFAULT_SYSTEM_PROMPT
