@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FilePreviewPanelComponent } from './file-preview-panel.component';
+import { DocxViewerComponent } from './docx-viewer.component';
 import { FilePreviewStateService } from '../../../../services/file-preview/file-preview-state.service';
 import {
   FilePreviewError,
@@ -22,6 +23,10 @@ describe('FilePreviewPanelComponent', () => {
 
   beforeEach(async () => {
     renderAsync.mockReset();
+    // The component memoizes its dynamic import('docx-preview') on a static
+    // field, and the builder runs vitest with isolate: false, so a sibling spec
+    // that rendered first would pin *its* mocked module for this file too.
+    (DocxViewerComponent as unknown as { libraryPromise: unknown }).libraryPromise = null;
     renderAsync.mockImplementation((_data, host: HTMLElement) => {
       host.appendChild(document.createElement('section'));
       return Promise.resolve();
