@@ -226,6 +226,14 @@ class TestHysteresis:
         assert mgr.compaction_state.policy["forced"] is True
 
     @pytest.mark.asyncio
+    async def test_armed_cut_above_hard_ceiling_is_not_forced(self, make_session_manager, compaction_config):
+        """Forced means "ran while disarmed" — the spiral signal — not "was large"."""
+        mgr = _armed_manager(make_session_manager, compaction_config)
+        result = await mgr.update_after_turn(2500)  # above hard=1500, but armed
+        assert result is not None and result.forced is False
+        assert mgr.compaction_state.policy["forced"] is False
+
+    @pytest.mark.asyncio
     async def test_under_ceiling_rearms(self, make_session_manager, compaction_config):
         mgr = _armed_manager(make_session_manager, compaction_config, checkpoint=4, armed=False)
         assert await mgr.update_after_turn(900) is None

@@ -797,8 +797,12 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             self._save_compaction_state(state)
             return None
 
-        forced = policy.hard_ceiling is not None and input_tokens >= policy.hard_ceiling
-        if policy.hysteresis_enabled and not state.armed and not forced:
+        at_hard_ceiling = policy.hard_ceiling is not None and input_tokens >= policy.hard_ceiling
+        # "Forced" is the spiral signal: a cut that ran while DISARMED because
+        # the hard ceiling was reached. An armed cut above the hard ceiling is
+        # just a large ordinary cut.
+        forced = policy.hysteresis_enabled and not state.armed and at_hard_ceiling
+        if policy.hysteresis_enabled and not state.armed and not at_hard_ceiling:
             # The previous cut has not been observed to take effect yet (the
             # slice lands at the next restore) — cutting again now is exactly
             # the spiral. Wait for the context to drop under the ceiling, or
@@ -809,7 +813,7 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             )
             self._save_compaction_state(state)
             return None
-        if forced and not state.armed:
+        if forced:
             logger.warning(
                 "compaction_forced: input=%d >= hard_ceiling=%d while disarmed — "
                 "the previous cut did not bring the context under the ceiling "
