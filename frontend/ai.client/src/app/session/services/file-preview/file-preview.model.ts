@@ -28,14 +28,23 @@ export const PPTX_MIME =
  */
 export const CSV_MIME = 'text/csv';
 
+/**
+ * MIME type of an Excel workbook (OOXML). Matches the `.xlsx` entry in
+ * `apis.shared.files.ALLOWED_EXTENSIONS` and `SHEET_PREVIEW_MIME_TYPES`
+ * in the same module.
+ */
+export const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
 /** What the pane knows how to render, and which viewer does it. */
-export type PreviewKind = 'docx' | 'pptx' | 'csv';
+export type PreviewKind = 'docx' | 'pptx' | 'csv' | 'xlsx';
 
 /** Human label for the pane header's subtitle. */
 export const PREVIEW_KIND_LABELS: Readonly<Record<PreviewKind, string>> = {
   docx: 'Word document',
   pptx: 'PowerPoint presentation',
   csv: 'Data file',
+  xlsx: 'Spreadsheet',
 };
 
 /**
@@ -58,6 +67,7 @@ export const PREVIEW_KIND_MIMES: Readonly<
   docx: [DOCX_MIME],
   pptx: [PPTX_MIME],
   csv: [CSV_MIME, 'application/csv', 'application/vnd.ms-excel', 'text/plain'],
+  xlsx: [XLSX_MIME],
 };
 
 /**
@@ -76,22 +86,35 @@ export const PREVIEW_KIND_MIMES: Readonly<
  * the pre-2007 binary formats, which neither the OOXML renderers nor
  * the delimited-text parser can read at all.
  *
- * `.xlsx` is deliberately absent, and for a narrower reason than it
- * looks. There is no client-side *renderer* for it we are willing to
- * ship: the npm build of SheetJS is frozen at a 2022 release carrying
- * unfixed advisories, and the only maintained grid renderer is built on
- * ExcelJS, which throws outright on the workbooks
+ * `.xlsx` is previewed, but not like the others: it is the one kind
+ * whose bytes never reach the browser. No client-side workbook renderer
+ * was shippable — the npm build of SheetJS is frozen at a 2022 release
+ * carrying unfixed advisories, and the only maintained grid renderer is
+ * built on ExcelJS, which throws outright on the workbooks
  * `create_excel_spreadsheet` produces whenever one contains a native
- * chart. That rules out reading the bytes here — it does not rule out a
- * server-side read that hands this pane rows, which is the open path.
- * Until then, download-and-open remains it for `.xlsx`.
+ * chart — so app-api reads it with openpyxl and sends rows instead. Any
+ * caller that branches on MIME type for `.xlsx` is therefore on the
+ * wrong path; branch on the kind, and see `XlsxViewerComponent`.
  */
 export function previewKindFor(filename: string): PreviewKind | null {
   const name = filename.trim();
   if (/\.docx$/i.test(name)) return 'docx';
   if (/\.pptx$/i.test(name)) return 'pptx';
   if (/\.csv$/i.test(name)) return 'csv';
+  if (/\.xlsx$/i.test(name)) return 'xlsx';
   return null;
+}
+
+/**
+ * Whether the pane reads this kind from bytes it fetched itself.
+ *
+ * False only for `xlsx`, whose viewer takes an upload id and asks the
+ * server for rows. The panel uses this to decide whether to run the
+ * presigned-URL fetch at all — without it, opening a workbook would
+ * download the whole file to the browser and then ignore it.
+ */
+export function previewFetchesBytes(kind: PreviewKind): boolean {
+  return kind !== 'xlsx';
 }
 
 /** Whether a filename is one the preview pane can render. */

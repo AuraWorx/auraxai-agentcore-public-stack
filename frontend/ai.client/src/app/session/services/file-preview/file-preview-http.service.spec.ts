@@ -134,7 +134,18 @@ describe('FilePreviewHttpService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('refuses a format the pane has no renderer for', async () => {
+  it('refuses a format the pane cannot preview at all', async () => {
+    const pending = service.fetchDocument('up1');
+    flushPreviewUrl({ mimeType: 'application/pdf', filename: 'report.pdf' });
+
+    await expect(pending).rejects.toThrow(FilePreviewError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to fetch the bytes of a kind that is read server-side', async () => {
+    // An .xlsx has a viewer, but not one that reads bytes. Letting it
+    // through here would pull a whole workbook into the browser and
+    // then throw it away, so the byte path rejects it before the fetch.
     const pending = service.fetchDocument('up1');
     flushPreviewUrl({
       mimeType:
@@ -144,6 +155,53 @@ describe('FilePreviewHttpService', () => {
 
     await expect(pending).rejects.toThrow(FilePreviewError);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('fetchSheets', () => {
+    it('asks app-api for rows and never touches S3', async () => {
+      // The .xlsx path has one leg, not two: no presigned URL, and the
+      // workbook never reaches the browser.
+      const pending = service.fetchSheets('up1');
+      const req = httpMock.expectOne(
+        '/api/files/up1/sheet-preview',
+      );
+      expect(req.request.method).toBe('GET');
+      req.flush({
+        uploadId: 'up1',
+        filename: 'budget.xlsx',
+        sheets: [],
+        truncated: false,
+      });
+
+      await expect(pending).resolves.toMatchObject({ filename: 'budget.xlsx' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [413, false, 'too large'],
+      [422, false, 'corrupt or password-protected'],
+      [415, false, "isn't a spreadsheet"],
+      [404, true, 'no longer available'],
+      [500, true, 'Check your connection'],
+    ])(
+      'maps %i to a %s-retryable message',
+      async (status, retryable, fragment) => {
+        // The route distinguishes these on purpose: 413 and 422 are
+        // permanent facts about the file, while a 5xx is worth another go.
+        const pending = service.fetchSheets('up1');
+        httpMock
+          .expectOne('/api/files/up1/sheet-preview')
+          .flush('err', { status, statusText: 'error' });
+
+        await expect(pending).rejects.toThrow(FilePreviewError);
+        await expect(pending).rejects.toMatchObject({ retryable });
+        await expect(pending).rejects.toThrow(
+          expect.objectContaining({
+            message: expect.stringContaining(fragment),
+          }),
+        );
+      },
+    );
   });
 
   it('fetches S3 without credentials', async () => {

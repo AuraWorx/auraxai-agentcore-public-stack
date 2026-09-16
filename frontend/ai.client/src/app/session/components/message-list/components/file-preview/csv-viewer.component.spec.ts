@@ -70,7 +70,7 @@ describe('CsvViewerComponent', () => {
     const el = render('a,b\n1,2\n');
 
     const grid = el.querySelector('[role="grid"]') as HTMLElement;
-    const template = grid.style.getPropertyValue('--csv-cols');
+    const template = grid.style.getPropertyValue('--grid-cols');
     // Gutter plus one track per column.
     expect(template.trim().split(/\s+/)).toHaveLength(3);
   });

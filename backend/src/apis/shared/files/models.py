@@ -377,6 +377,58 @@ class TextSnippetResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class SheetPreview(BaseModel):
+    """One worksheet, read into display-ready strings."""
+
+    name: str = Field(..., description="Worksheet name as it appears on the tab")
+    headers: List[str] = Field(
+        ..., description="First row of the sheet, used as column labels"
+    )
+    rows: List[List[str]] = Field(
+        ..., description="Body rows, each padded to len(headers)"
+    )
+    total_rows: int = Field(
+        ...,
+        alias="totalRows",
+        description="Body rows the sheet claims to have, which may exceed len(rows)",
+    )
+    truncated: bool = Field(
+        ..., description="True when a cap stopped the read short of the sheet's end"
+    )
+    truncated_by: Optional[str] = Field(
+        None,
+        alias="truncatedBy",
+        description="Which cap fired: 'rows' or 'columns'",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SheetPreviewResponse(BaseModel):
+    """Response for GET /api/files/{uploadId}/sheet-preview."""
+
+    upload_id: str = Field(..., alias="uploadId")
+    filename: str
+    sheets: List[SheetPreview] = Field(
+        ..., description="Visible worksheets, in workbook order"
+    )
+    truncated: bool = Field(
+        ...,
+        description="True when any sheet was cut short or sheets were dropped",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# MIME types the spreadsheet reader can turn into a grid. Deliberately
+# only OOXML: the pre-2007 .xls binary format needs a different library
+# (xlrd), and it is not worth one for a format nothing in the product
+# generates.
+SHEET_PREVIEW_MIME_TYPES = frozenset({
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+})
+
+
 # MIME types the thumbnail renderer can currently produce a preview image for.
 # Callers should consult this set before invoking the thumbnail endpoint to
 # avoid hammering the service for unsupported types.
