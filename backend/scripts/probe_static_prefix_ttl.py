@@ -105,13 +105,14 @@ def main() -> int:
     results: Dict[str, Any] = {}
     # Distinct markers per arm so the two arms never share a cache entry.
     for name, ttl in arms:
-        req = _request(args.model_id, ttl, f"{name}-{int(time.time())}")
+        marker = f"{name}-{int(time.time())}"
+        req = _request(args.model_id, ttl, marker)
         try:
             first = _call(client, req)
         except Exception as e:  # noqa: BLE001
             results[name] = {"error": f"{type(e).__name__}: {e}"}
             continue
-        results[name] = {"first": first}
+        results[name] = {"first": first, "marker": marker}
     if all("error" in r for r in results.values()):
         print(results)
         return 1
@@ -123,8 +124,10 @@ def main() -> int:
         if "error" in results[name]:
             continue
         # Re-send the SAME request (same marker) — identical bytes.
-        req = _request(args.model_id, ttl, results[name].get("marker", ""))
-        results[name]["second"] = _call(client, _request(args.model_id, ttl, results[name].setdefault("marker", f"{name}-x")))
+        try:
+            results[name]["second"] = _call(client, _request(args.model_id, ttl, results[name]["marker"]))
+        except Exception as e:  # noqa: BLE001
+            results[name]["error"] = f"{type(e).__name__}: {e}"
 
     print(f"\nmodel={args.model_id} base=${base}/MTok gap={args.gap_seconds}s\n")
     print(f"{'arm':<4} {'call':<7} {'input':>7} {'read':>8} {'write':>8} {'$':>10}")
