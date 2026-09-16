@@ -422,6 +422,25 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             last = last.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - last).total_seconds() > ttl_seconds
 
+    def _record_ledger_event(self, kind: str, **fields: Any) -> None:
+        """Hand a compaction decision to the per-call compaction ledger, if present.
+
+        The cost-diagnostics ledger (``record_compaction_event`` /
+        ``drain_compaction_events`` + ``ContextLedgerHook``) lands whatever is
+        recorded here on the NEXT model call's ``C#`` cost row as
+        ``compactionEvents``, next to ``windowRemovedMessages`` and the prefix
+        token split — the evidence the summary cap and the scheduling rule are
+        judged on. Resolved by attribute so this is a no-op on a build without
+        the ledger; fields are ints. Never raises.
+        """
+        recorder = getattr(self, "record_compaction_event", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(kind, **{k: int(v) for k, v in fields.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("compaction ledger event skipped: %s", e)
+
     # =========================================================================
     # Compaction State Persistence
     # =========================================================================
@@ -896,6 +915,16 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             retained_estimate, policy.floor, policy.ceiling, policy.hard_ceiling,
             policy.context_window, forced,
         )
+        # Per-call compaction ledger: the two decisions the spec asks to see
+        # on the anatomy — a cut that ran while disarmed, and a cut that could
+        # not reach the floor because the protected tail alone exceeds it.
+        if forced:
+            self._record_ledger_event("forced", checkpoint=new_checkpoint, inputTokens=input_tokens)
+        if policy.floor is not None and retained_estimate is not None and retained_estimate > policy.floor:
+            self._record_ledger_event(
+                "floor_unreachable",
+                checkpoint=new_checkpoint, inputTokens=input_tokens, retainedTokens=retained_estimate,
+            )
 
         # Count turns rolled into the summary on THIS event (delta, not
         # cumulative) — each inline divider stands on its own. In absolute

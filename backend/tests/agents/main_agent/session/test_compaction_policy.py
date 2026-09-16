@@ -288,3 +288,29 @@ class TestCoordinates:
         result = await mgr.update_after_turn(150_000, context_window=1_000_000)
         assert result is not None and result.context_window == 1_000_000 and result.ceiling == 100_000
         assert result.hard_ceiling == 150_000
+
+
+class TestCompactionLedgerEvents:
+    """Decisions are handed to the per-call compaction ledger when it exists
+    (cost-diagnostics ``record_compaction_event``), and are a no-op otherwise."""
+
+    @pytest.mark.asyncio
+    async def test_forced_and_floor_unreachable_are_recorded(self, make_session_manager, compaction_config):
+        mgr = _armed_manager(make_session_manager, compaction_config, checkpoint=4, armed=False)
+        mgr._valid_cutoff_indices = [0, 2, 4, 6, 8, 10]
+        mgr._all_messages_for_summary = make_conversation(6)
+        mgr.record_compaction_event = MagicMock()
+        result = await mgr.update_after_turn(1500)  # disarmed + hard ceiling → forced
+        assert result is not None and result.forced
+        kinds = [c.args[0] for c in mgr.record_compaction_event.call_args_list]
+        assert "forced" in kinds and "floor_unreachable" in kinds
+        forced_call = next(c for c in mgr.record_compaction_event.call_args_list if c.args[0] == "forced")
+        assert forced_call.kwargs == {"checkpoint": 6, "inputTokens": 1500}
+        floor_call = next(c for c in mgr.record_compaction_event.call_args_list if c.args[0] == "floor_unreachable")
+        assert floor_call.kwargs["retainedTokens"] > 250
+
+    @pytest.mark.asyncio
+    async def test_no_ledger_is_a_noop(self, make_session_manager, compaction_config):
+        mgr = _armed_manager(make_session_manager, compaction_config)
+        assert not hasattr(mgr, "record_compaction_event")
+        assert await mgr.update_after_turn(1200) is not None  # no AttributeError
