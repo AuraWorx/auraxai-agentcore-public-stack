@@ -42,6 +42,7 @@ from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemory
 
 from .compaction_models import CompactionState, CompactionConfig, CompactionResult
 from .compaction_policy import CompactionPolicy, choose_checkpoint
+from .compaction_summary import bound_summary
 
 if TYPE_CHECKING:
     from strands.agent.agent import Agent
@@ -935,13 +936,27 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             if current_checkpoint <= self._live_offset + idx < new_checkpoint
         )
 
-        # Retrieve or generate summary for compacted messages
+        # Retrieve or generate the summary for the retired messages, then
+        # hold it at the budget (spec §3.6 / spiral spec PR-2). Compression
+        # runs here — once, at checkpoint advance, the turn that already pays
+        # a prefix re-write — and the result is persisted verbatim so every
+        # restore prepends identical bytes.
         summaries = self._retrieve_session_summaries()
         if summaries:
-            summary = "\n\n".join(summaries)
+            records = list(summaries)
+            summary_source = "ltm"
         else:
-            messages_to_summarize = messages[:relative_cut]
-            summary = self._generate_fallback_summary(messages_to_summarize)
+            fallback = self._generate_fallback_summary(messages[:relative_cut])
+            records = [fallback] if fallback else []
+            summary_source = "fallback"
+        bounded = await bound_summary(
+            records,
+            self.compaction_config.summary_token_budget,
+            model_enabled=self.compaction_config.summary_model_enabled,
+            model_id=self.compaction_config.summary_model_id,
+            region=self.region_name,
+        )
+        summary = bounded.text
 
         state.checkpoint = new_checkpoint
         # The anchor rides the checkpoint: everything the slice retains stays
@@ -959,9 +974,17 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             "forced": forced,
             "inputTokens": input_tokens,
             "retainedTokensEstimate": retained_estimate,
+            # Summary provenance — what the admin profile and the cost
+            # anatomy read to explain a cut without reading the conversation.
+            "summarySource": summary_source,
+            "summaryOutcome": bounded.outcome,
+            "summaryTokensBefore": bounded.tokens_before,
+            "summaryTokensAfter": bounded.tokens_after,
+            "summaryTokenBudget": self.compaction_config.summary_token_budget,
         }
         # This save is the compaction event itself — count it.
         self._save_compaction_state(state, record_event=True)
+        self._emit_compaction_metrics(state, policy, forced, retained_estimate, bounded)
 
         logger.info(
             f"Compaction checkpoint set: {new_checkpoint}, "
@@ -982,6 +1005,49 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             forced=forced,
             retained_tokens_estimate=retained_estimate,
         )
+
+    @staticmethod
+    def _emit_compaction_metrics(state, policy, forced, retained_estimate, bounded) -> None:
+        """One content-free EMF record per cut (``AgentCoreStack/Compaction``).
+
+        Fleet-wide aggregates for the questions the specs keep asking: how
+        often cuts fire, how often they are forced (the spiral detector), how
+        big the summary is against its budget, and how deep cuts land. Never
+        raises; ``PROMPT_CACHE_OBSERVABILITY_ENABLED=false`` silences it with
+        the rest of the cost observability layer.
+        """
+        try:
+            from apis.shared.observability.prompt_cache import prompt_cache_observability_enabled
+            from apis.shared.observability.emf import emit_emf_metrics
+
+            if not prompt_cache_observability_enabled():
+                return
+            emit_emf_metrics(
+                "AgentCoreStack/Compaction",
+                metrics={
+                    "CompactionCut": 1,
+                    "CompactionForced": 1 if forced else 0,
+                    "CompactionInputTokens": int(state.last_input_tokens or 0),
+                    "CompactionRetainedTokens": int(retained_estimate or 0),
+                    "CompactionSummaryTokens": int(bounded.tokens_after or 0),
+                    "CompactionSummaryOverBudget": 1 if bounded.tokens_before > bounded.tokens_after else 0,
+                },
+                properties={
+                    "policySource": policy.source,
+                    "contextWindow": policy.context_window,
+                    "ceiling": policy.ceiling,
+                    "floor": policy.floor,
+                    "summaryOutcome": bounded.outcome,
+                    "summaryTokensBefore": bounded.tokens_before,
+                },
+                units={
+                    "CompactionInputTokens": "Count",
+                    "CompactionRetainedTokens": "Count",
+                    "CompactionSummaryTokens": "Count",
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Compaction EMF skipped: %s", e)
 
     # =========================================================================
     # Message Processing Helpers

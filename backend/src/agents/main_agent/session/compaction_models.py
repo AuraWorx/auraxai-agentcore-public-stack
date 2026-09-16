@@ -142,6 +142,12 @@ class CompactionConfig:
     floor_ratio: float = Defaults.COMPACTION_FLOOR_RATIO
     hard_ceiling_ratio: float = Defaults.COMPACTION_HARD_CEILING_RATIO
     hard_ceiling_multiplier: float = Defaults.COMPACTION_HARD_CEILING_MULTIPLIER
+    # Bounded summary (spec §3.6 / spiral spec PR-2). The persisted summary is
+    # held at or under this many tokens (chars/4), compressed once at cut time
+    # by the cheap model, with newest-first truncation as the fallback.
+    summary_token_budget: int = Defaults.COMPACTION_SUMMARY_TOKEN_BUDGET
+    summary_model_enabled: bool = Defaults.COMPACTION_SUMMARY_MODEL_ENABLED
+    summary_model_id: str = Defaults.COMPACTION_SUMMARY_MODEL_ID
 
     @classmethod
     def from_env(cls) -> "CompactionConfig":
@@ -158,4 +164,7 @@ class CompactionConfig:
             floor_ratio=float(os.environ.get(EnvVars.COMPACTION_FLOOR_RATIO, str(Defaults.COMPACTION_FLOOR_RATIO))),
             hard_ceiling_ratio=float(os.environ.get(EnvVars.COMPACTION_HARD_CEILING_RATIO, str(Defaults.COMPACTION_HARD_CEILING_RATIO))),
             hard_ceiling_multiplier=float(os.environ.get(EnvVars.COMPACTION_HARD_CEILING_MULTIPLIER, str(Defaults.COMPACTION_HARD_CEILING_MULTIPLIER))),
+            summary_token_budget=int(os.environ.get(EnvVars.COMPACTION_SUMMARY_TOKEN_BUDGET, str(Defaults.COMPACTION_SUMMARY_TOKEN_BUDGET))),
+            summary_model_enabled=_env_flag_default_on(EnvVars.COMPACTION_SUMMARY_MODEL_ENABLED),
+            summary_model_id=os.environ.get(EnvVars.COMPACTION_SUMMARY_MODEL_ID, "").strip() or Defaults.COMPACTION_SUMMARY_MODEL_ID,
         )

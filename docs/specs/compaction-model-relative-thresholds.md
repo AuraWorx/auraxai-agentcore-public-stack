@@ -1,7 +1,8 @@
 # Compaction relative to the model window — a trigger ceiling, a target floor, and paying the rewrite only when it is free
 
-**Status:** PR-1 in progress (this document rides with it). PR-2 through PR-5
-unbuilt. Written 2026-09-15.
+**Status:** PR-1 open (#1125, this document rides with it). PR-2 (bounded
+summary + compaction metrics) built 2026-09-15 on top of it, stacked. PR-3
+through PR-5 unbuilt.
 **Owner:** Phil Merrell
 **Related:** `compaction-over-threshold-cache-spiral.md` (#833 — the incident
 and the summary-cap PR this spec depends on) ·
@@ -321,7 +322,22 @@ state is a no-op and a turn at the hard ceiling is a forced cut; the existing
 byte-stability suite is unchanged; a replayed spiral-shaped sequence (input
 constant above ceiling for 10 turns) produces exactly one checkpoint advance.
 
-### PR-2 — bounded summary (spiral spec PR-2, as written there)
+### PR-2 — bounded summary (spiral spec PR-2, as written there) — BUILT
+
+As built (`compaction_summary.py`, stacked on PR-1): `bound_summary()` holds
+the persisted summary at `COMPACTION_SUMMARY_TOKEN_BUDGET` (8,000 tokens,
+chars/4 — the same estimate the admin `SUMMARY_OVER_BUDGET` diagnosis uses).
+Within budget → unchanged. Over budget → one Nova Micro `converse` call
+(`AGENTCORE_MEMORY_COMPACTION_SUMMARY_MODEL_ID`; kill switch
+`AGENTCORE_MEMORY_COMPACTION_SUMMARY_MODEL_ENABLED=false`) with a prompt that
+keeps standing instructions, decisions, current state of the work, open items
+and exact identifiers, and drops narration and superseded drafts (the kaizen
+2026-05-29 item). Model failure, a ceiling-hit generation, or an overshoot →
+newest-first truncation (keep the newest records that fit; if none fit, the
+tail of the newest). Runs once at cut time and the result is persisted
+verbatim, so the byte-stability contract is untouched. Provenance lands in
+the persisted `compaction.policy` map (`summarySource`, `summaryOutcome`,
+`summaryTokensBefore/After`, `summaryTokenBudget`).
 
 **Sequenced immediately after PR-1, ahead of PR-3, on evidence.** In the
 2026-09-15 audit all 16 over-100k sessions carried `AGENT_CACHE_BYPASS`
@@ -352,6 +368,52 @@ still passes with the in-place apply.
 ### PR-5 — selective 1h TTL experiment (§3.6)
 
 ## 7. Observability
+
+### 7.1 What PR-2 adds — one content-free record per cut
+
+`AgentCoreStack/Compaction` EMF namespace (silenced with the rest of the cost
+observability layer by `PROMPT_CACHE_OBSERVABILITY_ENABLED=false`):
+
+| metric | answers |
+|---|---|
+| `CompactionCut` | cadence — cuts per session-day is v2 §8's spiral detector (alarm at >2/day) |
+| `CompactionForced` | how often a cut ran while disarmed = how often the previous cut did not take |
+| `CompactionInputTokens`, `CompactionRetainedTokens` | how far above the ceiling cuts fire and how deep they land (is the floor being reached?) |
+| `CompactionSummaryTokens`, `CompactionSummaryOverBudget` | is the summary the reason cuts miss the floor; how often the model vs truncation path runs |
+
+Properties (queryable in Logs Insights, not dimensions): `policySource`,
+`contextWindow`, `ceiling`, `floor`, `summaryOutcome`, `summaryTokensBefore`.
+No text from the conversation or the summary is ever emitted.
+
+### 7.2 Data points still worth collecting (not built)
+
+The question behind all of them is *what does a turn cost because of history,
+and what did compaction do to it* — today we can see the first half (cost
+rows) and, after PR-2, the second, but not joined:
+
+- **Per-call `checkpoint` / `armed` / `liveOffset` on the `C#` cost row** —
+  lets the anatomy page show the context trajectory against the cuts without
+  correlating timestamps by hand. Additive fields on an existing write.
+- **`cacheGapSeconds` next to every cut** — the PR-3 scheduling rule is only
+  measurable if each cut records whether it landed on a cold turn
+  (`rewrite_scheduled` vs `rewrite_forced`).
+- **Retained-vs-actual calibration** — the next turn's measured
+  `contextBreakdown.messages` against the cut's `retainedTokensEstimate`. One
+  number per cut, and the only way to know whether the estimator is off by 5%
+  or 50%.
+- **Turn shape** — messages per turn and tool-result bytes per turn (the
+  `ToolCensusHook` has the count; bytes are one more `ADD`). Sessions whose
+  bulk is a handful of huge tool results are the PR-4 offload cohort, and we
+  cannot size it today.
+- **Outcome signal joined to compaction** — a down-thumb rate keyed to
+  "turns since last cut" is the first evidence that a cut costs anything
+  besides dollars (the kaizen review-queue already lists this as the
+  counterweight the cost roadmap lacks). Without it the §5 quality gate stays
+  a one-off eval rather than a standing measurement.
+- **Warm-vs-cold split per cut** — whether the cut's session was on the
+  agent-cache bypass path (restore every turn) or a warm agent; the 2026-09-15
+  audit had to infer this from `enabledTools`. It decides how much PR-3 is
+  worth.
 
 - Log lines: `compaction_cut` (window, ceiling, floor, hard, relative cut,
   absolute checkpoint, retained estimate), `compaction_disarmed_noop`,
