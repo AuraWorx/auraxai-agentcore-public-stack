@@ -1118,6 +1118,15 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 "pendingSince": pending_since,
             }
             self._save_compaction_state(state)
+            # Per-call compaction ledger: the apply is the moment the bytes
+            # the model sees change, so it is the event the anatomy marks.
+            self._record_ledger_event(
+                "applied",
+                checkpoint=promoted,
+                summaryTokens=len(state.summary or "") // 4,
+                retainedMessages=len(messages),
+                cacheGapSeconds=gap_seconds or 0,
+            )
             logger.info(
                 "compaction_applied: reason=%s checkpoint=%d gap=%ss live_len=%d (%s)",
                 reason, promoted, gap_seconds, len(messages),

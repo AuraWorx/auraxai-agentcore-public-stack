@@ -221,6 +221,23 @@ class TestHeadOfTurnApply:
         assert applied[0][0]["CompactionAppliedForced"] == 0
 
 
+class TestLedger:
+    @pytest.mark.asyncio
+    async def test_apply_records_an_applied_ledger_event(self, make_session_manager):
+        store = {}
+        mgr = _manager(make_session_manager, store)
+        live = make_conversation(5)
+        await mgr.update_after_turn(1200, current_messages=live)
+        mgr.record_compaction_event = MagicMock()
+        _age(store, 600)
+        assert mgr.apply_pending_compaction(_agent(live), prefix_key="m|default") == "cache_expired"
+        kinds = [c.args[0] for c in mgr.record_compaction_event.call_args_list]
+        assert kinds == ["applied"]
+        fields = mgr.record_compaction_event.call_args.kwargs
+        assert fields["checkpoint"] == 4 and fields["retainedMessages"] == 6
+        assert fields["cacheGapSeconds"] >= 599 and fields["summaryTokens"] >= 0
+
+
 class TestStateRoundTrip:
     def test_pending_fields_round_trip_and_default_none(self):
         assert CompactionState.from_dict({"checkpoint": 1}).pending_checkpoint is None
