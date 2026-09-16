@@ -251,6 +251,37 @@ export class DataGridComponent {
       });
       onCleanup(() => sub.unsubscribe());
     });
+
+    // Re-arm the scroller whenever the data underneath it changes.
+    //
+    // One viewport instance serves every dataset the grid is handed —
+    // switching worksheet tabs, or previewing a second file without
+    // closing the pane. CDK picks up the new length (getDataLength()
+    // reports it, and the spacer grows) but does not recompute the
+    // rendered range, so the body stays pinned to the first screenful
+    // while the scrollbar moves over the full height. Measured directly:
+    // at scrollOffset 10000 of a 1,200-row sheet the rendered range was
+    // still {start: 0, end: 32}, and checkViewportSize() corrected it to
+    // {start: 309, end: 345} on the spot.
+    //
+    // Resetting to the top is the right behaviour on its own terms too —
+    // a newly chosen sheet should start at its first row rather than
+    // inheriting the previous one's offset.
+    effect((onCleanup) => {
+      const rows = this.rows();
+      const viewport = this.viewport();
+      if (!viewport || rows.length === 0) return;
+
+      // After the rows themselves have been rendered: measuring before
+      // that would measure the outgoing dataset.
+      const handle = setTimeout(() => {
+        viewport.scrollToOffset(0);
+        viewport.checkViewportSize();
+        const header = this.headerScroller()?.nativeElement;
+        if (header) header.scrollLeft = 0;
+      });
+      onCleanup(() => clearTimeout(handle));
+    });
   }
 
   /** `trackBy` on the row index rather than the row: a data file may

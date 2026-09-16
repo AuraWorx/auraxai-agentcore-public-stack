@@ -39,17 +39,44 @@ logger = logging.getLogger(__name__)
 # request would threaten the container.
 MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
 
-# Per-sheet caps. A docked pane shows about thirty rows at a time, so
-# these are generous for previewing while keeping the JSON small.
-MAX_ROWS_PER_SHEET = 500
+# Per-sheet caps.
+#
+# This is NOT a limit on what the grid can draw. The viewer virtualises
+# with `cdk-virtual-scroll-viewport`, which recycles row elements, so the
+# DOM is bounded no matter how many rows it is handed — the browser-side
+# `.csv` reader hands it 50,000 quite happily. The limit here is the
+# server: every row crosses the wire as JSON in one response, and
+# openpyxl has to parse it first.
+#
+# Measured on a 20-column sheet (two-pass read, JSON serialised):
+#
+#     cap      parse    JSON      gzip
+#     500      0.04s    0.06 MB   0.02 MB
+#     5,000    0.53s    0.68 MB   0.15 MB
+#     50,000   3.80s    7.17 MB   1.51 MB
+#
+# There is no gzip middleware on app-api, so the JSON column is what
+# actually goes over the wire. 5,000 buys ten times the rows for half a
+# second; 50,000 costs nearly four seconds of parse and a 7 MB response,
+# which is past what a preview should spend.
+#
+# Fetching later pages on scroll was considered and rejected: openpyxl's
+# read-only mode is a streaming parser, so `min_row` does not seek.
+# Reaching row 45,000 of a 50,000-row sheet measured 2.63s against 2.97s
+# for a *complete* pass — page cost grows with offset, and scrolling a
+# whole sheet page-by-page would cost ~119s of CPU where one pass costs
+# 3s. For this format, reading once and sending more is strictly better
+# than reading repeatedly and sending less.
+MAX_ROWS_PER_SHEET = 5_000
 MAX_COLUMNS_PER_SHEET = 64
 
 # Sheets read from one workbook.
 MAX_SHEETS = 12
 
 # Global cell budget across every sheet, so a workbook of many wide
-# sheets cannot multiply the per-sheet caps into a huge response.
-MAX_TOTAL_CELLS = 40_000
+# sheets cannot multiply the per-sheet caps into a huge response. At
+# roughly 12 bytes of JSON per cell this bounds the body near 1.8 MB.
+MAX_TOTAL_CELLS = 150_000
 
 
 class WorkbookTooLargeError(Exception):
@@ -89,7 +116,17 @@ def read_workbook_preview(data: bytes) -> list[SheetPreview]:
     # "=SUM(B2:B10)" is both more useful than an empty cell and more
     # honest: the file really does not carry that number yet.
     values = _load(data, data_only=True)
-    formulas = _load(data, data_only=False)
+    # The formula pass is opened lazily. It doubles the parse, and most
+    # sheets need it for nothing — it only earns its cost on a sheet that
+    # actually came back with an empty cell.
+    formulas = None
+
+    def formula_sheet_at(index: int):
+        nonlocal formulas
+        if formulas is None:
+            formulas = _load(data, data_only=False)
+        sheets = formulas.worksheets
+        return sheets[index] if index < len(sheets) else None
 
     try:
         sheets: list[SheetPreview] = []
@@ -104,10 +141,7 @@ def read_workbook_preview(data: bytes) -> list[SheetPreview]:
             if getattr(value_sheet, "sheet_state", "visible") != "visible":
                 continue
 
-            formula_sheet = (
-                formulas.worksheets[index] if index < len(formulas.worksheets) else None
-            )
-            sheet, used = _read_sheet(value_sheet, formula_sheet, budget)
+            sheet, used = _read_sheet(value_sheet, index, formula_sheet_at, budget)
             budget -= used
             sheets.append(sheet)
             if budget <= 0:
@@ -117,7 +151,8 @@ def read_workbook_preview(data: bytes) -> list[SheetPreview]:
     finally:
         # `read_only` workbooks hold the zip open until closed.
         values.close()
-        formulas.close()
+        if formulas is not None:
+            formulas.close()
 
 
 def _load(data: bytes, *, data_only: bool):
@@ -139,15 +174,32 @@ def _load(data: bytes, *, data_only: bool):
         raise WorkbookUnreadableError(str(e)) from e
 
 
-def _read_sheet(value_sheet, formula_sheet, budget: int) -> tuple[SheetPreview, int]:
+def _read_sheet(
+    value_sheet, index: int, formula_sheet_at, budget: int
+) -> tuple[SheetPreview, int]:
     """Read one worksheet into a `SheetPreview`, stopping at the caps.
 
+    `formula_sheet_at` opens the second, formula-bearing pass on demand.
     Returns the preview and how much of the cell budget it consumed.
     """
-    row_limit = min(MAX_ROWS_PER_SHEET, max(1, budget // MAX_COLUMNS_PER_SHEET))
+    # Spend the cell budget against the sheet's OWN width, not the
+    # maximum a sheet is allowed to be. Dividing by MAX_COLUMNS_PER_SHEET
+    # charged a seven-column sheet as though it were sixty-four columns
+    # wide and cut its rows by an order of magnitude for no reason.
+    estimated_width = _peek_width(value_sheet) or MAX_COLUMNS_PER_SHEET
+    row_limit = min(MAX_ROWS_PER_SHEET, max(1, budget // estimated_width))
 
     value_rows = _take_rows(value_sheet, row_limit + 1)
-    formula_rows = _take_rows(formula_sheet, row_limit + 1) if formula_sheet else []
+
+    # Only pay for the formula pass when this sheet has a gap to fill. An
+    # empty cell is either genuinely empty or a formula with no cached
+    # value, and the two are indistinguishable from the values pass — but
+    # a sheet with no empty cells at all cannot be hiding a formula.
+    formula_rows: list[tuple[Any, ...]] = []
+    if any(cell is None for row in value_rows for cell in row):
+        formula_sheet = formula_sheet_at(index)
+        if formula_sheet is not None:
+            formula_rows = _take_rows(formula_sheet, row_limit + 1)
 
     merged = [
         _merge_row(value_rows[i], formula_rows[i] if i < len(formula_rows) else ())
@@ -204,6 +256,20 @@ def _read_sheet(value_sheet, formula_sheet, budget: int) -> tuple[SheetPreview, 
         ),
         len(rows) * width,
     )
+
+
+def _peek_width(sheet) -> int:
+    """Columns the sheet's header row occupies, for budgeting.
+
+    Cheap: `max_column` comes from the sheet's declared dimensions and
+    needs no row scan. It can overstate the real width when a stray
+    format stretches the used range, which only makes the budget more
+    conservative, never less.
+    """
+    try:
+        return min(int(sheet.max_column or 0), MAX_COLUMNS_PER_SHEET)
+    except Exception:
+        return 0
 
 
 def _take_rows(sheet, limit: int) -> list[tuple[Any, ...]]:
