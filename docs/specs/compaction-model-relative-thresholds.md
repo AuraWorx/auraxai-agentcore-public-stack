@@ -424,6 +424,20 @@ still passes with the in-place apply.
 
 ### PR-4 — offload escalation (§3.6) — BUILT as tool-result offload at intake
 
+**Cohort split (2026-09-15 audit, content-free, September prod).** Of the 95
+sessions that peaked over 100k: 52 (55%) had a single tool result ≥4k tokens
+in their last three turns (43 only that, 9 also an attachment) — PR-4's
+target; 25 (26%) had an attachment there (16 only that) — the document-offload
+spec's; 27 (28%) had neither — long sessions whose bulk is old history plus a
+23–40k summary, which the cut and the summary cap reach. The biggest single
+intra-turn writes are squarely tool results (123k, 149k, 131k in one call);
+the attachment-only cases include 1–3-turn sessions at 280–530k that are one
+huge upload. Method: turns split at `cacheGapSeconds ≥ 10s`; "big tool result"
+= an intra-turn call that read the prior prefix and wrote ≥4,000 tokens
+(slightly overstated on long `tool_use` blocks); "attachment in the last 3
+turns" = an upload row between the first call of those turns minus 5 min and
+the last call.
+
 ### PR-5 — selective 1h TTL experiment (§3.6)
 
 ## 7. Observability
