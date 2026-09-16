@@ -59,9 +59,13 @@ logger = logging.getLogger(__name__)
 #: plus a live ``document_read`` handle (PR-3); ``document_offload`` — the
 #: post-turn trigger swapped an inline document for its digest, with the
 #: cache gap at the moment it fired (PR-4).
+#: ``truncation_anchor`` — the restore-time anchor slid forward because the
+#: prompt cache had already expired (offload spec PR-5): carries the gap, so
+#: "truncation applied while the cache was live" is a row query, not a scan.
 COMPACTION_EVENT_KINDS = frozenset({
     "applied", "checkpoint", "forced", "floor_unreachable",
     "document_stripped", "document_rehydrated", "document_offload",
+    "truncation_anchor",
 })
 _MAX_PENDING_COMPACTION_EVENTS = 8
 
@@ -370,6 +374,11 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         # if update_after_turn actually advances the checkpoint)
         self._all_messages_for_summary = all_messages[:]
 
+        # The gap this restore ran at, measured before anything below stamps
+        # updated_at, so the ledger can say whether a restore-time truncation
+        # (or slice) landed inside the prompt-cache TTL.
+        restore_gap_seconds = self._seconds_since(self.compaction_state.updated_at)
+
         # Advance the truncation anchor only while the prompt cache is
         # already cold — the prefix re-write is unavoidable then, so pending
         # truncations are free. Persisted before use so subsequent restores
@@ -418,6 +427,10 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 summaryTokens=_approx_tokens(self.compaction_state.summary),
                 retainedMessages=len(agent.messages),
                 truncatedToolResults=truncation_count,
+                # The gap at restore time (offload spec PR-5): a restore-time
+                # slice or truncation inside the TTL is a rebuild while the
+                # cache was live — a rebuild's cost, and now countable.
+                cacheGapSeconds=restore_gap_seconds if restore_gap_seconds is not None else -1,
             )
 
         logger.info(
@@ -453,12 +466,35 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         if sliding_anchor <= max(state.truncation_anchor, state.checkpoint):
             return
 
+        # Measured BEFORE the save below stamps updated_at, so the row shows
+        # the gap the decision was made on. This is the offload spec's PR-5:
+        # the July 2026 audit found 72% of truncations firing inside the TTL
+        # and could only say so by correlating timestamps by hand; the guard
+        # is now the ``_cache_window_expired`` check above, and this event is
+        # what proves it holds — a ``truncation_anchor`` row with
+        # ``cacheGapSeconds`` under the TTL is a regression.
+        gap_seconds = self._seconds_since(state.updated_at)
+        previous_anchor = state.truncation_anchor
         logger.info(
-            "Truncation anchor advance (cache expired): %d -> %d",
-            state.truncation_anchor, sliding_anchor,
+            "Truncation anchor advance (cache expired, gap=%ss): %d -> %d",
+            gap_seconds, previous_anchor, sliding_anchor,
         )
         state.truncation_anchor = sliding_anchor
         self._save_compaction_state(state)
+        self.record_compaction_event(
+            "truncation_anchor",
+            anchorFrom=previous_anchor,
+            anchorTo=sliding_anchor,
+            cacheGapSeconds=gap_seconds if gap_seconds is not None else -1,
+        )
+        self._emit_emf(
+            {
+                "TruncationAnchorAdvanced": 1,
+                "TruncationAnchorCacheGapSeconds": int(gap_seconds or 0),
+            },
+            {"anchorFrom": previous_anchor, "anchorTo": sliding_anchor},
+            {"TruncationAnchorCacheGapSeconds": "Seconds"},
+        )
 
     @staticmethod
     def _cache_window_expired(updated_at: Optional[str], ttl_seconds: int) -> bool:
