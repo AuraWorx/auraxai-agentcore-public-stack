@@ -292,6 +292,13 @@ class AgentFactory:
         # on a NON-Anthropic model this block is passed through untouched and
         # Bedrock rejects the call with AccessDeniedException.
         #
+        # PR-5 (thresholds spec §3.6): the point is placed TTL-less on purpose.
+        # With AGENTCORE_PROMPT_CACHE_STATIC_PREFIX_TTL=1h, ModelConfig sets
+        # CacheConfig(system_prompt_ttl="1h", tools_ttl="1h") and upstream's
+        # _apply_system_cache_ttl rewrites THIS point's ttl ("an explicit
+        # system_prompt_ttl string is honored as written"); the tools point
+        # gets its own. Flag unset → no ttl key anywhere → today's bytes.
+        #
         # RE-VERIFY BEFORE ANY BUMP PAST 1.55.0. This is a statement about
         # upstream internals and it has already rotted once. Re-check
         # _should_cache_system's guard, CacheConfig.system_prompt_ttl's

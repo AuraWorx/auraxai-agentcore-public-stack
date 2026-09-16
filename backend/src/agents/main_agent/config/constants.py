@@ -61,6 +61,12 @@ class EnvVars:
     TOOL_RESULT_OFFLOAD_ENABLED = "AGENTCORE_TOOL_RESULT_OFFLOAD_ENABLED"
     TOOL_RESULT_OFFLOAD_MAX_TOKENS = "AGENTCORE_TOOL_RESULT_OFFLOAD_MAX_TOKENS"
     TOOL_RESULT_OFFLOAD_PREVIEW_TOKENS = "AGENTCORE_TOOL_RESULT_OFFLOAD_PREVIEW_TOKENS"
+    # Selective long cache TTL on the STATIC prefix (thresholds spec §3.6,
+    # PR-5). "1h" puts a 1-hour TTL on the tools and system cachePoints only;
+    # the message-level point stays at Bedrock's 5-minute default. Unset/empty
+    # = today's shape. An experiment arm: default OFF until the live probe
+    # (scripts/probe_static_prefix_ttl.py) and the cost rows say it pays.
+    PROMPT_CACHE_STATIC_PREFIX_TTL = "AGENTCORE_PROMPT_CACHE_STATIC_PREFIX_TTL"
 
     # --- Restored-history repair ---
     # Kill switch for the restore-time tool-pairing/alternation repair
@@ -183,6 +189,12 @@ class Defaults:
     TOOL_RESULT_OFFLOAD_MAX_TOKENS = 4_000
     TOOL_RESULT_OFFLOAD_PREVIEW_TOKENS = 1_000
     TOOL_RESULT_OFFLOAD_S3_PREFIX = "compaction-offload"
+    # Default OFF, deliberately against the flags-default-on house style: a
+    # caching default adopted on inspection alone has already shipped wrong
+    # once (#954 measured 57% more expensive live before #956 reverted it).
+    # The 1h write premium is 2x base vs 1.25x at 5m, so this is a bet on the
+    # gap distribution that has to be measured, not read off the source.
+    PROMPT_CACHE_STATIC_PREFIX_TTL = ""
 
     # --- DynamoDB Tables ---
     DYNAMODB_QUOTA_TABLE = "UserQuotas"

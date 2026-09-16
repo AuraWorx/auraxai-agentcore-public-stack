@@ -1,9 +1,9 @@
 # Compaction relative to the model window — a trigger ceiling, a target floor, and paying the rewrite only when it is free
 
 **Status:** PR-1 open (#1125, this document rides with it). PR-2 (bounded
-summary + compaction metrics, #1128), PR-3 (paid-when-free apply, #1129) and
-PR-4 (tool-result offload at intake) built 2026-09-15 on top of it, stacked.
-PR-5 unbuilt.
+summary + compaction metrics, #1128), PR-3 (paid-when-free apply, #1129),
+PR-4 (tool-result offload at intake, #1131) and PR-5 (selective 1h TTL,
+flag off, built 2026-09-16) stacked on top of it.
 **Owner:** Phil Merrell
 **Related:** `compaction-over-threshold-cache-spiral.md` (#833 — the incident
 and the summary-cap PR this spec depends on) ·
@@ -314,12 +314,29 @@ The original design sketch, kept for the record:
   `to_bedrock_config` (a valid `BedrockConfig` key in 1.55), so Strands'
   own `estimate_utilization` and our policy agree on the window, and the
   eventual v2 engine swap inherits it.
-- **Per-section cache TTL** (PR-5, experiment): tools + system on `1h`,
-  messages on `5m`, via `CacheConfig(system_prompt_ttl="1h", tools_ttl="1h")`.
-  The 2026-07-27 model said a *blanket* 1h TTL was a wash (2× write premium
-  ate the saving) and a *selective* one was the variant worth testing.
-  Sequence behind the 1.55 cache-point invariant test; measure on
-  `cacheStatus` before and after.
+- **Per-section cache TTL** (PR-5) — BUILT, **default off**. `AGENTCORE_PROMPT_CACHE_STATIC_PREFIX_TTL=1h`
+  makes `ModelConfig.to_bedrock_config` emit
+  `CacheConfig(system_prompt_ttl="1h", tools_ttl="1h")`; upstream rewrites
+  the hand-placed TTL-less system point and gives the tools point its own,
+  the message point stays at 5m (`cache_config.ttl` unset), so the order is
+  tools(1h) → system(1h) → messages(5m), which Bedrock requires
+  non-increasing. Anything but the literal `1h` emits exactly today's bytes.
+  **Why off by default, against the flags-default-on house style:** the
+  2026-07-27 model found a *blanket* 1h TTL a wash — the 2× write premium ate
+  the saving — and only the selective variant worth testing; and the repo's
+  standing rule since #954/#956 is that a caching default is never adopted on
+  inspection alone. The gate is `scripts/probe_static_prefix_ttl.py` (two
+  arms, same static prefix, a configurable gap) plus a week of cost rows in
+  dev with the flag on. **The experiment arm's rows are priced honestly:**
+  `CostCalculator.calculate_message_cost` bills the unread remainder of the
+  static segment at the 1h premium (2× base) and the rest of the write at the
+  catalog's 5m rate, using the context-attribution breakdown for the static
+  size; every such row carries `staticPrefixTtl: "1h"` so the anatomy can
+  split arms. Economics to expect: +0.75× base on every static write, −1.15×
+  base on every return inside the hour but past five minutes; it pays when
+  the second is more frequent than the first (the audit's 36% cold re-writes
+  after a >5 min pause say it might, on the 28k static prefix; the hourly
+  system-prompt tick would bust it hourly until that fix lands).
 
 ## 4. Cost model
 
@@ -438,7 +455,7 @@ huge upload. Method: turns split at `cacheGapSeconds ≥ 10s`; "big tool result"
 turns" = an upload row between the first call of those turns minus 5 min and
 the last call.
 
-### PR-5 — selective 1h TTL experiment (§3.6)
+### PR-5 — selective 1h TTL experiment (§3.6) — BUILT, flag off; enable per the gate above
 
 ## 7. Observability
 
