@@ -478,8 +478,17 @@ but past five minutes (~$0.0075); the arm pays when such returns outnumber
 static writes by more than ~0.7 : 1. Static writes also happen on every
 prefix *change* (a model or tool-set switch, and today the hourly
 system-prompt tick), so the dev-week measurement should run **after** the
-tick fix lands. Not yet run: the 60 s gap (both arms read; the 1h arm pays
-the premium with no saving) — the cost of the arm on bursty sessions.
+tick fix lands.
+
+**60 s gap, same day:** both arms read the full 6,251 on the second call
+(5m: $0.008598 + $0.000691; 1h: $0.013756 + $0.000691). The 1h arm was
+**$0.005157 more expensive** — exactly the 0.75× base premium on the first
+write, with nothing to recover inside five minutes. So the arm is a fixed
+surcharge per static write, ~$0.0052 on this 6.3k prefix (≈$0.023 on a 28k
+prod prefix at Haiku rates, ≈$0.042 on Sonnet 5), recovered at ~$0.0075 /
+$0.034 / $0.061 per return that lands between five and sixty minutes. The
+dev week decides whether prod sessions return in that window often enough;
+the probe cannot.
 
 ## 7. Observability
 

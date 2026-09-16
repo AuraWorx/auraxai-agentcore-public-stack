@@ -34,6 +34,10 @@ Baseline, dev-ai us-west-2, 2026-09-16, Haiku 4.5, gap 420s:
     5m  first  read 0     write 6251   second  read 0     write 6251
     1h  first  read 0     write 6251   second  read 5924  write 327   <- honored
     pair $0.017197 (5m) vs $0.015130 (1h): 1h CHEAPER by 12% at this gap
+Same day, gap 60s (both arms warm):
+    5m  second read 6251 write 0 ; 1h second read 6251 write 0
+    pair $0.009289 (5m) vs $0.014446 (1h): 1h MORE EXPENSIVE by $0.005157
+    = the 0.75x-base premium on the first write, nothing to recover inside 5m
 """
 
 from __future__ import annotations
