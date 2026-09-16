@@ -289,6 +289,18 @@ class StreamCoordinator:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"apply_pending_compaction failed, continuing: {e}")
 
+        # Document offload (offload spec §4C, PR-4): in the same head-of-turn
+        # slot, swap unpinned large documents for their digests and stub aged
+        # document_read slices — only when the re-write is free or
+        # unavoidable, decided by the session manager on the same cache-gap
+        # facts. The incoming prompt is passed so a document the user just
+        # named stays pinned. Best-effort: never blocks the turn.
+        if session_manager is not None and hasattr(session_manager, "apply_document_offload"):
+            try:
+                session_manager.apply_document_offload(agent, prompt=prompt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"apply_document_offload failed, continuing: {e}")
+
         # Likewise a pause armed by a previous turn: if the user abandoned an
         # OAuth/tool-approval consent and just typed again, the still-armed
         # interrupt state makes Strands reject this turn's prompt outright.

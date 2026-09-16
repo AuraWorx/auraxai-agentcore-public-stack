@@ -146,6 +146,10 @@ export interface CompactionEvent {
   documents?: number | null;
   documentTokens?: number | null;
   cacheGapSeconds?: number | null;
+  /** `document_offload` only: digest tokens the evicted documents became, and aged page slices. */
+  digestTokens?: number | null;
+  slices?: number | null;
+  sliceTokens?: number | null;
 }
 
 /** `document_read` retrievals one model call requested. */

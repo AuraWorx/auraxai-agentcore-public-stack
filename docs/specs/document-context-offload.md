@@ -404,7 +404,7 @@ currently allows (see the outcome-signal row).
 | 1 — **built** | `document_read` (page-range + pattern + bounded text; native `document` block reassembly), **gated on the session having a readable attachment**, id kept out of `INJECTED_TOOL_IDS`, presence carried in the agent-cache key; **analytics**: per-call document context on `C#` rows, the `documentReads` ledger entry, the `document_stripped` ledger event, session-row rollups, anatomy + profile surfaces, EMF; `document_read` results exempt from the tool-result offloader | 12-page PDF: `page_range="4-7"` returns 4 pages as one native block whose page 1 is original page 4; `max_pages` and the hard cap hold; tool built for a session with no grants and no picker toggle; content-policy test walks the new fields; full backend suite green |
 | 2 — **built** (`feature/document-offload-pr2`, stacked on PR-1) | `DocumentDigest` (`apis/shared/files/document_digest.py`): a deterministic outline (headings with page / paragraph / line anchors, table and figure mentions, counts) plus a 3–5-sentence abstract from the cheap text model (Nova Micro, `DOCUMENT_DIGEST_MODEL_ID`), built off the request path when a document upload completes and persisted as `FileMetadata.digest`; `render_digest` produces the `<document-digest …>` block under a hard 1,500-token budget (sections dropped first, then the abstract) and stores the estimate as `digest.tokens`; `digest.abstract` / `digest.sections` denylisted, coverage on the attachment profile; **not yet used in context** | 200-page PDF digest ≤1,500 tokens (tested); extraction and abstract each fail open; kill switch `DOCUMENT_DIGEST_ENABLED`; no chat-path change; p95 latency to be read from `DocumentDigestMs` in dev |
 | 3 — **built** (`feature/document-offload-pr3`, stacked on PR-2) | `_strip_document_bytes` → `session/document_rehydration.py`: each inline document block is matched to its upload row (sanitized filename incl. PromptBuilder's `_2` suffix, byte-size tiebreak, newest first, no double-claiming) and replaced by the rendered `<document-digest … upload_id=…>` block; rows without a digest get an **outline-only digest built from the bytes already in the restored message** (no S3, no model call) and persisted; unmatched blocks keep the placeholder byte-for-byte; ledger records `document_rehydrated` and `document_stripped` separately; kill switch `DOCUMENT_REHYDRATE_ENABLED` | restore output is stable across restores (tested); a matched block carries the abstract, outline and handle; unmatched blocks are unchanged from today; `document_stripped` per session-day should fall to the unmatched residue (direct base64 attachments, deleted files) — read it from the ledger; re-upload rate (byte-identical) starts falling |
-| 4 | Offload trigger in `update_after_turn` + pinning, behind `DOCUMENT_OFFLOAD_ENABLED` as a percentage rollout keyed on `hash(session_id)`; records `document_offload` with `cacheGapSeconds`; old `document_read` slices in history treated like documents | slice-assignment guard test passes; offload fires at most once per document; **zero** `document_offload` events with `cacheGapSeconds` under the TTL |
+| 4 — **built** (`feature/document-offload-pr4`, stacked on PR-3) | Offload at **head-of-turn**, in the slot right after `apply_pending_compaction` (not post-turn: the compaction stack's §3.5 "decide post-turn, apply when free" is the same rule) — `session/document_offload.py` + `TurnBasedSessionManager.apply_document_offload`: pinning (attach turn + next, prompt names it, recent `document_read` result), `DOCUMENT_OFFLOAD_MIN_TOKENS` (5,000), and the cache-gap decision (`cache_expired` / `prefix_changed` / `over_ceiling`, else wait); the replacement is PR-3's restore transformation so the live block equals a cold restore's; aged `document_read` slices stubbed on both paths; `DOCUMENT_OFFLOAD_ENABLED` kill switch + `DOCUMENT_OFFLOAD_ROLLOUT_PERCENT` bucket on `crc32(session_id)`; records `document_offload` with `cacheGapSeconds` | in-place mutation only (no rebinding); a pinned document never moves; nothing moves while the cache is live (tested); **zero** `document_offload` events with `cacheGapSeconds` under the TTL except `over_ceiling` / `prefix_changed` ones, which carry their reason |
 | 5 | Fix the cache-live guard on the *existing* truncation deferral (same predicate as PR-4) | truncation events while cache live: 72% → ~0 |
 | 6 | Backend guard on a turn's aggregate inline attachment bytes (~7.5 MB), mirroring the SPA's `MAX_FILES_PER_MESSAGE` | oversized turn degrades to the `oversized_inline` guidance path, never to `SessionException` |
 | 7 | **Outcome signal**: a content-free thumbs up/down on assistant messages, persisted keyed on `(sessionId, messageId)` so it joins the `C#` row's `hasDocuments` / `documentDigests` / `documentReads` in one key; fleet-level document-share column on the admin dashboard | down-thumb rate reported by turn class (full / digest-only / retrieved) with n per class |
@@ -719,6 +719,43 @@ visual fidelity before any digest comparison is scored.
     running, so it cannot await; the repository gained `_sync` bodies for the
     session query and the digest write (boto3 was synchronous underneath all
     along) rather than a thread-with-its-own-loop.
+
+**PR-4 (2026-09-16)**
+
+21. **Head-of-turn, not `update_after_turn`.** §4C said the trigger runs
+    post-turn. The compaction stack has since moved to "decide post-turn,
+    apply at the head of the next turn only when the re-write is free or
+    unavoidable" (`apply_pending_compaction`, thresholds spec §3.5), and
+    that predicate — cache expired, prefix changed, or the ceiling is
+    already breached — *is* this spec's cache-aware rule. So the offload
+    runs in the same slot, right after the parked cut is applied, and reads
+    the same facts (`updated_at`, `last_prefix_key`, `last_input_tokens`).
+    One decision point for every prefix mutation.
+22. **The offload is the restore transformation, applied early.** A block is
+    replaced by exactly what PR-3 would render for it on a cold restore
+    (same matcher, same persisted digest, same renderer). That is what
+    makes it byte-stable: after an offload, the live prefix and the next
+    restore agree on that block. Unmatched blocks stay inline on the live
+    path (restore has to drop bytes; offload does not).
+23. **Pinning is a pure function of the message list plus the incoming
+    prompt**, not Strands' `pin_message` metadata. Our slice is not
+    `SummarizingConversationManager`, and message metadata is persisted to
+    AgentCore Memory — writing pins there would alter stored bytes. Rules:
+    on the attach turn and the next (`DOCUMENT_OFFLOAD_PIN_TURNS=2`); the
+    incoming or previous prompt contains the document's name stem; a
+    `document_read` result for it sits in the recent turns.
+24. **Slices are aged on both paths.** `document_read` page slices older
+    than `DOCUMENT_SLICE_MAX_TURNS` become a deterministic stub on the live
+    path (same gate) and on restore, so a warm agent and a cold restore
+    agree. The stub is a function of the block's unique name, so it is stable.
+25. **Rollout is a bucket, not a boolean.** `DOCUMENT_OFFLOAD_ROLLOUT_PERCENT`
+    (default 100) over `crc32(session_id) % 100` gives the evaluation spec
+    its concurrent B/C arms; `DOCUMENT_OFFLOAD_ENABLED=false` is the kill
+    switch. `crc32`, not `hash()`, because the latter is salted per process.
+26. **Ceiling without a policy snapshot.** When the compaction state has no
+    `policy.ceiling` yet, the reason falls back to
+    `CompactionPolicy.resolve(config, None)` (the fixed threshold) — a
+    conservative ceiling, so `over_ceiling` never fires early.
 
 ---
 
