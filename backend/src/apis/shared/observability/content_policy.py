@@ -64,6 +64,8 @@ CONTENT_BEARING: FrozenSet[str] = frozenset({
     "filename",                       # user-chosen
     "s3Key",                          # embeds the filename
     "s3Uri",
+    "digest.abstract",                # model-generated abstract of the document
+    "digest.sections",                # heading text lifted from the document
 })
 
 #: The one path a content-free reader may *request* but must never *return*.
@@ -188,6 +190,12 @@ FILE_ROW_PROJECTION: Tuple[str, ...] = (
     "source",
     "status",
     "createdAt",
+    # DocumentDigest coverage (numbers and the format enum only; the
+    # abstract and section titles are denylisted above).
+    "digest.status",
+    "digest.format",
+    "digest.count",
+    "digest.tokens",
 )
 
 ALL_PROJECTIONS: Dict[str, Tuple[str, ...]] = {

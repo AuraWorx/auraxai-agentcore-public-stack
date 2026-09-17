@@ -45,6 +45,19 @@ class TestFileUploadRepository:
         assert updated.status == "ready"
 
     @pytest.mark.asyncio
+    async def test_update_digest_round_trips_and_needs_the_row(self, file_repository):
+        await file_repository.create_file(_make_file())
+        digest = {"version": 1, "status": "ready", "format": "pdf", "count": 3,
+                  "sections": [{"start": 1, "title": "Intro"}], "tokens": 120, "abstract": "x"}
+        updated = await file_repository.update_file_digest("u1", "f1", digest)
+        assert updated is not None and updated.digest["count"] == 3
+        assert (await file_repository.get_file("u1", "f1")).digest["sections"] == [{"start": 1, "title": "Intro"}]
+        assert await file_repository.update_file_digest("u1", "missing", digest) is None
+        # Rows without a digest read as None, never as an empty map.
+        await file_repository.create_file(_make_file("f2"))
+        assert (await file_repository.get_file("u1", "f2")).digest is None
+
+    @pytest.mark.asyncio
     async def test_delete_file(self, file_repository):
         await file_repository.create_file(_make_file())
         deleted = await file_repository.delete_file("u1", "f1")

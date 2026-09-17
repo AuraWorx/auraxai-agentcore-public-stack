@@ -417,6 +417,10 @@ class AttachmentProfile(BaseModel):
     count: int = 0
     total_bytes: int = Field(0, alias="totalBytes")
     by_mime: Dict[str, int] = Field(default_factory=dict, alias="byMime")
+    # DocumentDigest coverage: uploads with a ready digest and the rendered
+    # token estimate they would cost in context (offload spec §4A).
+    digested: int = 0
+    digest_tokens: int = Field(0, alias="digestTokens")
 
 
 class ContextTrajectoryPoint(BaseModel):
