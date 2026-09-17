@@ -107,7 +107,7 @@ def test_session_profile_returns_200():
         "prefixTokens": False, "windowTrim": False, "compactionEvents": False,
         "feedback": False,
     }
-    assert body["feedback"] == {"up": 0, "down": 0, "byTurnClass": None, "unjoined": 0}
+    assert body["feedback"] == {"up": 0, "down": 0, "byTurnClass": None, "unjoined": 0, "retried": 0, "reworkUsd": None}
     service.get_session_profile.assert_awaited_once_with("s1")
 
 

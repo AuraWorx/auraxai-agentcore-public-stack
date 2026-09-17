@@ -4,6 +4,7 @@ import {
   cleanCeiling,
   downRate,
   feedbackByTurnClassLine,
+  feedbackRetryLine,
   formatBytes,
   formatEvidenceValue,
   formatTokensShort,
@@ -41,6 +42,12 @@ describe('session-profile.util', () => {
         },
       });
       expect(line).toBe('full 50% of 2 · digest 0% of 2 · no docs 100% of 1');
+    });
+
+    it('feedbackRetryLine names retries and prices rework only when known', () => {
+      expect(feedbackRetryLine({ up: 0, down: 1 })).toBeNull();
+      expect(feedbackRetryLine({ up: 0, down: 1, retried: 1 })).toBe('1 retried');
+      expect(feedbackRetryLine({ up: 0, down: 2, retried: 2, reworkUsd: 0.351 })).toBe('2 retried · $0.35 rework');
     });
 
     it('feedbackByTurnClassLine is null when the turn class is not tracked', () => {

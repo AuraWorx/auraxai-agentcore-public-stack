@@ -15,12 +15,18 @@ row-family summary in ``apis.shared.sessions.metadata``)::
     SK:      F#{session_id}#{message_id}
     GSI_PK:  SESSION#{session_id}      (SessionLookupIndex)
     GSI_SK:  F#{message_id}
-    sessionId, messageId, userId, value, reason?, signal, updatedAt, ttl
+    sessionId, messageId, userId, value, reason?, signal, retryMessageId?, updatedAt, ttl
 
 ``signal`` is ``"explicit"`` for a thumb. ``docs/specs/response-feedback.md``
 §10 adds implicit signals (copy, continue, edit-and-resend, abandonment) to
 this same row family under ``signal: "implicit"``; every reader here filters
 to explicit rows so that phase needs no backfill and the two are never summed.
+
+``retryMessageId`` is the index of the user message the SPA sent as a
+*retry with correction* after a down-thumb (response-feedback spec §7 "the
+retry loop", §11 PR-1's consequence). It is a link, never the correction's
+text: the profile counts retries and prices the rework from the cost rows
+the link points at. A later re-thumb without the field keeps the link.
 
 ``messageId`` is the same 0-based index the ``C#`` cost row carries for the
 assistant message, so an admin read joins feedback to the call's turn class
@@ -82,9 +88,11 @@ def _keys(user_id: str, session_id: str, message_id: int) -> Dict[str, str]:
 
 
 def _to_model(item: Dict[str, Any]) -> MessageFeedback:
+    retry = item.get("retryMessageId")
     return MessageFeedback(
         value=int(item.get("value", 0)),
         reason=item.get("reason") if item.get("reason") in FEEDBACK_REASONS else None,
+        retry_message_id=int(retry) if retry is not None else None,
         updated_at=str(item.get("updatedAt", "")),
     )
 
@@ -124,8 +132,15 @@ async def put_message_feedback(
     message_id: int,
     value: int,
     reason: Optional[str] = None,
+    retry_message_id: Optional[int] = None,
 ) -> MessageFeedback:
     """Write (or replace) this user's thumb on one message.
+
+    An upsert (``update_item``): ``value`` / ``reason`` / ``updatedAt`` are
+    replaced on every call, ``retryMessageId`` is set when given and kept
+    otherwise, so a user who thumbs again after retrying does not lose the
+    link. ``ReturnValues=ALL_OLD`` tells us what a replace replaced, so the
+    session rollups move by the delta rather than double-counting.
 
     Raises :class:`SessionNotOwned` when the session is not this user's, and
     ``ValueError`` on a value outside ``{1, -1}`` or a reason outside
@@ -136,35 +151,60 @@ async def put_message_feedback(
         raise ValueError("feedback value must be 1 or -1")
     if reason is not None and reason not in FEEDBACK_REASONS:
         raise ValueError("feedback reason must be one of the fixed codes")
+    if retry_message_id is not None and (not isinstance(retry_message_id, int) or retry_message_id < 0):
+        raise ValueError("retryMessageId must be a non-negative message index")
     if is_preview_session(session_id):
         # Preview sessions persist nothing; echo the thumb so the UI is consistent.
-        return MessageFeedback(value=value, reason=reason, updated_at=_now())
+        return MessageFeedback(value=value, reason=reason, retry_message_id=retry_message_id, updated_at=_now())
 
     table = _table()
     session_sk = await _owned_session_sk(session_id, user_id, table)
 
     now = _now()
     ttl = int((datetime.now(timezone.utc) + timedelta(days=FEEDBACK_TTL_DAYS)).timestamp())
-    item: Dict[str, Any] = {
-        **_keys(user_id, session_id, message_id),
+    sets = {
         "GSI_PK": f"SESSION#{session_id}",
         "GSI_SK": f"F#{message_id}",
         "sessionId": session_id,
         "messageId": int(message_id),
         "userId": user_id,
-        "value": int(value),
-        "signal": "explicit",
+        "#value": int(value),
+        "#signal": "explicit",
         "updatedAt": now,
-        "ttl": ttl,
+        "#ttl": ttl,
     }
     if reason:
-        item["reason"] = reason
+        sets["reason"] = reason
+    if retry_message_id is not None:
+        sets["retryMessageId"] = int(retry_message_id)
+    names = {"#value": "value", "#signal": "signal", "#ttl": "ttl"}
+    values: Dict[str, Any] = {}
+    set_parts = []
+    for i, (attr, val) in enumerate(sets.items()):
+        placeholder = f":v{i}"
+        values[placeholder] = val
+        set_parts.append(f"{attr} = {placeholder}")
+    expression = "SET " + ", ".join(set_parts)
+    if not reason:
+        expression += " REMOVE reason"
 
-    # ReturnValues=ALL_OLD tells us what a replace is replacing, so the
-    # session rollups move by the delta rather than double-counting.
-    response = table.put_item(Item=item, ReturnValues="ALL_OLD")
+    response = table.update_item(
+        Key=_keys(user_id, session_id, message_id),
+        UpdateExpression=expression,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_OLD",
+    )
     previous = response.get("Attributes") or {}
     previous_value = int(previous.get("value", 0)) if previous else 0
+    item: Dict[str, Any] = {
+        "value": int(value),
+        "reason": reason,
+        "retryMessageId": (
+            int(retry_message_id) if retry_message_id is not None else previous.get("retryMessageId")
+        ),
+        "updatedAt": now,
+    }
 
     up = (1 if value == 1 else 0) - (1 if previous_value == 1 else 0)
     down = (1 if value == -1 else 0) - (1 if previous_value == -1 else 0)

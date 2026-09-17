@@ -2,6 +2,7 @@ import { computed, inject, Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '../../../services/config.service';
+import { ComposerDraftService } from './composer-draft.service';
 import { Message, MessageFeedback, FeedbackReason } from '../models/message.model';
 
 /**
@@ -22,6 +23,14 @@ import { Message, MessageFeedback, FeedbackReason } from '../models/message.mode
 export class MessageFeedbackService {
   private readonly http = inject(HttpClient);
   private readonly config = inject(ConfigService);
+  private readonly composerDraft = inject(ComposerDraftService);
+
+  /**
+   * A down-thumb the user chose to retry, waiting for the correction to be
+   * sent. Consumed by `consumePendingRetry` when the next user message of
+   * that session is added, which is when the row gets its `retryMessageId`.
+   */
+  private readonly pendingRetry = signal<{ sessionId: string; message: Message } | null>(null);
 
   /** Local overrides keyed by message id; `null` = withdrawn. */
   private readonly overrides = signal<ReadonlyMap<string, MessageFeedback | null>>(new Map());
@@ -46,20 +55,27 @@ export class MessageFeedbackService {
   }
 
   /** Thumb a message, replacing any earlier thumb (one per user+message). */
-  async setFeedback(message: Message, value: 1 | -1, reason?: FeedbackReason): Promise<void> {
+  async setFeedback(
+    message: Message,
+    value: 1 | -1,
+    reason?: FeedbackReason,
+    retryMessageId?: number,
+  ): Promise<void> {
     const target = parseMessageRef(message.id);
     if (!target) return;
     const previous = this.feedbackFor(message);
     const optimistic: MessageFeedback = {
       value,
       reason: reason ?? (previous?.value === value ? previous?.reason : undefined),
+      retryMessageId: retryMessageId ?? previous?.retryMessageId,
       updatedAt: new Date().toISOString(),
     };
     this.setOverride(message.id, optimistic);
     this.markPending(message.id, true);
     try {
-      const body: { value: 1 | -1; reason?: FeedbackReason } = { value };
+      const body: { value: 1 | -1; reason?: FeedbackReason; retryMessageId?: number } = { value };
       if (optimistic.reason) body.reason = optimistic.reason;
+      if (retryMessageId !== undefined) body.retryMessageId = retryMessageId;
       const stored = await firstValueFrom(
         this.http.put<MessageFeedback>(this.url(target.sessionId, target.index), body),
       );
@@ -69,6 +85,37 @@ export class MessageFeedbackService {
     } finally {
       this.markPending(message.id, false);
     }
+  }
+
+  /**
+   * The consequence (spec §7 "the retry loop"): put a correction template for
+   * the thumb's reason into the composer for the user to edit and send. The
+   * template is conversation content and goes where the message goes;
+   * nothing of it is stored on the feedback row.
+   */
+  requestRetry(message: Message): void {
+    const target = parseMessageRef(message.id);
+    if (!target) return;
+    const reason = this.feedbackFor(message)?.reason;
+    this.pendingRetry.set({ sessionId: target.sessionId, message });
+    this.composerDraft.request(target.sessionId, retryTemplate(reason));
+  }
+
+  /**
+   * Called by the send path once the next user message of a session exists.
+   * Links it to the pending down-thumb as `retryMessageId` — an index, never
+   * the correction's text — and clears the pending retry. A message on
+   * another session, or with no server-shaped id, leaves the retry pending.
+   */
+  consumePendingRetry(sessionId: string, userMessage: Message | null | undefined): void {
+    const pending = this.pendingRetry();
+    if (!pending || pending.sessionId !== sessionId || !userMessage) return;
+    const sent = parseMessageRef(userMessage.id);
+    if (!sent) return;
+    this.pendingRetry.set(null);
+    const current = this.feedbackFor(pending.message);
+    if (!current || current.value !== -1) return;
+    void this.setFeedback(pending.message, -1, current.reason, sent.index);
   }
 
   /** Withdraw the thumb on a message. */
@@ -141,11 +188,35 @@ export function readPersistedFeedback(message: Message): MessageFeedback | null 
   const value = (raw as { value?: unknown }).value;
   if (value !== 1 && value !== -1) return null;
   const reason = (raw as { reason?: unknown }).reason;
+  const retry = (raw as { retryMessageId?: unknown }).retryMessageId;
   return {
     value,
     reason: isFeedbackReason(reason) ? reason : undefined,
+    retryMessageId: typeof retry === 'number' && Number.isInteger(retry) && retry >= 0 ? retry : undefined,
     updatedAt: String((raw as { updatedAt?: unknown }).updatedAt ?? ''),
   };
+}
+
+/**
+ * Correction templates per reason code (spec §6 buckets). Each ends where the
+ * user's own words belong; they are prefilled, never auto-sent.
+ */
+export function retryTemplate(reason: FeedbackReason | undefined): string {
+  switch (reason) {
+    case 'wrong':
+      return 'That answer was wrong or made up. Redo it, checking each claim against the sources you actually have, and say what you are unsure about. Specifically: ';
+    case 'instructions':
+      return 'That answer ignored my instructions. Redo it following exactly what I asked for. In particular: ';
+    case 'length':
+      return 'That answer was the wrong length. Redo it ';
+    case 'tool_failed':
+      return 'A tool or search failed in that answer. Try again, and if it fails again tell me instead of guessing. ';
+    case 'outdated':
+      return 'That answer was out of date. Redo it using the most current information you have, and say how current it is. ';
+    case 'other':
+    default:
+      return 'That answer did not work for me. Redo it, and this time ';
+  }
 }
 
 export const FEEDBACK_REASONS: readonly FeedbackReason[] = ['wrong', 'instructions', 'length', 'tool_failed', 'outdated', 'other'];

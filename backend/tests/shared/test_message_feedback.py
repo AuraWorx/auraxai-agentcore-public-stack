@@ -73,7 +73,7 @@ async def test_put_writes_one_row_keyed_beside_the_cost_row(table):
     assert "ttl" in row
     # Content-free: nothing on the row but ids, a number, a timestamp and keys.
     assert row["signal"] == "explicit"
-    assert set(row) <= {"PK", "SK", "GSI_PK", "GSI_SK", "sessionId", "messageId", "userId", "value", "signal", "updatedAt", "ttl"}
+    assert set(row) <= {"PK", "SK", "GSI_PK", "GSI_SK", "sessionId", "messageId", "userId", "value", "signal", "retryMessageId", "updatedAt", "ttl"}
 
 
 @pytest.mark.asyncio
@@ -95,6 +95,28 @@ async def test_second_thumb_replaces_the_first_and_rollups_follow(table):
     row = _session_row()
     assert row["thumbsUp"] == 0 and row["thumbsDown"] == 1
     assert _feedback_items()[0]["reason"] == "wrong"
+
+
+@pytest.mark.asyncio
+async def test_retry_link_is_set_once_and_kept_across_later_thumbs(table):
+    """Retry-with-correction (response-feedback §7): the row links the user
+    message the correction was sent as, and a later re-thumb without the
+    field must not drop it."""
+    first = await fb.put_message_feedback(SESSION, OWNER, 3, -1, reason="wrong")
+    assert first.retry_message_id is None
+    linked = await fb.put_message_feedback(SESSION, OWNER, 3, -1, reason="wrong", retry_message_id=4)
+    assert linked.retry_message_id == 4
+    assert int(_feedback_items()[0]["retryMessageId"]) == 4
+
+    # Re-thumb (say, the retry was better and they flip to up): link stays.
+    again = await fb.put_message_feedback(SESSION, OWNER, 3, 1)
+    assert again.value == 1 and again.retry_message_id == 4
+    row = _feedback_items()[0]
+    assert int(row["retryMessageId"]) == 4 and "reason" not in row
+    assert _session_row()["thumbsUp"] == 1 and _session_row()["thumbsDown"] == 0
+
+    with pytest.raises(ValueError):
+        await fb.put_message_feedback(SESSION, OWNER, 3, -1, retry_message_id=-1)
 
 
 @pytest.mark.asyncio

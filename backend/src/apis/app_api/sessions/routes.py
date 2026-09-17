@@ -694,7 +694,9 @@ async def put_message_feedback_endpoint(
 
     ``message_id`` is the message's 0-based index in the conversation — the
     trailing number of the SPA's ``msg-{sessionId}-{index}`` id, and the
-    ``messageId`` the message's cost row carries.
+    ``messageId`` the message's cost row carries. ``retryMessageId`` in the
+    body links the user message sent as a retry-with-correction; it is kept
+    across later thumbs on the same message.
     """
     _require_message_feedback()
     try:
@@ -704,6 +706,7 @@ async def put_message_feedback_endpoint(
             message_id=message_id,
             value=body.value,
             reason=body.reason,
+            retry_message_id=body.retry_message_id,
         )
     except SessionNotOwned:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")

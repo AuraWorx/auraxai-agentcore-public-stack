@@ -48,7 +48,16 @@ def test_put_stores_and_echoes_the_thumb(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == {"value": -1, "reason": "instructions", "updatedAt": "2026-09-16T00:00:00Z"}
-    put.assert_awaited_once_with(session_id="s1", user_id="user-1", message_id=3, value=-1, reason="instructions")
+    put.assert_awaited_once_with(session_id="s1", user_id="user-1", message_id=3, value=-1, reason="instructions", retry_message_id=None)
+
+
+def test_put_forwards_the_retry_link(monkeypatch):
+    put = AsyncMock(return_value=MessageFeedback(value=-1, retry_message_id=4, updated_at="t"))
+    client = _client(monkeypatch, put=put)
+    resp = client.put("/sessions/s1/messages/3/feedback", json={"value": -1, "retryMessageId": 4})
+    assert resp.status_code == 200 and resp.json()["retryMessageId"] == 4
+    assert put.await_args.kwargs["retry_message_id"] == 4
+    assert client.put("/sessions/s1/messages/3/feedback", json={"value": -1, "retryMessageId": -1}).status_code == 422
 
 
 def test_put_rejects_free_text_and_out_of_range_values(monkeypatch):

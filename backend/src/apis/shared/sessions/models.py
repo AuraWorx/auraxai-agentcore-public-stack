@@ -662,6 +662,10 @@ class MessageFeedback(BaseModel):
 
     value: Literal[1, -1] = Field(..., description="+1 for thumbs up, -1 for thumbs down")
     reason: Optional[FeedbackReason] = Field(None, description="Optional reason code (never free text)")
+    retry_message_id: Optional[int] = Field(
+        None, alias="retryMessageId", ge=0,
+        description="Index of the user message sent as a retry-with-correction after this thumb (content-free link)",
+    )
     updated_at: str = Field(..., alias="updatedAt", description="ISO timestamp of the latest thumb")
 
 
@@ -672,6 +676,10 @@ class MessageFeedbackRequest(BaseModel):
 
     value: Literal[1, -1] = Field(..., description="+1 for thumbs up, -1 for thumbs down")
     reason: Optional[FeedbackReason] = Field(None, description="Optional reason code (never free text)")
+    retry_message_id: Optional[int] = Field(
+        None, alias="retryMessageId", ge=0,
+        description="Set when the user sent a retry-with-correction: that user message's index",
+    )
 
 
 class MessageMetadata(BaseModel):
