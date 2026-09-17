@@ -26,6 +26,9 @@ from .models import (
     AttachmentProfile,
     ContextTrajectoryPoint,
     DataCoverage,
+    FeedbackByTurnClass,
+    FeedbackCounts,
+    FeedbackProfile,
     FingerprintChanges,
     SessionDiagnosis,
     SessionProfile,
@@ -76,6 +79,84 @@ def _record_cost(record: Dict[str, Any]) -> Optional[float]:
     if isinstance(raw, dict):
         raw = raw.get("total")
     return _as_float(raw)
+
+
+def _turn_class(record: Dict[str, Any]) -> Optional[str]:
+    """Turn class of one ``C#`` row from its document-context fields (spec
+    §6.1): ``full`` (``hasDocuments``), ``retrieved`` (``documentReads.pages
+    > 0``), ``digestOnly`` (``documentDigests > 0``), else ``none``.
+
+    Precedence is full > retrieved > digestOnly: a call that pulled pages back
+    still holds the digest, so testing the digest first would leave the
+    retrieved arm — the one the quality gate is about — permanently empty.
+    ``None`` when the row carries none of the fields (written before #1137
+    or with diagnostics off), so the caller says "not tracked", not "none".
+    """
+    has_documents = record.get("hasDocuments")
+    digests = record.get("documentDigests")
+    reads = record.get("documentReads")
+    if has_documents is None and digests is None and reads is None:
+        return None
+    if has_documents:
+        return "full"
+    pages = _as_int(reads.get("pages")) if isinstance(reads, dict) else _as_int(reads)
+    if (pages or 0) > 0:
+        return "retrieved"
+    if (_as_int(digests) or 0) > 0:
+        return "digestOnly"
+    return "none"
+
+
+def _join_feedback(
+    records: List[Dict[str, Any]],
+    feedback_rows: List[Dict[str, Any]],
+) -> FeedbackProfile:
+    """Join ``F#`` rows to ``C#`` rows on ``messageId`` and bucket by turn
+    class. Pure; the profile's numbers, never any content. Explicit thumbs
+    only (``signal`` absent or ``"explicit"``)."""
+    by_message: Dict[int, Dict[str, Any]] = {}
+    for record in records:
+        message_id = _as_int(record.get("messageId"))
+        if message_id is not None:
+            # The last call of a multi-call turn is the one the user thumbed;
+            # rows share a messageId only across the turn's tool round trips
+            # and later rows have the fuller context, so last write wins.
+            by_message[message_id] = record
+
+    any_turn_class = any(_turn_class(r) is not None for r in records)
+    buckets = FeedbackByTurnClass() if any_turn_class else None
+    profile = FeedbackProfile()
+    for row in feedback_rows:
+        # Explicit thumbs only — implicit signals (spec §10) share the row
+        # family but answer a different question and must never be summed in.
+        if row.get("signal") not in (None, "explicit"):
+            continue
+        value = _as_int(row.get("value"))
+        if value not in (1, -1):
+            continue
+        if value == 1:
+            profile.up += 1
+        else:
+            profile.down += 1
+        message_id = _as_int(row.get("messageId"))
+        record = by_message.get(message_id) if message_id is not None else None
+        if record is None:
+            profile.unjoined += 1
+            continue
+        if buckets is None:
+            continue
+        klass = _turn_class(record) or "none"
+        bucket: FeedbackCounts = {
+            "full": buckets.full,
+            "digestOnly": buckets.digest_only,
+            "retrieved": buckets.retrieved,
+        }.get(klass, buckets.none)
+        if value == 1:
+            bucket.up += 1
+        else:
+            bucket.down += 1
+    profile.by_turn_class = buckets
+    return profile
 
 
 def _context_tokens(record: Dict[str, Any]) -> int:
@@ -1036,6 +1117,20 @@ class AdminCostService:
             digest_tokens=digest_tokens,
         )
 
+    async def _feedback_rows(self, session_id: str) -> List[Dict[str, Any]]:
+        """The session's ``F#`` rows. Best-effort: a storage fork without the
+        reader, or a transient error, yields none — the profile then falls
+        back to the session rollups and reports coverage honestly."""
+        reader = getattr(self.storage, "get_session_feedback_rows", None)
+        if reader is None:
+            return []
+        try:
+            rows = await reader(session_id)
+        except Exception as e:  # noqa: BLE001 - feedback is one signal of several
+            logger.debug("Feedback rows unavailable for session: %s", e)
+            return []
+        return list(rows or [])
+
     async def get_session_profile(self, session_id: str) -> Optional[SessionProfile]:
         """The content-free diagnostic profile of one conversation, or ``None``
         when the session has no metadata row.
@@ -1052,6 +1147,7 @@ class AdminCostService:
 
         records = await self.storage.get_session_cost_records(session_id)
         attachments = await self._attachment_profile(session_id)
+        feedback_rows = await self._feedback_rows(session_id)
         user_period_cost = (
             await self._user_period_cost(user_id, self._get_current_period())
             if user_id else None
@@ -1192,6 +1288,15 @@ class AdminCostService:
             facts.tool_call_count = sum(e.calls for e in census.values())
             facts.tool_error_count = sum(e.errors for e in census.values())
 
+        # Outcome signal: thumbs joined to the calls they rate. The rows are
+        # authoritative when present; the session rollups cover thumbs whose
+        # rows expired (they share the C# TTL, so this is rare).
+        feedback = _join_feedback(records, feedback_rows)
+        if not feedback_rows:
+            feedback.up = _as_int(row.get("thumbsUp")) or 0
+            feedback.down = _as_int(row.get("thumbsDown")) or 0
+        feedback_tracked = bool(feedback_rows) or row.get("thumbsUp") is not None
+
         findings = run_diagnoses(facts)
         summary = self._session_summary(row, findings, share)
         if any_census and summary.tool_call_count is None:
@@ -1229,8 +1334,10 @@ class AdminCostService:
                 compaction_events=(
                     any_compaction_events or row.get("compactionAppliedCount") is not None
                 ),
+                feedback=feedback_tracked,
                 documents=any_documents or row.get("fullDocumentCalls") is not None,
             ),
+            feedback=feedback,
             prefix_tokens=prefix_tokens,
             window_trim_calls=window_trim_calls,
             window_removed_messages=last_removed,

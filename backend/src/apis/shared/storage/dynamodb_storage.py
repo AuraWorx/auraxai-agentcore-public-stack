@@ -337,6 +337,49 @@ class DynamoDBStorage(MetadataStorage):
         except ClientError as e:
             raise Exception(f"Failed to get session cost records: {e}")
 
+    async def get_session_feedback_rows(
+        self,
+        session_id: str,
+    ) -> List[Dict[str, Any]]:
+        """All ``F#`` message-feedback rows for a session, any user — admin
+        scope, content-free by projection (``FEEDBACK_ROW_PROJECTION``).
+        Each row: ``messageId`` (the assistant message's index, the same key
+        the ``C#`` row carries), ``value`` ±1, optional ``reason`` code,
+        ``updatedAt``. Empty when the session has no thumbs.
+        """
+        from boto3.dynamodb.conditions import Key
+        from apis.shared.observability.content_policy import (
+            FEEDBACK_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FEEDBACK_ROW_PROJECTION)
+        try:
+            items: List[Dict[str, Any]] = []
+            last_evaluated_key = None
+            while True:
+                query_kwargs = {
+                    "IndexName": "SessionLookupIndex",
+                    "KeyConditionExpression": (
+                        Key("GSI_PK").eq(f"SESSION#{session_id}")
+                        & Key("GSI_SK").begins_with("F#")
+                    ),
+                    "ProjectionExpression": projection,
+                    "ExpressionAttributeNames": names,
+                }
+                if last_evaluated_key:
+                    query_kwargs["ExclusiveStartKey"] = last_evaluated_key
+                response = self.sessions_metadata_table.query(**query_kwargs)
+                items.extend(response.get("Items", []))
+                last_evaluated_key = response.get("LastEvaluatedKey")
+                if not last_evaluated_key:
+                    break
+        except ClientError as e:
+            raise Exception(f"Failed to get session feedback rows: {e}")
+
+        return [strip_content(self._convert_decimal_to_float(item)) for item in items]
+
     async def get_session_diagnostic_row(
         self,
         session_id: str,

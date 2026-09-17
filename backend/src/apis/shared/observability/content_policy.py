@@ -134,6 +134,10 @@ SESSION_ROW_PROJECTION: Tuple[str, ...] = (
     "compactionAppliedCount",
     "compactionForcedCount",
     "compactionFloorUnreachableCount",
+    # Message-feedback rollups (live F# rows written while diagnostics were
+    # on; see `apis.shared.sessions.feedback`)
+    "thumbsUp",
+    "thumbsDown",
     # Document lifecycle rollups (per-call document fields summed; see
     # `apis.shared.sessions.metadata.DOCUMENT_ROLLUP_ATTRS`)
     "fullDocumentCalls",
@@ -198,10 +202,24 @@ FILE_ROW_PROJECTION: Tuple[str, ...] = (
     "digest.tokens",
 )
 
+#: F# rows for the session profile's feedback join. A thumb is a ±1, an
+#: optional reason *code*, a `signal` discriminator (explicit / implicit,
+#: response-feedback spec §10) and a timestamp — never text, by the request
+#: model's closed enum (`apis.shared.sessions.models.FEEDBACK_REASONS`).
+FEEDBACK_ROW_PROJECTION: Tuple[str, ...] = (
+    "sessionId",
+    "messageId",
+    "value",
+    "reason",
+    "signal",
+    "updatedAt",
+)
+
 ALL_PROJECTIONS: Dict[str, Tuple[str, ...]] = {
     "SESSION_ROW_PROJECTION": SESSION_ROW_PROJECTION,
     "CALL_ROW_PROJECTION": CALL_ROW_PROJECTION,
     "FILE_ROW_PROJECTION": FILE_ROW_PROJECTION,
+    "FEEDBACK_ROW_PROJECTION": FEEDBACK_ROW_PROJECTION,
 }
 
 
