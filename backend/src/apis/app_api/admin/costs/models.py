@@ -139,6 +139,11 @@ class CompactionEvent(BaseModel):
     documents: Optional[int] = None
     document_tokens: Optional[int] = Field(None, alias="documentTokens")
     cache_gap_seconds: Optional[int] = Field(None, alias="cacheGapSeconds")
+    # `document_offload` only: what the evicted documents were replaced with,
+    # and how many document_read page slices were aged in the same pass.
+    digest_tokens: Optional[int] = Field(None, alias="digestTokens")
+    slices: Optional[int] = None
+    slice_tokens: Optional[int] = Field(None, alias="sliceTokens")
 
 
 class DocumentReads(BaseModel):

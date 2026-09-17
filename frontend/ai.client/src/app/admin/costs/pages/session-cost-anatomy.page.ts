@@ -820,6 +820,8 @@ export class SessionCostAnatomyPage {
     if (event.truncatedToolResults) parts.push(`${event.truncatedToolResults} tool results truncated`);
     if (event.documents != null) parts.push(`${event.documents} document${event.documents === 1 ? '' : 's'}`);
     if (event.documentTokens != null) parts.push(`~${this.formatTokens(event.documentTokens)} tokens`);
+    if (event.digestTokens != null) parts.push(`→ ~${this.formatTokens(event.digestTokens)} digest`);
+    if (event.slices) parts.push(`${event.slices} page slice${event.slices === 1 ? '' : 's'} aged`);
     if (event.cacheGapSeconds != null) parts.push(`cache gap ${this.formatGap(event.cacheGapSeconds)}`);
     return parts.join(' · ');
   }

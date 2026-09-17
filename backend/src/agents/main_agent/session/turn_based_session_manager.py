@@ -33,9 +33,9 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
-from agents.main_agent.config.constants import EnvVars
+from agents.main_agent.config.constants import Defaults, EnvVars
 
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
@@ -278,6 +278,20 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
             agent.messages = self._strip_document_bytes(agent.messages)
         except Exception as e:
             logger.warning(f"Document byte stripping failed, continuing: {e}", exc_info=True)
+
+        # Age document_read page slices on restore exactly as the live path
+        # does (offload PR-4), so a cold restore and a warm agent agree on
+        # which slices are still inline. Pure function of the history's turn
+        # structure, so the output is stable across restores.
+        try:
+            from agents.main_agent.session.document_offload import age_document_slices, offload_enabled_for
+
+            if offload_enabled_for(getattr(self.config, "session_id", None)):
+                aged, aged_tokens = age_document_slices(agent.messages)
+                if aged:
+                    logger.debug("Aged %d document_read slice(s) (~%d tokens) in restored history", aged, aged_tokens)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Document slice ageing failed, continuing: {e}", exc_info=True)
 
         # Drop empty/unrecognized content blocks from restored history. The
         # write side runs `_filter_empty_text` in `append_message`, but history
@@ -880,6 +894,11 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                 calibrates the per-message estimates. ``None`` → use
                 ``input_tokens``, which biases the cut slightly deeper.
         """
+        # In-process "when did the last turn end" for the document-offload
+        # cache-gap decision when compaction (whose state stamps updated_at
+        # every turn) is off. Stamped before the early return on purpose.
+        self._last_turn_completed_at = datetime.now(timezone.utc).isoformat()
+
         if not self.compaction_config or not self.compaction_config.enabled:
             return None
 
@@ -1239,6 +1258,134 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         except Exception as e:  # noqa: BLE001 - never break a turn
             logger.warning(f"apply_pending_compaction skipped: {e}", exc_info=True)
             return None
+
+    # =========================================================================
+    # Document offload (offload spec §4C / §4D, PR-4)
+    # =========================================================================
+
+    def apply_document_offload(self, agent: "Agent", *, prompt: Any = None) -> Optional[str]:
+        """Head-of-turn: swap unpinned, large inline documents for their digests
+        — and stub aged ``document_read`` page slices — when the prefix
+        re-write is free or unavoidable.
+
+        Runs right after ``apply_pending_compaction`` on every turn. The
+        eligibility rules (pinning, minimum size) live in
+        ``document_offload.py``; this method owns the cache-gap decision, the
+        same one the parked cut uses:
+
+        - ``cache_expired`` — more than ``cache_ttl_seconds`` since the last
+          turn (the Bedrock entry is gone; the next call re-writes anyway);
+        - ``prefix_changed`` — this turn's model|agent key differs from the
+          last turn's (the cached prefix is already invalid);
+        - ``over_ceiling`` — the last turn's input exceeded the compaction
+          ceiling (waiting is no longer affordable; the eviction is what
+          brings the prefix down).
+
+        Otherwise nothing moves (``document_offload_waiting``). The replacement
+        is the restore path's own transformation, so the live block equals
+        what a cold restore would produce. Records ``document_offload`` on the
+        ledger with the cache gap. Never raises; returns the reason applied.
+        """
+        from agents.main_agent.session.document_offload import (
+            DOCUMENT_OFFLOAD_MIN_TOKENS,
+            DOCUMENT_OFFLOAD_PIN_TURNS,
+            DOCUMENT_SLICE_MAX_TURNS,
+            age_document_slices,
+            candidate_documents,
+            offload_documents,
+            offload_enabled_for,
+            pinned_document_names,
+        )
+
+        session_id = getattr(self.config, "session_id", None)
+        if not offload_enabled_for(session_id):
+            return None
+        try:
+            messages = getattr(agent, "messages", None)
+            if not isinstance(messages, list) or not messages:
+                return None
+            pinned = pinned_document_names(messages, prompt, pin_turns=DOCUMENT_OFFLOAD_PIN_TURNS)
+            candidates = candidate_documents(messages, pinned, min_tokens=DOCUMENT_OFFLOAD_MIN_TOKENS)
+            has_slices = any(
+                isinstance(b, dict) and isinstance(b.get("toolResult"), dict)
+                for m in messages if isinstance(m, dict) and isinstance(m.get("content"), list)
+                for b in m["content"]
+            )
+            if not candidates and not has_slices:
+                return None
+
+            reason, gap_seconds = self._document_offload_reason()
+            if reason is None:
+                if candidates:
+                    logger.info(
+                        "document_offload_waiting: candidates=%d gap=%ss (cache live, prefix unchanged, under ceiling)",
+                        len(candidates), gap_seconds,
+                    )
+                return None
+
+            result = offload_documents(messages, candidates, session_id=session_id, user_id=self.user_id)
+            result.slices_aged, result.slice_tokens = age_document_slices(messages, max_turns=DOCUMENT_SLICE_MAX_TURNS)
+            if not result.offloaded and not result.slices_aged:
+                return None
+
+            logger.info(
+                "document_offload: reason=%s documents=%d evicted≈%d tok digests≈%d tok slices=%d gap=%ss unmatched=%d",
+                reason, result.offloaded, result.evicted_tokens, result.digest_tokens,
+                result.slices_aged, gap_seconds, result.skipped_unmatched,
+            )
+            self._record_ledger_event(
+                "document_offload",
+                documents=result.offloaded,
+                documentTokens=result.evicted_tokens,
+                digestTokens=result.digest_tokens,
+                slices=result.slices_aged,
+                sliceTokens=result.slice_tokens,
+                cacheGapSeconds=gap_seconds if gap_seconds is not None else -1,
+            )
+            self._emit_emf(
+                {
+                    "DocumentOffloaded": result.offloaded,
+                    "DocumentOffloadedTokens": int(result.evicted_tokens),
+                    "DocumentSlicesAged": result.slices_aged,
+                    "DocumentOffloadCacheGapSeconds": int(gap_seconds or 0),
+                },
+                {"offloadReason": reason},
+                {"DocumentOffloadedTokens": "Count", "DocumentOffloadCacheGapSeconds": "Seconds"},
+            )
+            return reason
+        except Exception as e:  # noqa: BLE001 - never break a turn
+            logger.warning(f"apply_document_offload skipped: {e}", exc_info=True)
+            return None
+
+    def _document_offload_reason(self) -> Tuple[Optional[str], Optional[int]]:
+        """``(reason, cache gap seconds)`` — why a prefix re-write is free or
+        unavoidable right now, or ``(None, gap)`` while the cache is live.
+
+        Reads the compaction state when compaction is on (``updated_at`` is
+        stamped every turn, ``last_prefix_key`` / ``last_input_tokens`` too)
+        and the in-process last-turn timestamp otherwise, so the gate works
+        with compaction disabled as well. Conservative on any doubt.
+        """
+        config = self.compaction_config
+        state = self.compaction_state if (config and config.enabled) else None
+        ttl = config.cache_ttl_seconds if config else Defaults.COMPACTION_CACHE_TTL_SECONDS
+        last_turn_at = (state.updated_at if state else None) or getattr(self, "_last_turn_completed_at", None)
+        gap = self._seconds_since(last_turn_at)
+        if self._cache_window_expired(last_turn_at, ttl):
+            return "cache_expired", gap
+        if state is not None:
+            current_key = getattr(self, "_current_prefix_key", None)
+            if current_key and state.last_prefix_key and current_key != state.last_prefix_key:
+                return "prefix_changed", gap
+            ceiling = (state.policy or {}).get("ceiling") if isinstance(state.policy, dict) else None
+            if ceiling is None:
+                try:
+                    ceiling = CompactionPolicy.resolve(config, None).ceiling
+                except Exception:  # noqa: BLE001
+                    ceiling = None
+            if ceiling and state.last_input_tokens and state.last_input_tokens > int(ceiling):
+                return "over_ceiling", gap
+        return None, gap
 
     def _apply_pending_in_place(self, messages: List[Dict], state: CompactionState) -> bool:
         """Slice the live list at the pending checkpoint, in place.
