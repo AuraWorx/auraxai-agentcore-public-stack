@@ -131,6 +131,29 @@ class CompactionEvent(BaseModel):
     retained_messages: Optional[int] = Field(None, alias="retainedMessages")
     truncated_tool_results: Optional[int] = Field(None, alias="truncatedToolResults")
     input_tokens: Optional[int] = Field(None, alias="inputTokens")
+    # Document lifecycle kinds (`document_stripped` / `document_rehydrated` /
+    # `document_offload`): how many documents the event touched, their
+    # estimated token weight, and — for an offload — the prompt-cache gap at
+    # the moment it fired (an offload while the cache is live is the
+    # regression the trigger must never produce).
+    documents: Optional[int] = None
+    document_tokens: Optional[int] = Field(None, alias="documentTokens")
+    cache_gap_seconds: Optional[int] = Field(None, alias="cacheGapSeconds")
+    # `document_offload` only: what the evicted documents were replaced with,
+    # and how many document_read page slices were aged in the same pass.
+    digest_tokens: Optional[int] = Field(None, alias="digestTokens")
+    slices: Optional[int] = None
+    slice_tokens: Optional[int] = Field(None, alias="sliceTokens")
+
+
+class DocumentReads(BaseModel):
+    """``document_read`` retrievals one model call requested: calls, pages
+    returned as native document blocks, and their byte size."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    calls: int = 0
+    pages: int = 0
+    bytes: int = 0
 
 
 class SessionCallRow(BaseModel):
@@ -181,6 +204,21 @@ class SessionCallRow(BaseModel):
     # the prefix changed before this call.
     window_trimmed: Optional[int] = Field(None, alias="windowTrimmed")
     compaction_events: Optional[List[CompactionEvent]] = Field(None, alias="compactionEvents")
+    # Document context at this call (optional; absent on rows written before
+    # it shipped or with diagnostics off). `hasDocuments` + `documentDigests`
+    # classify the call: full document inline, digest only, or neither.
+    # `documentTokens` is the compaction estimator's heuristic (bytes/4, flat
+    # per image), comparable across rows; `documentMime` is keyed by Bedrock's
+    # format enum plus `image` — never a filename.
+    has_documents: Optional[bool] = Field(None, alias="hasDocuments")
+    document_count: Optional[int] = Field(None, alias="documentCount")
+    document_tokens: Optional[int] = Field(None, alias="documentTokens")
+    document_digests: Optional[int] = Field(None, alias="documentDigests")
+    documents_attached: Optional[int] = Field(None, alias="documentsAttached")
+    document_slices: Optional[int] = Field(None, alias="documentSlices")
+    document_slice_tokens: Optional[int] = Field(None, alias="documentSliceTokens")
+    document_mime: Optional[Dict[str, int]] = Field(None, alias="documentMime")
+    document_reads: Optional[DocumentReads] = Field(None, alias="documentReads")
 
 
 class SessionCostAnatomy(BaseModel):
@@ -384,6 +422,10 @@ class AttachmentProfile(BaseModel):
     count: int = 0
     total_bytes: int = Field(0, alias="totalBytes")
     by_mime: Dict[str, int] = Field(default_factory=dict, alias="byMime")
+    # DocumentDigest coverage: uploads with a ready digest and the rendered
+    # token estimate they would cost in context (offload spec §4A).
+    digested: int = 0
+    digest_tokens: int = Field(0, alias="digestTokens")
 
 
 class ContextTrajectoryPoint(BaseModel):
@@ -473,6 +515,7 @@ class DataCoverage(BaseModel):
     compaction_events: bool = Field(False, alias="compactionEvents")
     # Any F# row, or a session rollup written while diagnostics were on.
     feedback: bool = False
+    documents: bool = False
 
 
 class SessionProfile(BaseModel):
@@ -517,3 +560,12 @@ class SessionProfile(BaseModel):
     last_summary_tokens: Optional[int] = Field(None, alias="lastSummaryTokens")
     # Thumbs up/down joined to the cost rows by (sessionId, messageId).
     feedback: FeedbackProfile = Field(default_factory=FeedbackProfile)
+    # Document lifecycle across the session's calls: how many calls ran with
+    # the full document inline vs. a digest only (the digest-vs-full turn
+    # shares), the largest estimated document footprint seen, and what
+    # document_read pulled back in total.
+    full_document_calls: int = Field(0, alias="fullDocumentCalls")
+    digest_only_calls: int = Field(0, alias="digestOnlyCalls")
+    peak_document_tokens: Optional[int] = Field(None, alias="peakDocumentTokens")
+    document_read_calls: int = Field(0, alias="documentReadCalls")
+    document_read_pages: int = Field(0, alias="documentReadPages")

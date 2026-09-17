@@ -9,7 +9,7 @@ import os
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import boto3
 from botocore.config import Config
@@ -36,6 +36,7 @@ from apis.shared.files.models import (
     is_allowed_mime_type,
     is_presentation_file,
     ALLOWED_MIME_TYPES,
+    MAX_FILES_PER_MESSAGE,
 )
 from .sheet_preview import (
     MAX_WORKBOOK_BYTES,
@@ -128,6 +129,11 @@ class FileUploadService:
     # Stored alongside the original so cleanup happens with the file.
     THUMBNAIL_KEY_NAME = "_thumb.png"
 
+    # Strong refs to fire-and-forget digest builds. The event loop only holds
+    # weak references to tasks, so a bare `create_task` can be collected
+    # mid-run (the trap web_sources/deletion_service.py documents).
+    _digest_tasks: Set["asyncio.Task[None]"] = set()
+
     def __init__(
         self,
         repository: Optional[FileUploadRepository] = None,
@@ -182,9 +188,10 @@ class FileUploadService:
                 "FILE_UPLOAD_MAX_SIZE_BYTES_PRESENTATION", 25 * 1024 * 1024  # 25MB
             )
         )
-        self.max_files_per_message = max_files_per_message or int(
-            os.environ.get("FILE_UPLOAD_MAX_FILES_PER_MESSAGE", 5)
-        )
+        # Single source of truth is the shared constant (the inference API
+        # enforces it per message; see ``_apply_message_file_cap``). Kept on
+        # the service so callers can read the effective limit.
+        self.max_files_per_message = max_files_per_message or MAX_FILES_PER_MESSAGE
         self.user_quota_bytes = user_quota_bytes or int(
             os.environ.get("FILE_UPLOAD_USER_QUOTA_BYTES", 1024 * 1024 * 1024)  # 1GB
         )
@@ -362,6 +369,13 @@ class FileUploadService:
 
         # Increment quota
         await self.repository.increment_quota(user_id, file_meta.size_bytes)
+
+        # DocumentDigest, off the request path (offload spec §4A / PR-2):
+        # documents get an outline + abstract persisted on their row so a
+        # later turn can carry the digest instead of the bytes. Non-documents
+        # (spreadsheets, decks, images) and the kill switch skip it. The
+        # response does not wait for it.
+        self._schedule_digest(file_meta)
 
         logger.info("Completed file upload")
 
@@ -753,6 +767,56 @@ class FileUploadService:
             f"Rendered thumbnail for upload {file_meta.upload_id} "
             f"({len(png_bytes)} bytes)"
         )
+
+    # =========================================================================
+    # DocumentDigest (docs/specs/document-context-offload.md §4A, PR-2)
+    # =========================================================================
+
+    def _schedule_digest(self, file_meta: FileMetadata) -> Optional["asyncio.Task[None]"]:
+        """Queue a digest build for a document upload; ``None`` when skipped.
+
+        Skipped for non-documents, when ``DOCUMENT_DIGEST_ENABLED=false``, or
+        when no event loop is running (a synchronous caller). Never raises.
+        """
+        try:
+            from apis.shared.files.document_digest import document_digest_enabled
+            from apis.shared.files.document_read import is_document_class
+
+            if not document_digest_enabled():
+                return None
+            if not is_document_class(file_meta.mime_type, file_meta.filename):
+                return None
+            task = asyncio.get_running_loop().create_task(self._generate_and_store_digest(file_meta))
+        except Exception:  # noqa: BLE001 - scheduling must never fail the upload
+            logger.warning("Document digest not scheduled", exc_info=True)
+            return None
+        self._digest_tasks.add(task)
+        task.add_done_callback(self._digest_tasks.discard)
+        return task
+
+    async def _generate_and_store_digest(self, file_meta: FileMetadata) -> None:
+        """Read the original, build the digest, persist it. Never raises."""
+        from apis.shared.files.document_digest import build_digest, record_digest
+
+        try:
+            response = await asyncio.to_thread(
+                self._s3_client.get_object, Bucket=self.bucket_name, Key=file_meta.s3_key
+            )
+            raw = await asyncio.to_thread(response["Body"].read)
+            digest = await build_digest(
+                raw=raw,
+                mime_type=file_meta.mime_type,
+                filename=file_meta.filename,
+                upload_id=file_meta.upload_id,
+            )
+            record_digest(digest)
+            stored = await self.repository.update_file_digest(
+                file_meta.user_id, file_meta.upload_id, digest.to_item()
+            )
+            if stored is None:
+                logger.info("Document digest discarded: file row no longer exists")
+        except Exception:  # noqa: BLE001 - a digest is never worth an error
+            logger.warning("Document digest build failed", exc_info=True)
 
     def _delete_thumbnail_object(self, file_meta: FileMetadata) -> None:
         """

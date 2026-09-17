@@ -289,6 +289,18 @@ class StreamCoordinator:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"apply_pending_compaction failed, continuing: {e}")
 
+        # Document offload (offload spec §4C, PR-4): in the same head-of-turn
+        # slot, swap unpinned large documents for their digests and stub aged
+        # document_read slices — only when the re-write is free or
+        # unavoidable, decided by the session manager on the same cache-gap
+        # facts. The incoming prompt is passed so a document the user just
+        # named stays pinned. Best-effort: never blocks the turn.
+        if session_manager is not None and hasattr(session_manager, "apply_document_offload"):
+            try:
+                session_manager.apply_document_offload(agent, prompt=prompt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"apply_document_offload failed, continuing: {e}")
+
         # Likewise a pause armed by a previous turn: if the user abandoned an
         # OAuth/tool-approval consent and just typed again, the still-armed
         # interrupt state makes Strands reject this turn's prompt outright.
@@ -3111,10 +3123,30 @@ class StreamCoordinator:
                     events = context_ledger.get("compactionEvents")
                     if events:
                         metadata_kwargs["compactionEvents"] = events
+                    # document_read retrievals this call requested (calls /
+                    # pages / bytes) — numbers read off the tool's own
+                    # metadata, never the document.
+                    reads = context_ledger.get("documentReads")
+                    if reads:
+                        metadata_kwargs["documentReads"] = reads
                 if strands_agent is not None and cost_diagnostics_enabled():
                     prefix_tokens = get_prefix_token_split(strands_agent)
                     if prefix_tokens:
                         metadata_kwargs["prefixTokens"] = prefix_tokens
+                    # The attachment footprint of the live context: inline
+                    # documents (count, estimated tokens, format mix), digest
+                    # stand-ins, and retrieved page slices. Flat fields so a
+                    # query can split rows by hasDocuments / documentDigests
+                    # without reading the conversation
+                    # (docs/specs/document-context-offload.md §6.1).
+                    try:
+                        from agents.main_agent.session.document_context import summarize_document_context
+
+                        footprint = summarize_document_context(getattr(strands_agent, "messages", None))
+                        if footprint:
+                            metadata_kwargs.update(footprint)
+                    except Exception as doc_err:  # noqa: BLE001 - never block the cost row
+                        logger.debug(f"Skipping document context summary: {doc_err}")
 
                 message_metadata = MessageMetadata(**metadata_kwargs)
 

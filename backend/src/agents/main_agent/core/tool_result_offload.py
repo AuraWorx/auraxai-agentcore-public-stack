@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 # half the gate leaves that margin twice over.
 PREFILTER_RATIO = 0.5
 
+# Tools whose results are never offloaded. ``document_read`` returns the page
+# slice the model just asked for as a native document block; offloading it
+# to S3 and handing back a text preview would undo the read and cost a second
+# round trip (docs/specs/document-context-offload.md §4B). Its own
+# ``max_pages`` cap is the bound.
+OFFLOAD_EXEMPT_TOOLS = frozenset({"document_read"})
+
 
 def tool_result_offload_enabled() -> bool:
     """Default ON with a kill switch (house style): only the literal "false" disables."""
@@ -77,6 +84,21 @@ def _import_plugin():
     return ContextOffloader
 
 
+def _exempt_tool(event: Any) -> bool:
+    """True when the event's tool is in ``OFFLOAD_EXEMPT_TOOLS``."""
+    try:
+        name = (getattr(event, "tool_use", None) or {}).get("name")
+    except Exception:  # noqa: BLE001
+        return False
+    return name in OFFLOAD_EXEMPT_TOOLS
+
+
+def _should_offload(tool_name: str, _token_count: int) -> bool:
+    """The plugin's own ``should_offload`` hook — defense in depth behind the
+    mixin's early return, for the path where the base class is reached."""
+    return tool_name not in OFFLOAD_EXEMPT_TOOLS
+
+
 class _OffloaderMixin:
     """Behavior layered on the vended plugin; kept separate so it can be tested
     against a stub base class without importing the real one."""
@@ -88,6 +110,8 @@ class _OffloaderMixin:
                 return
             content = result.get("content")
             if not isinstance(content, list):
+                return
+            if _exempt_tool(event):
                 return
             # Cheap pre-filter: skip the CountTokens round trip for results
             # that cannot be anywhere near the gate.
@@ -179,6 +203,7 @@ def build_tool_result_offloader(
             max_result_tokens=max_tokens,
             preview_tokens=preview,
             include_retrieval_tool=True,
+            should_offload=_should_offload,
             evict_after_cycles=None,
         )
     except Exception:  # noqa: BLE001

@@ -64,6 +64,8 @@ CONTENT_BEARING: FrozenSet[str] = frozenset({
     "filename",                       # user-chosen
     "s3Key",                          # embeds the filename
     "s3Uri",
+    "digest.abstract",                # model-generated abstract of the document
+    "digest.sections",                # heading text lifted from the document
 })
 
 #: The one path a content-free reader may *request* but must never *return*.
@@ -136,6 +138,12 @@ SESSION_ROW_PROJECTION: Tuple[str, ...] = (
     # on; see `apis.shared.sessions.feedback`)
     "thumbsUp",
     "thumbsDown",
+    # Document lifecycle rollups (per-call document fields summed; see
+    # `apis.shared.sessions.metadata.DOCUMENT_ROLLUP_ATTRS`)
+    "fullDocumentCalls",
+    "digestOnlyCalls",
+    "documentReadCalls",
+    "documentReadPages",
 )
 
 #: C# rows for the cost anatomy and the session profile's trajectory.
@@ -162,12 +170,18 @@ CALL_ROW_PROJECTION: Tuple[str, ...] = (
     "prefixTokens",
     "windowRemovedMessages",
     "compactionEvents",
-    # Turn class for the feedback join (document-context offload §6.1). The
-    # rows carry these from #1137 (offload PR-1), which also widens this
-    # projection to the full document-context field set; a row written before
-    # that lacks them and the profile reports the class as not tracked.
+    # Document context, optional: the attachment footprint of the live
+    # context at this call (counts, estimated tokens, a format→count map keyed
+    # by Bedrock's format enum) and the document_read retrievals the call
+    # requested. Numbers and enum keys only — never a filename or a byte.
     "hasDocuments",
+    "documentCount",
+    "documentTokens",
     "documentDigests",
+    "documentsAttached",
+    "documentSlices",
+    "documentSliceTokens",
+    "documentMime",
     "documentReads",
 )
 
@@ -180,6 +194,12 @@ FILE_ROW_PROJECTION: Tuple[str, ...] = (
     "source",
     "status",
     "createdAt",
+    # DocumentDigest coverage (numbers and the format enum only; the
+    # abstract and section titles are denylisted above).
+    "digest.status",
+    "digest.format",
+    "digest.count",
+    "digest.tokens",
 )
 
 #: F# rows for the session profile's feedback join. A thumb is a ±1, an

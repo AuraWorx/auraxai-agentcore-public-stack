@@ -21,6 +21,7 @@ from .diagnoses import (
 )
 from .models import (
     CompactionEvent,
+    DocumentReads,
     PrefixTokens,
     AttachmentProfile,
     ContextTrajectoryPoint,
@@ -180,15 +181,76 @@ class _CallLedger:
     removed: Optional[int] = None
     trimmed: Optional[int] = None
     events: List[CompactionEvent] = _field(default_factory=list)
+    #: The row's document context fields, decoded (``None`` = not tracked).
+    documents: Optional[Dict[str, Any]] = None
+    document_reads: Optional[DocumentReads] = None
+
+
+_DOCUMENT_INT_FIELDS = (
+    "documentCount", "documentTokens", "documentDigests", "documentsAttached",
+    "documentSlices", "documentSliceTokens",
+)
+
+
+def _call_documents(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The row's document context (``hasDocuments`` and the counts), or
+    ``None`` when the row predates the fields. Ints coerced, the format map
+    kept as ``{format: count}``."""
+    if "hasDocuments" not in record:
+        return None
+    out: Dict[str, Any] = {"hasDocuments": bool(record.get("hasDocuments"))}
+    for key in _DOCUMENT_INT_FIELDS:
+        value = _as_int(record.get(key))
+        if value is not None:
+            out[key] = value
+    mime = record.get("documentMime")
+    if isinstance(mime, dict):
+        out["documentMime"] = {
+            str(k): (_as_int(v) or 0) for k, v in mime.items()
+        }
+    return out
+
+
+def _call_document_reads(record: Dict[str, Any]) -> Optional[DocumentReads]:
+    raw = record.get("documentReads")
+    if not isinstance(raw, dict):
+        return None
+    return DocumentReads(
+        calls=_as_int(raw.get("calls")) or 0,
+        pages=_as_int(raw.get("pages")) or 0,
+        bytes=_as_int(raw.get("bytes")) or 0,
+    )
+
+
+def _document_row_fields(ledger: "_CallLedger") -> Dict[str, Any]:
+    """``SessionCallRow`` kwargs for the row's document context — empty when
+    the row predates the fields, so they render as null ("not tracked")."""
+    fields: Dict[str, Any] = {}
+    docs = ledger.documents
+    if docs is not None:
+        fields["has_documents"] = docs.get("hasDocuments")
+        fields["document_count"] = docs.get("documentCount")
+        fields["document_tokens"] = docs.get("documentTokens")
+        fields["document_digests"] = docs.get("documentDigests")
+        fields["documents_attached"] = docs.get("documentsAttached")
+        fields["document_slices"] = docs.get("documentSlices")
+        fields["document_slice_tokens"] = docs.get("documentSliceTokens")
+        fields["document_mime"] = docs.get("documentMime")
+    if ledger.document_reads is not None:
+        fields["document_reads"] = ledger.document_reads
+    return fields
 
 
 def _call_ledger(record: Dict[str, Any], previous_removed: Optional[int]) -> _CallLedger:
     """Decode a cost row's ``prefixTokens`` / ``windowRemovedMessages`` /
-    ``compactionEvents`` and derive ``trimmed`` (messages removed since the
-    previous ledger-bearing row). Absent fields stay ``None`` — "not tracked",
-    never 0 — and malformed ones are ignored rather than raised.
+    ``compactionEvents`` / document context and derive ``trimmed`` (messages
+    removed since the previous ledger-bearing row). Absent fields stay
+    ``None`` — "not tracked", never 0 — and malformed ones are ignored rather
+    than raised.
     """
     ledger = _CallLedger()
+    ledger.documents = _call_documents(record)
+    ledger.document_reads = _call_document_reads(record)
     raw_prefix = record.get("prefixTokens")
     if isinstance(raw_prefix, dict):
         try:
@@ -813,6 +875,7 @@ class AdminCostService:
                 window_removed_messages=ledger.removed,
                 window_trimmed=ledger.trimmed,
                 compaction_events=ledger.events or None,
+                **_document_row_fields(ledger),
             ))
 
         cache_traffic = total_cache_read + total_cache_write
@@ -1038,13 +1101,20 @@ class AdminCostService:
             return AttachmentProfile()
         by_mime: Counter = Counter()
         total_bytes = 0
+        digested = digest_tokens = 0
         for item in stats:
             by_mime[item.get("mimeType") or "unknown"] += 1
             total_bytes += _as_int(item.get("sizeBytes")) or 0
+            digest = item.get("digest")
+            if isinstance(digest, dict) and digest.get("status") == "ready":
+                digested += 1
+                digest_tokens += _as_int(digest.get("tokens")) or 0
         return AttachmentProfile(
             count=len(stats),
             total_bytes=total_bytes,
             by_mime=dict(by_mime),
+            digested=digested,
+            digest_tokens=digest_tokens,
         )
 
     async def _feedback_rows(self, session_id: str) -> List[Dict[str, Any]]:
@@ -1101,6 +1171,10 @@ class AdminCostService:
         window_trim_calls = 0
         compaction_event_counts: Counter = Counter()
         last_summary_tokens: Optional[int] = None
+        any_documents = False
+        full_document_calls = digest_only_calls = 0
+        document_read_calls = document_read_pages = 0
+        peak_document_tokens: Optional[int] = None
 
         for index, record in enumerate(records):
             usage = record.get("tokenUsage") or {}
@@ -1161,6 +1235,19 @@ class AdminCostService:
                     compaction_event_counts[event.kind] += 1
                     if event.summary_tokens is not None:
                         last_summary_tokens = event.summary_tokens
+            if ledger.documents is not None:
+                any_documents = True
+                if ledger.documents.get("hasDocuments"):
+                    full_document_calls += 1
+                elif (ledger.documents.get("documentDigests") or 0) > 0:
+                    digest_only_calls += 1
+                doc_tokens = ledger.documents.get("documentTokens")
+                if doc_tokens is not None:
+                    peak_document_tokens = max(peak_document_tokens or 0, doc_tokens)
+            if ledger.document_reads is not None:
+                any_documents = True
+                document_read_calls += ledger.document_reads.calls
+                document_read_pages += ledger.document_reads.pages
             trajectory.append(ContextTrajectoryPoint(
                 call_index=index,
                 timestamp=record.get("timestamp", ""),
@@ -1248,6 +1335,7 @@ class AdminCostService:
                     any_compaction_events or row.get("compactionAppliedCount") is not None
                 ),
                 feedback=feedback_tracked,
+                documents=any_documents or row.get("fullDocumentCalls") is not None,
             ),
             feedback=feedback,
             prefix_tokens=prefix_tokens,
@@ -1255,6 +1343,22 @@ class AdminCostService:
             window_removed_messages=last_removed,
             compaction_event_counts=dict(compaction_event_counts),
             last_summary_tokens=last_summary_tokens,
+            # Rows are authoritative when present; the session rollups cover
+            # calls whose rows have expired (365-day TTL) or a session read
+            # without its rows.
+            full_document_calls=(
+                full_document_calls if any_documents else (_as_int(row.get("fullDocumentCalls")) or 0)
+            ),
+            digest_only_calls=(
+                digest_only_calls if any_documents else (_as_int(row.get("digestOnlyCalls")) or 0)
+            ),
+            peak_document_tokens=peak_document_tokens,
+            document_read_calls=(
+                document_read_calls if any_documents else (_as_int(row.get("documentReadCalls")) or 0)
+            ),
+            document_read_pages=(
+                document_read_pages if any_documents else (_as_int(row.get("documentReadPages")) or 0)
+            ),
         )
 
     async def get_dashboard(
