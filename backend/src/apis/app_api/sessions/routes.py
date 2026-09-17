@@ -21,11 +21,13 @@ from apis.shared.sessions.models import (
     MessagesListResponse,
     MessageFeedback,
     MessageFeedbackRequest,
+    ImplicitSignalRequest,
 )
 from apis.shared.sessions.feedback import (
     SessionNotOwned,
     delete_message_feedback,
     put_message_feedback,
+    record_implicit_signal,
 )
 from apis.shared.sessions.messages import get_messages
 from apis.shared.sessions.metadata import (
@@ -743,6 +745,36 @@ async def delete_message_feedback_endpoint(
     except Exception:
         logger.error("Error deleting message feedback", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete message feedback")
+    return Response(status_code=204)
+
+
+@router.post("/{session_id}/messages/{message_id}/signals", status_code=204)
+async def record_implicit_signal_endpoint(
+    session_id: str,
+    message_id: int = Path(..., ge=0, description="0-based message index"),
+    body: ImplicitSignalRequest = ...,
+    current_user: User = Depends(get_current_user_from_session),
+):
+    """Record an implicit signal (``copy`` / ``continue``) on an assistant
+    message — response-feedback spec §10. Fire-and-forget from the SPA:
+    always 204 once accepted, never a reason to show the user anything.
+    Content-free: the body is a closed enum."""
+    _require_message_feedback()
+    try:
+        await record_implicit_signal(
+            session_id=session_id,
+            user_id=current_user.user_id,
+            message_id=message_id,
+            kind=body.kind,
+        )
+    except SessionNotOwned:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    except RuntimeError as e:
+        logger.warning("Message feedback unavailable: %s", scrub_log(str(e)))
+        raise HTTPException(status_code=503, detail="Message feedback is not available")
+    except Exception:
+        logger.error("Error recording implicit signal", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to record signal")
     return Response(status_code=204)
 
 

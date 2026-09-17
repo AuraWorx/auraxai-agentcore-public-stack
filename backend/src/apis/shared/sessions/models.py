@@ -653,6 +653,24 @@ FEEDBACK_REASONS = ("wrong", "instructions", "length", "tool_failed", "outdated"
 FeedbackReason = Literal["wrong", "instructions", "length", "tool_failed", "outdated", "other"]
 
 
+#: Implicit signals (response-feedback spec §10): denser than thumbs, no UI
+#: cost, written to the same ``F#`` family under ``signal: "implicit"`` and
+#: never summed with them. ``copy`` = the response was copied out;
+#: ``continue`` = a truncated / interrupted response was resumed. Edit-and-
+#: resend has no affordance in the SPA yet; abandonment is deferred (its
+#: base rate is indistinguishable from a satisfied user going quiet).
+IMPLICIT_SIGNAL_KINDS = ("copy", "continue")
+ImplicitSignalKind = Literal["copy", "continue"]
+
+
+class ImplicitSignalRequest(BaseModel):
+    """Body of ``POST /sessions/{id}/messages/{messageId}/signals``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    kind: ImplicitSignalKind = Field(..., description="Which implicit signal fired (closed enum)")
+
+
 class MessageFeedback(BaseModel):
     """One user's thumb on one assistant message (``F#`` row, see
     ``apis.shared.sessions.metadata``). ``value`` is +1 (up) or -1 (down);

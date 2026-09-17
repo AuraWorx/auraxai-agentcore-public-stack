@@ -241,6 +241,16 @@ export function feedbackRetryLine(feedback: FeedbackProfile | null | undefined):
   return parts.join(' · ');
 }
 
+/** `3 copied · 1 continued` — implicit signals, kept off the thumbs line. */
+export function feedbackImplicitLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const implicit = feedback?.implicit;
+  if (!implicit) return null;
+  const parts: string[] = [];
+  if (implicit.copied > 0) parts.push(`${implicit.copied} copied`);
+  if (implicit.continued > 0) parts.push(`${implicit.continued} continued`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 export function feedbackByTurnClassLine(feedback: FeedbackProfile | null | undefined): string | null {
   const by = feedback?.byTurnClass;
   if (!by) return null;

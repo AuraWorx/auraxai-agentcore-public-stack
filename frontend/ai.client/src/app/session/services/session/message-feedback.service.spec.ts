@@ -114,6 +114,28 @@ describe('MessageFeedbackService', () => {
     http.expectNone(() => true);
   });
 
+  describe('implicit signals', () => {
+    it('POSTs a kind code once per message per kind and never blocks on failure', async () => {
+      const m = message('msg-s-3');
+      service.recordSignal(m, 'copy');
+      service.recordSignal(m, 'copy');
+      service.recordSignal(m, 'continue');
+      const posts = http.match('http://api.test/sessions/s/messages/3/signals');
+      expect(posts.map((r) => r.request.body)).toEqual([{ kind: 'copy' }, { kind: 'continue' }]);
+      posts[0].flush(null, { status: 204, statusText: 'No Content' });
+      posts[1].flush('nope', { status: 500, statusText: 'err' });
+      await Promise.resolve();
+      expect(service.unavailable()).toBe(false);
+    });
+
+    it('ignores messages without a server index and stops once unavailable', () => {
+      service.recordSignal(message('placeholder'), 'copy');
+      service.unavailable.set(true);
+      service.recordSignal(message('msg-s-3'), 'copy');
+      http.expectNone(() => true);
+    });
+  });
+
   describe('retry with correction', () => {
     it('requestRetry drafts the reason\'s template into that session\'s composer', () => {
       const drafts = TestBed.inject(ComposerDraftService);
