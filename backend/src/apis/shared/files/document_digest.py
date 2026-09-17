@@ -301,15 +301,23 @@ def render_digest(
     filename: str,
     upload_id: str,
     budget_tokens: int = DOCUMENT_DIGEST_MAX_TOKENS,
+    include_handle: bool = True,
 ) -> str:
     """The ``<document-digest …>`` block, trimmed to ``budget_tokens``.
 
     Sections are dropped from the end first (the model can always ask
     ``document_read`` for more), then the abstract is truncated. The opening
     tag always fits: it is the ``document_read`` handle.
+
+    ``include_handle=False`` omits ``upload_id``. Callers pass it when
+    ``DOCUMENT_READ_ENABLED=false`` has taken the tool away: the outline and
+    abstract are still strictly more than the pre-PR-3 placeholder, but
+    advertising a retrieval id for a tool the model does not have would invite
+    a call that cannot be made. See ``feature_flags.document_read_enabled``.
     """
+    handle = f'upload_id="{upload_id}" ' if include_handle else ""
     header = (
-        f'<document-digest name="{_xml_escape(filename)}" upload_id="{upload_id}" '
+        f'<document-digest name="{_xml_escape(filename)}" {handle}'
         f'format="{digest.format or ""}" {digest.unit}s="{digest.count}"'
     )
     if digest.tables:

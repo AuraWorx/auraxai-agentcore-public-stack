@@ -95,9 +95,22 @@ def session_bucket(session_id: str) -> int:
 
 
 def offload_enabled_for(session_id: Optional[str]) -> bool:
-    """Kill switch and rollout bucket together. Sessions below the percent
-    are the treated arm; the rest keep today's inline-forever behavior."""
+    """Kill switch, the ``document_read`` gate, and the rollout bucket
+    together. Sessions below the percent are the treated arm; the rest keep
+    today's inline-forever behavior.
+
+    ``DOCUMENT_READ_ENABLED=false`` disables this path too. The live offload
+    is the one place bytes leave the prefix *optionally* — restore has to drop
+    them, this does not — so evicting a document while its only recovery path
+    is switched off would be strictly worse than the pre-offload world, in
+    which live bytes never left. Spec §5: "a digest that points at a tool
+    nobody has is no better than today's placeholder."
+    """
+    from apis.shared.feature_flags import document_read_enabled
+
     if not document_offload_enabled() or not session_id:
+        return False
+    if not document_read_enabled():
         return False
     return session_bucket(session_id) < rollout_percent()
 
@@ -283,6 +296,7 @@ def offload_documents(
     restore path's own matcher and renderer so the bytes equal what a cold
     restore would produce. Unmatched candidates stay inline. Never raises."""
     from agents.main_agent.session.document_rehydration import digest_for, load_session_documents, match_document
+    from apis.shared.feature_flags import document_read_enabled
     from apis.shared.files.document_digest import render_digest
 
     result = OffloadResult()
@@ -312,7 +326,10 @@ def offload_documents(
             if digest is None:
                 result.skipped_unmatched += 1
                 continue
-            text = render_digest(digest, filename=meta.filename, upload_id=meta.upload_id)
+            text = render_digest(
+                digest, filename=meta.filename, upload_id=meta.upload_id,
+                include_handle=document_read_enabled(),
+            )
             content[cand.block_index] = {"text": text}
             used.add(meta.upload_id)
             result.offloaded += 1

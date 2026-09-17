@@ -27,6 +27,12 @@ abstract; that changes the rendered block once, which is one prefix
 re-write, accepted and recorded (``document_rehydrated`` carries the digest
 tokens, so the change is visible).
 
+When ``DOCUMENT_READ_ENABLED=false`` has taken the tool away the digest is
+still rendered — it is strictly more than the placeholder — but without the
+``upload_id`` handle, so the model is never invited to call a tool it does
+not have. The live offload path stops entirely in that case; see
+``document_offload.offload_enabled_for``.
+
 Everything is synchronous: it runs inside ``TurnBasedSessionManager.initialize``
 under the Strands agent constructor. It never raises — every failure falls
 back to the placeholder for that block.
@@ -167,9 +173,16 @@ def rehydrate_documents(
     an upload row) or, failing that, the placeholder. Never raises."""
     from apis.shared.files.document_digest import render_digest
 
+    from apis.shared.feature_flags import document_read_enabled
+
     out = copy.deepcopy(messages)
     result = RehydrationResult(messages=out)
     enabled = document_rehydration_enabled() and bool(session_id)
+    # Restore has to drop the bytes either way (Bedrock rejects duplicate
+    # document names), so a digest is still strictly better than the
+    # placeholder when the tool is off — but it must not advertise a handle
+    # the model cannot use.
+    handle = document_read_enabled()
     candidates: Optional[List[Any]] = None
     used: Set[str] = set()
 
@@ -199,7 +212,10 @@ def rehydrate_documents(
                         digest = digest_for(meta, bytes(raw) if isinstance(raw, (bytes, bytearray)) else b"")
                         if digest is not None:
                             was_lazy = not (isinstance(getattr(meta, "digest", None), dict) and meta.digest.get("status") == "ready")
-                            replacement = render_digest(digest, filename=meta.filename, upload_id=meta.upload_id)
+                            replacement = render_digest(
+                                digest, filename=meta.filename, upload_id=meta.upload_id,
+                                include_handle=handle,
+                            )
                             used.add(meta.upload_id)
                             result.rehydrated += 1
                             result.digest_tokens += len(replacement) // CHARS_PER_TOKEN
