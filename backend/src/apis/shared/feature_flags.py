@@ -366,3 +366,23 @@ def ask_user_question_enabled() -> bool:
     every time it flipped.
     """
     return os.environ.get("ASK_USER_QUESTION_ENABLED", "").strip().lower() != "false"
+
+
+def attachment_turn_guard_enabled() -> bool:
+    """Whether a turn's attachments are held to the per-message file count and
+    the aggregate inline-bytes budget before the message is built.
+
+    Covers ``_apply_message_file_cap`` and ``_apply_inline_byte_budget`` in
+    the inference API chat route (docs/specs/document-context-offload.md §4E,
+    PR-6). **Default ON with a kill switch** (house style): unset or empty
+    resolves to enabled; only the literal ``"false"`` (case-insensitive)
+    disables.
+
+    While off the route behaves as before this shipped: the ``file_upload_ids``
+    resolver silently truncates at five, direct ``files`` are uncounted, and
+    a turn whose attachments sum past the AgentCore Memory event quota fails
+    at ``create_message`` with a ``SessionException``. The tuning knobs
+    (``INLINE_ATTACHMENTS_MAX_TOTAL_BYTES``, ``FILE_UPLOAD_MAX_FILES_PER_MESSAGE``)
+    live in ``apis.shared.files.models``.
+    """
+    return os.environ.get("ATTACHMENT_TURN_GUARD_ENABLED", "").strip().lower() != "false"
