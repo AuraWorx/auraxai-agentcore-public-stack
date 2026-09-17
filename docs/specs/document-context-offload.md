@@ -403,7 +403,7 @@ currently allows (see the outcome-signal row).
 |----|-------|------|
 | 1 — **built** | `document_read` (page-range + pattern + bounded text; native `document` block reassembly), **gated on the session having a readable attachment**, id kept out of `INJECTED_TOOL_IDS`, presence carried in the agent-cache key; **analytics**: per-call document context on `C#` rows, the `documentReads` ledger entry, the `document_stripped` ledger event, session-row rollups, anatomy + profile surfaces, EMF; `document_read` results exempt from the tool-result offloader | 12-page PDF: `page_range="4-7"` returns 4 pages as one native block whose page 1 is original page 4; `max_pages` and the hard cap hold; tool built for a session with no grants and no picker toggle; content-policy test walks the new fields; full backend suite green |
 | 2 — **built** (`feature/document-offload-pr2`, stacked on PR-1) | `DocumentDigest` (`apis/shared/files/document_digest.py`): a deterministic outline (headings with page / paragraph / line anchors, table and figure mentions, counts) plus a 3–5-sentence abstract from the cheap text model (Nova Micro, `DOCUMENT_DIGEST_MODEL_ID`), built off the request path when a document upload completes and persisted as `FileMetadata.digest`; `render_digest` produces the `<document-digest …>` block under a hard 1,500-token budget (sections dropped first, then the abstract) and stores the estimate as `digest.tokens`; `digest.abstract` / `digest.sections` denylisted, coverage on the attachment profile; **not yet used in context** | 200-page PDF digest ≤1,500 tokens (tested); extraction and abstract each fail open; kill switch `DOCUMENT_DIGEST_ENABLED`; no chat-path change; p95 latency to be read from `DocumentDigestMs` in dev |
-| 3 | `_strip_document_bytes` → digest + live `document_read` handle instead of the placeholder (restore path only); the ledger event becomes `document_rehydrated` | a session with `analyze_spreadsheet` enabled answers a document question correctly on **turn 2**; `document_stripped` events go to zero; re-upload rate starts falling |
+| 3 — **built** (`feature/document-offload-pr3`, stacked on PR-2) | `_strip_document_bytes` → `session/document_rehydration.py`: each inline document block is matched to its upload row (sanitized filename incl. PromptBuilder's `_2` suffix, byte-size tiebreak, newest first, no double-claiming) and replaced by the rendered `<document-digest … upload_id=…>` block; rows without a digest get an **outline-only digest built from the bytes already in the restored message** (no S3, no model call) and persisted; unmatched blocks keep the placeholder byte-for-byte; ledger records `document_rehydrated` and `document_stripped` separately; kill switch `DOCUMENT_REHYDRATE_ENABLED` | restore output is stable across restores (tested); a matched block carries the abstract, outline and handle; unmatched blocks are unchanged from today; `document_stripped` per session-day should fall to the unmatched residue (direct base64 attachments, deleted files) — read it from the ledger; re-upload rate (byte-identical) starts falling |
 | 4 | Offload trigger in `update_after_turn` + pinning, behind `DOCUMENT_OFFLOAD_ENABLED` as a percentage rollout keyed on `hash(session_id)`; records `document_offload` with `cacheGapSeconds`; old `document_read` slices in history treated like documents | slice-assignment guard test passes; offload fires at most once per document; **zero** `document_offload` events with `cacheGapSeconds` under the TTL |
 | 5 | Fix the cache-live guard on the *existing* truncation deferral (same predicate as PR-4) | truncation events while cache live: 72% → ~0 |
 | 6 | Backend guard on a turn's aggregate inline attachment bytes (~7.5 MB), mirroring the SPA's `MAX_FILES_PER_MESSAGE` | oversized turn degrades to the `oversized_inline` guidance path, never to `SessionException` |
@@ -685,6 +685,40 @@ visual fidelity before any digest comparison is scored.
     tag (the `document_read` handle) always survives. `digest.tokens` records
     the rendered estimate, so "digest ≤1,500 tokens" is a stored fact per
     file rather than a claim.
+
+**PR-3 (2026-09-16)**
+
+16. **Matching is by sanitized filename, not by id.** A document block
+    carries no upload id — only the name `PromptBuilder` gave it, which is
+    `FileSanitizer.sanitize_filename(filename)` (the extension's dot becomes
+    an underscore: `BBR Policy.pdf` → `BBR Policy_pdf`, duplicates get
+    `_2`/`_3`) — so restore matches blocks to the session's upload rows on
+    that name with the byte size as tiebreak, newest row first, each row
+    claimed once. Adding an upload id to the block itself would be cleaner
+    but changes the attach-turn bytes (a prefix change for every attachment
+    turn); left for a later PR that touches the prompt builder anyway.
+17. **Lazy digests are outline-only and come from the restored bytes.** The
+    bytes are in `agent.messages` at the moment of the strip (§4E), so no S3
+    read is needed, and the restore path is synchronous inside the agent
+    constructor, so no model call is made there. The digest is persisted so
+    the next restore renders identical bytes; the upload-path build (PR-2)
+    may later overwrite it with one that has an abstract, which changes the
+    rendered block once — one prefix re-write, visible as a jump in
+    `document_rehydrated.documentTokens`.
+18. **Restore output is byte-stable** given the same upload rows: the
+    renderer is deterministic over `FileMetadata.filename`, `upload_id` and
+    the persisted digest, and unmatched blocks keep the pre-PR-3 placeholder
+    verbatim. Tested. The cache contract in CLAUDE.md is therefore honoured
+    on the restore path exactly as before.
+19. **Never worse than before.** Every failure — lookup, matching, digest
+    build, persistence — falls back to the placeholder for that block and
+    is recorded as `document_stripped`; the lookup is attempted once per
+    restore, and only when the history holds a document block.
+20. **The synchronous constraint is real.** `TurnBasedSessionManager.initialize`
+    runs under the Strands agent constructor with an event loop already
+    running, so it cannot await; the repository gained `_sync` bodies for the
+    session query and the digest write (boto3 was synchronous underneath all
+    along) rather than a thread-with-its-own-loop.
 
 ---
 

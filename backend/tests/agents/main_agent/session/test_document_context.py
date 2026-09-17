@@ -77,6 +77,16 @@ class TestSummary:
 
 
 class TestStripEvent:
+    """With no upload rows to match, restore falls back to the placeholder and
+    records ``document_stripped`` — the pre-PR-3 behavior, kept as the floor.
+    The rehydrated path is pinned in ``test_document_rehydration.py``."""
+
+    @pytest.fixture(autouse=True)
+    def no_upload_rows(self, monkeypatch):
+        monkeypatch.setattr(
+            "agents.main_agent.session.document_rehydration.load_session_documents", lambda *_: []
+        )
+
     def test_strip_records_one_content_free_event(self, make_session_manager):
         manager = make_session_manager()
         messages = [

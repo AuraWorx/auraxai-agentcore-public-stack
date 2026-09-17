@@ -147,6 +147,14 @@ class FileUploadRepository:
         Idempotent last-write-wins; ``None`` when the row no longer exists
         (the file was deleted while the digest was being built).
         """
+        return self.update_file_digest_sync(user_id, upload_id, digest)
+
+    def update_file_digest_sync(
+        self, user_id: str, upload_id: str, digest: dict
+    ) -> Optional[FileMetadata]:
+        """Synchronous body of :meth:`update_file_digest` — the restore path
+        persists a lazily built digest from synchronous code (see
+        :meth:`list_session_files_sync`)."""
         try:
             response = self._table.update_item(
                 Key={"PK": f"USER#{user_id}", "SK": f"FILE#{upload_id}"},
@@ -282,6 +290,19 @@ class FileUploadRepository:
 
         Returns:
             List of FileMetadata
+        """
+        return self.list_session_files_sync(session_id, status)
+
+    def list_session_files_sync(
+        self, session_id: str, status: Optional[FileStatus] = None
+    ) -> List[FileMetadata]:
+        """Synchronous body of :meth:`list_session_files`.
+
+        The session manager's restore path (``TurnBasedSessionManager.initialize``)
+        runs synchronously inside the Strands agent constructor, under a
+        running event loop it cannot re-enter, and needs the session's upload
+        rows to rehydrate stripped documents. boto3 is synchronous anyway; the
+        async method is a thin wrapper over this.
         """
         try:
             query_params = {
