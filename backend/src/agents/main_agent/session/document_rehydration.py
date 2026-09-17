@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from agents.main_agent.multimodal.file_sanitizer import FileSanitizer
 from agents.main_agent.session.compaction_policy import CHARS_PER_TOKEN
+from apis.shared.files.document_tokens import estimate_document_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +213,10 @@ def rehydrate_documents(
             if replacement is None:
                 replacement = placeholder_text(name, fmt, size)
                 result.stripped += 1
-                result.stripped_tokens += size // CHARS_PER_TOKEN
+                # Same estimator the row and the offloader use, so the
+                # ``document_stripped`` ledger event is comparable to
+                # ``document_offload`` / ``document_rehydrated``.
+                result.stripped_tokens += estimate_document_tokens(fmt, raw)
             content[idx] = {"text": replacement}
 
     return result
