@@ -92,6 +92,20 @@ def workspace_tools_enabled() -> bool:
     return os.environ.get("WORKSPACE_TOOLS_ENABLED", "").strip().lower() != "false"
 
 
+def document_read_enabled() -> bool:
+    """Whether the ``document_read`` agent tool is injected for sessions that
+    carry a readable attachment (``docs/specs/document-context-offload.md``
+    §4B). **Default ON with a kill switch** (house style): unset or empty
+    resolves to enabled; only the literal ``"false"`` disables.
+
+    This is the *only* control on the tool. It is deliberately not gated on
+    RBAC or the tool picker: the governing capability is the user's own
+    attachment, and the ``workspace_files`` catalog key is granted to no prod
+    role, so an RBAC gate would ship the recovery path dark.
+    """
+    return os.environ.get("DOCUMENT_READ_ENABLED", "").strip().lower() != "false"
+
+
 def agents_enabled() -> bool:
     """Whether the Agent Designer surface is enabled for this environment.
 

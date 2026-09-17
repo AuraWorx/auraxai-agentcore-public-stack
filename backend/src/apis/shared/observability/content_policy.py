@@ -132,6 +132,12 @@ SESSION_ROW_PROJECTION: Tuple[str, ...] = (
     "compactionAppliedCount",
     "compactionForcedCount",
     "compactionFloorUnreachableCount",
+    # Document lifecycle rollups (per-call document fields summed; see
+    # `apis.shared.sessions.metadata.DOCUMENT_ROLLUP_ATTRS`)
+    "fullDocumentCalls",
+    "digestOnlyCalls",
+    "documentReadCalls",
+    "documentReadPages",
 )
 
 #: C# rows for the cost anatomy and the session profile's trajectory.
@@ -158,6 +164,19 @@ CALL_ROW_PROJECTION: Tuple[str, ...] = (
     "prefixTokens",
     "windowRemovedMessages",
     "compactionEvents",
+    # Document context, optional: the attachment footprint of the live
+    # context at this call (counts, estimated tokens, a format→count map keyed
+    # by Bedrock's format enum) and the document_read retrievals the call
+    # requested. Numbers and enum keys only — never a filename or a byte.
+    "hasDocuments",
+    "documentCount",
+    "documentTokens",
+    "documentDigests",
+    "documentsAttached",
+    "documentSlices",
+    "documentSliceTokens",
+    "documentMime",
+    "documentReads",
 )
 
 #: FILE# rows for the session profile's attachment summary.

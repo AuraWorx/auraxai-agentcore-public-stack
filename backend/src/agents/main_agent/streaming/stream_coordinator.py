@@ -3111,10 +3111,30 @@ class StreamCoordinator:
                     events = context_ledger.get("compactionEvents")
                     if events:
                         metadata_kwargs["compactionEvents"] = events
+                    # document_read retrievals this call requested (calls /
+                    # pages / bytes) — numbers read off the tool's own
+                    # metadata, never the document.
+                    reads = context_ledger.get("documentReads")
+                    if reads:
+                        metadata_kwargs["documentReads"] = reads
                 if strands_agent is not None and cost_diagnostics_enabled():
                     prefix_tokens = get_prefix_token_split(strands_agent)
                     if prefix_tokens:
                         metadata_kwargs["prefixTokens"] = prefix_tokens
+                    # The attachment footprint of the live context: inline
+                    # documents (count, estimated tokens, format mix), digest
+                    # stand-ins, and retrieved page slices. Flat fields so a
+                    # query can split rows by hasDocuments / documentDigests
+                    # without reading the conversation
+                    # (docs/specs/document-context-offload.md §6.1).
+                    try:
+                        from agents.main_agent.session.document_context import summarize_document_context
+
+                        footprint = summarize_document_context(getattr(strands_agent, "messages", None))
+                        if footprint:
+                            metadata_kwargs.update(footprint)
+                    except Exception as doc_err:  # noqa: BLE001 - never block the cost row
+                        logger.debug(f"Skipping document context summary: {doc_err}")
 
                 message_metadata = MessageMetadata(**metadata_kwargs)
 

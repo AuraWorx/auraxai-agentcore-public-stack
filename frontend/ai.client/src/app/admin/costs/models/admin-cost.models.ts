@@ -138,6 +138,21 @@ export interface CompactionEvent {
   retainedMessages?: number | null;
   truncatedToolResults?: number | null;
   inputTokens?: number | null;
+  /**
+   * Document lifecycle kinds (`document_stripped` / `document_rehydrated` /
+   * `document_offload`): documents touched, their estimated token weight,
+   * and — for an offload — the prompt-cache gap when it fired.
+   */
+  documents?: number | null;
+  documentTokens?: number | null;
+  cacheGapSeconds?: number | null;
+}
+
+/** `document_read` retrievals one model call requested. */
+export interface DocumentReads {
+  calls: number;
+  pages: number;
+  bytes: number;
 }
 
 /** One model call within a session's cost anatomy. */
@@ -181,6 +196,22 @@ export interface SessionCallRow {
   /** Messages trimmed since the previous ledger-bearing call; > 0 means the prefix changed before this call. */
   windowTrimmed?: number | null;
   compactionEvents?: CompactionEvent[] | null;
+  /**
+   * Document context at this call (absent on rows written before it shipped).
+   * `hasDocuments` + `documentDigests` classify the call: full document inline,
+   * digest only, or neither. `documentTokens` is a heuristic (bytes/4, flat per
+   * image), comparable across rows; `documentMime` is keyed by Bedrock's format
+   * enum plus `image` — never a filename.
+   */
+  hasDocuments?: boolean | null;
+  documentCount?: number | null;
+  documentTokens?: number | null;
+  documentDigests?: number | null;
+  documentsAttached?: number | null;
+  documentSlices?: number | null;
+  documentSliceTokens?: number | null;
+  documentMime?: Record<string, number> | null;
+  documentReads?: DocumentReads | null;
 }
 
 /** Per-call cost anatomy for one session (admin cache-miss forensics). */
@@ -377,6 +408,7 @@ export interface DataCoverage {
   prefixTokens?: boolean;
   windowTrim?: boolean;
   compactionEvents?: boolean;
+  documents?: boolean;
 }
 
 /** The content-free diagnostic profile of one conversation. */
@@ -405,6 +437,16 @@ export interface SessionProfile {
   compactionEventCounts?: Record<string, number>;
   /** The summary's token size at the most recent compaction decision. */
   lastSummaryTokens?: number | null;
+  /**
+   * Document lifecycle across the session's calls: calls that ran with the
+   * full document inline vs. a digest only, the largest estimated document
+   * footprint seen, and what `document_read` pulled back in total.
+   */
+  fullDocumentCalls?: number;
+  digestOnlyCalls?: number;
+  peakDocumentTokens?: number | null;
+  documentReadCalls?: number;
+  documentReadPages?: number;
 }
 
 // ========== API Request Options ==========

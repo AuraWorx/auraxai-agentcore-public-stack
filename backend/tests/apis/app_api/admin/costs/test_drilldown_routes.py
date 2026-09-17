@@ -105,6 +105,7 @@ def test_session_profile_returns_200():
     assert body["dataCoverage"] == {
         "toolCensus": False, "compactionCount": False, "fingerprints": False, "cost": False,
         "prefixTokens": False, "windowTrim": False, "compactionEvents": False,
+        "documents": False,
     }
     service.get_session_profile.assert_awaited_once_with("s1")
 

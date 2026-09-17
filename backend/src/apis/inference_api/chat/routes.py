@@ -10,6 +10,7 @@ These endpoints are at the root level to comply with AWS Bedrock AgentCore Runti
 import asyncio
 import json
 import logging
+from collections import OrderedDict
 from typing import AsyncGenerator, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -748,6 +749,98 @@ def _build_memory_tools(agent_memory, user_id: str, user_email: str) -> list:
         tools.append(make_memory_write_tool(space_id, space_name, user_id, user_email))
 
     logger.info(f"Created {len(tools)} memory-space tools for bound space")
+    return tools
+
+
+# ============================================================
+# Document Read Tool Injection (docs/specs/document-context-offload.md §4B)
+# ============================================================
+
+#: Sessions known to carry a readable document. The gate is one DynamoDB
+#: query per turn otherwise; a positive answer is memoized because it is
+#: monotonic in practice (an upload stays unless the user deletes it, and a
+#: stale tool on a session whose files were deleted just returns "not found").
+#: Negative answers are never memoized — the next turn may be the upload.
+_DOCUMENT_SESSIONS: "OrderedDict[str, bool]" = OrderedDict()
+_DOCUMENT_SESSIONS_MAX = 10_000
+
+
+def _remember_document_session(session_id: str) -> None:
+    _DOCUMENT_SESSIONS[session_id] = True
+    _DOCUMENT_SESSIONS.move_to_end(session_id)
+    while len(_DOCUMENT_SESSIONS) > _DOCUMENT_SESSIONS_MAX:
+        _DOCUMENT_SESSIONS.popitem(last=False)
+
+
+async def _session_has_documents(
+    session_id: str,
+    user_id: str,
+    turn_upload_ids: list | None = None,
+) -> bool:
+    """Whether ``document_read`` should exist on this turn.
+
+    True when this turn attaches uploads (their metadata rows already exist,
+    so no query is needed), when the session was seen carrying a document
+    earlier in this process, or when the session's upload rows include at
+    least one readable document (PDF, Word, text, markdown, HTML — not
+    spreadsheets, decks or images, which have other paths). Fail-closed on
+    error: a turn without the tool is today's behavior, never a broken turn.
+    """
+    if turn_upload_ids:
+        _remember_document_session(session_id)
+        return True
+    if _DOCUMENT_SESSIONS.get(session_id):
+        return True
+    try:
+        from apis.shared.files.document_read import session_has_documents
+
+        present = await session_has_documents(user_id, session_id)
+    except Exception:  # noqa: BLE001 - the gate must never fail a turn
+        logger.warning("document_read gate lookup failed; tool not injected this turn", exc_info=True)
+        return False
+    if present:
+        _remember_document_session(session_id)
+    return present
+
+
+async def _document_tools_gate(
+    session_id: str,
+    user_id: str,
+    turn_upload_ids: list | None = None,
+) -> bool:
+    """The single answer to "does this turn carry ``document_read``" — the
+    builder and the resume path's cache key both read it, so the two can
+    never disagree (a disagreement orphans a paused agent)."""
+    from apis.shared.feature_flags import document_read_enabled
+
+    if not document_read_enabled():
+        return False
+    if not session_id or not user_id:
+        return False
+    return await _session_has_documents(session_id, user_id, turn_upload_ids)
+
+
+async def _build_document_tools(
+    session_id: str,
+    user_id: str,
+    turn_upload_ids: list | None = None,
+) -> list:
+    """Context-bound ``document_read`` for a session that has a readable attachment.
+
+    **Not gated on ``enabled_tools``** — the governing capability is the user's
+    own attachment, exactly as the Memory-Space tools are governed by an
+    Agent's binding. Its id stays out of ``INJECTED_TOOL_IDS``. Kill switch:
+    ``DOCUMENT_READ_ENABLED=false``. The gate's answer also feeds the agent
+    cache key (``has_document_tools``), so an agent cached before the first
+    upload is never served without the tool afterwards.
+    """
+    if not await _document_tools_gate(session_id, user_id, turn_upload_ids):
+        return []
+
+    from agents.builtin_tools.document_read_tool import make_document_read_tool
+
+    tools = [make_document_read_tool(session_id, user_id)]
+    logger.info("Created document_read tool (session has a readable document)")
     return tools
 
 
@@ -2402,6 +2495,12 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 mantle_region=snapshot.mantle_region,
                 agent_type=snapshot.agent_type,
                 is_resume=True,
+                # The original turn's key carried whether the session had a
+                # readable document; the gate is monotonic, so re-asking it
+                # rebuilds the same key (an orphaned paused agent otherwise).
+                has_document_tools=await _document_tools_gate(
+                    input_data.session_id, user_id
+                ),
                 # Resume must rebuild the SAME cache key the original turn used,
                 # or the paused agent is orphaned. New snapshots carry the
                 # original turn's exact effective set in enabled_skills, so
@@ -2566,6 +2665,18 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
             )
             extra_tools = extra_tools + memory_tools
 
+            # document_read for any session that carries a readable attachment
+            # (this turn's uploads count). Gated on session state, not the
+            # picker; its presence goes into the cache key below rather than
+            # vetoing the cache, so an attachment session that could keep a
+            # warm agent still does.
+            document_tools = await _build_document_tools(
+                session_id=input_data.session_id,
+                user_id=user_id,
+                turn_upload_ids=input_data.file_upload_ids,
+            )
+            extra_tools = extra_tools + document_tools
+
             # Can this turn's agent be cached despite carrying injected tools?
             # Only when every builder that fired closes over values the cache
             # key already carries (session, user, enabled_tools). Derived from
@@ -2594,6 +2705,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 is_resume=False,
                 accessible_skill_ids=effective_skill_ids,
                 extra_tools_key_described=extra_tools_key_described,
+                has_document_tools=bool(document_tools),
             )
 
         # Resume requests must target interrupts that the cached agent

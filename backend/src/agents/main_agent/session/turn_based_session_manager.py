@@ -51,7 +51,18 @@ logger = logging.getLogger(__name__)
 
 #: Compaction decisions the per-call ledger will record. Reserved kinds exist
 #: so a scheduling policy can report them without a schema change.
-COMPACTION_EVENT_KINDS = frozenset({"applied", "checkpoint", "forced", "floor_unreachable"})
+#: Compaction-ledger event kinds. The ``document_*`` kinds are the document
+#: lifecycle (docs/specs/document-context-offload.md §6.1): ``document_stripped``
+#: — restore replaced inline documents with contentless placeholders (the
+#: defect PR-3 fixes; recorded from PR-1 so its reach is measured before the
+#: fix lands); ``document_rehydrated`` — restore replaced them with a digest
+#: plus a live ``document_read`` handle (PR-3); ``document_offload`` — the
+#: post-turn trigger swapped an inline document for its digest, with the
+#: cache gap at the moment it fired (PR-4).
+COMPACTION_EVENT_KINDS = frozenset({
+    "applied", "checkpoint", "forced", "floor_unreachable",
+    "document_stripped", "document_rehydrated", "document_offload",
+})
 _MAX_PENDING_COMPACTION_EVENTS = 8
 
 
@@ -1462,6 +1473,7 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
         """
         stripped_messages = copy.deepcopy(messages)
         strip_count = 0
+        stripped_bytes = 0
 
         for msg in stripped_messages:
             content = msg.get("content", [])
@@ -1485,9 +1497,22 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
                     "text": f"[Document placeholder: name={doc_name}, format={doc_format}, original_size={original_size} bytes]"
                 }
                 strip_count += 1
+                stripped_bytes += original_size
 
         if strip_count > 0:
             logger.debug(f"Stripped inline bytes from {strip_count} document block(s) in history")
+            # Content-free record on the next cost row: how many documents this
+            # restore discarded and roughly how many tokens they were (same
+            # bytes/4 heuristic as the compaction estimator). This is the
+            # defect the digest rehydration (PR-3) fixes; recording it now is
+            # what shows its reach before and after.
+            from agents.main_agent.session.compaction_policy import CHARS_PER_TOKEN
+
+            self.record_compaction_event(
+                "document_stripped",
+                documents=strip_count,
+                documentTokens=stripped_bytes // CHARS_PER_TOKEN,
+            )
 
         return stripped_messages
 
