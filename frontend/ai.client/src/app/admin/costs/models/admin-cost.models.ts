@@ -415,6 +415,7 @@ export interface DataCoverage {
   prefixTokens?: boolean;
   windowTrim?: boolean;
   compactionEvents?: boolean;
+  documents?: boolean;
   /** Any thumbs row, or a session rollup written while diagnostics were on. */
   feedback?: boolean;
 }
@@ -438,7 +439,6 @@ export interface FeedbackProfile {
   down: number;
   byTurnClass?: Record<TurnClass, FeedbackCounts> | null;
   unjoined?: number;
-  documents?: boolean;
 }
 
 /** The content-free diagnostic profile of one conversation. */
