@@ -267,7 +267,7 @@ describe('SessionCostAnatomyPage', () => {
       expect(page.compactionEventTitle({ kind: 'checkpoint' })).toBe('checkpoint');
       expect(
         page.compactionEventTitle({ kind: 'document_offload', documents: 1, documentTokens: 9_000, cacheGapSeconds: 420 }),
-      ).toBe('document offload · 1 document · ~9.0K tokens · cache gap 7m 0s');
+      ).toBe('document offload · 1 document · ~9.0K tokens · cache gap 7m');
     });
 
     it('summarises how the documents were consumed, or falls back when untracked', async () => {
