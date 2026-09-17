@@ -22,6 +22,13 @@ row-family summary in ``apis.shared.sessions.metadata``)::
 this same row family under ``signal: "implicit"``; every reader here filters
 to explicit rows so that phase needs no backfill and the two are never summed.
 
+Thumb rows also carry ``GSI1PK = FEEDBACK#down`` / ``FEEDBACK#up`` and
+``GSI1SK = updatedAt`` on the existing ``UserTimestampIndex``, so "recent
+down-thumbs across the fleet" is one query with no new index — the eval
+sampler's input queue (spec §11 PR-4). A judged row gains ``evaluation``
+(content-free: per-evaluator value / label / tokens, never the judge's
+explanation) and ``evaluatedAt``.
+
 ``retryMessageId`` is the index of the user message the SPA sent as a
 *retry with correction* after a down-thumb (response-feedback spec §7 "the
 retry loop", §11 PR-1's consequence). It is a link, never the correction's
@@ -51,7 +58,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import FEEDBACK_REASONS, MessageFeedback
 from .preview import is_preview_session
@@ -165,6 +172,9 @@ async def put_message_feedback(
     sets = {
         "GSI_PK": f"SESSION#{session_id}",
         "GSI_SK": f"F#{message_id}",
+        # Fleet queue on UserTimestampIndex: recent down-thumbs in one query.
+        "GSI1PK": f"FEEDBACK#{'down' if value == -1 else 'up'}",
+        "GSI1SK": now,
         "sessionId": session_id,
         "messageId": int(message_id),
         "userId": user_id,
@@ -233,6 +243,53 @@ async def delete_message_feedback(session_id: str, user_id: str, message_id: int
         down=-1 if previous_value == -1 else 0,
     )
     return True
+
+
+def list_recent_down_thumbs(table, limit: int = 20) -> List[Dict[str, Any]]:
+    """Newest-first down-thumb rows across the fleet (``UserTimestampIndex``,
+    partition ``FEEDBACK#down``). Raw rows — the caller is the sampler, which
+    needs ``userId`` to write the verdict back; the admin list goes through
+    the projected storage reader instead."""
+    from boto3.dynamodb.conditions import Key
+
+    response = table.query(
+        IndexName="UserTimestampIndex",
+        KeyConditionExpression=Key("GSI1PK").eq("FEEDBACK#down"),
+        ScanIndexForward=False,
+        Limit=max(1, int(limit)),
+    )
+    return list(response.get("Items", []))
+
+
+def store_evaluation(
+    table,
+    user_id: str,
+    session_id: str,
+    message_id: int,
+    evaluation: Dict[str, Any],
+) -> None:
+    """Attach a content-free judged result to a thumb row. ``evaluation`` is
+    the sampler's summary (``apis.shared.feedback_eval.sampler.build_verdict``);
+    this function refuses anything carrying an ``explanation`` so the judge's
+    prose about the conversation can never land beside the cost row."""
+    if _carries_explanation(evaluation):
+        raise ValueError("evaluation summaries must not carry the judge's explanation")
+    from .metadata import _convert_floats_to_decimal
+
+    table.update_item(
+        Key=_keys(user_id, session_id, message_id),
+        UpdateExpression="SET evaluation = :e, evaluatedAt = :t",
+        ExpressionAttributeValues={":e": _convert_floats_to_decimal(evaluation), ":t": _now()},
+        ConditionExpression="attribute_exists(PK)",
+    )
+
+
+def _carries_explanation(obj: Any) -> bool:
+    if isinstance(obj, dict):
+        return any(k == "explanation" or _carries_explanation(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(_carries_explanation(v) for v in obj)
+    return False
 
 
 def query_session_feedback(table, session_id: str, user_id: Optional[str] = None) -> Dict[str, MessageFeedback]:

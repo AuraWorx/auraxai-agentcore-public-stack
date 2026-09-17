@@ -28,6 +28,8 @@ from .models import (
     DataCoverage,
     FeedbackByTurnClass,
     FeedbackCounts,
+    EvaluatorAggregate,
+    FeedbackEvaluations,
     FeedbackProfile,
     FingerprintChanges,
     SessionDiagnosis,
@@ -126,6 +128,8 @@ def _join_feedback(
     any_turn_class = any(_turn_class(r) is not None for r in records)
     buckets = FeedbackByTurnClass() if any_turn_class else None
     profile = FeedbackProfile()
+    evaluations = FeedbackEvaluations()
+    evaluator_sums: Dict[str, List[float]] = {}
     # Every cost row per assistant message index, for pricing rework.
     cost_by_message: Dict[int, float] = {}
     for record in records:
@@ -146,6 +150,17 @@ def _join_feedback(
         else:
             profile.down += 1
         message_id = _as_int(row.get("messageId"))
+        verdict = row.get("evaluation")
+        if isinstance(verdict, dict):
+            evaluations.judged += 1
+            for evaluator, score in (verdict.get("scores") or {}).items():
+                value = _as_float(score.get("value")) if isinstance(score, dict) else None
+                if value is not None:
+                    evaluator_sums.setdefault(str(evaluator), []).append(value)
+            if verdict.get("reason") == "tool_failed":
+                evaluations.tool_failures_reported += 1
+                if verdict.get("toolFailureCorroborated") is True:
+                    evaluations.tool_failures_corroborated += 1
         retry_id = _as_int(row.get("retryMessageId"))
         if value == -1 and retry_id is not None:
             profile.retried += 1
@@ -170,6 +185,12 @@ def _join_feedback(
             bucket.down += 1
     profile.by_turn_class = buckets
     profile.rework_usd = round(rework_total, 6) if rework_total is not None else None
+    if evaluations.judged:
+        evaluations.by_evaluator = {
+            name: EvaluatorAggregate(n=len(values), mean=round(sum(values) / len(values), 4))
+            for name, values in sorted(evaluator_sums.items())
+        }
+        profile.evaluations = evaluations
     return profile
 
 

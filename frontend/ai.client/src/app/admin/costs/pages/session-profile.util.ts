@@ -241,6 +241,24 @@ export function feedbackRetryLine(feedback: FeedbackProfile | null | undefined):
   return parts.join(' · ');
 }
 
+/**
+ * `judged 3 · Correctness 0.50 · tool failures 1/2 confirmed` — what the eval
+ * sampler concluded. Evaluator names lose their `Builtin.` prefix; null when
+ * nothing was judged.
+ */
+export function feedbackEvaluationsLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const ev = feedback?.evaluations;
+  if (!ev || ev.judged === 0) return null;
+  const parts = [`judged ${ev.judged}`];
+  for (const [name, agg] of Object.entries(ev.byEvaluator ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    parts.push(`${name.replace(/^Builtin\./, '')} ${agg.mean.toFixed(2)}`);
+  }
+  if (ev.toolFailuresReported > 0) {
+    parts.push(`tool failures ${ev.toolFailuresCorroborated}/${ev.toolFailuresReported} confirmed`);
+  }
+  return parts.join(' · ');
+}
+
 export function feedbackByTurnClassLine(feedback: FeedbackProfile | null | undefined): string | null {
   const by = feedback?.byTurnClass;
   if (!by) return null;

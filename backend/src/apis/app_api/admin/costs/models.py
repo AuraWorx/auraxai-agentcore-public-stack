@@ -487,6 +487,27 @@ class FeedbackByTurnClass(BaseModel):
     none: FeedbackCounts = Field(default_factory=FeedbackCounts)
 
 
+class EvaluatorAggregate(BaseModel):
+    """Mean judged score for one evaluator over this session's sampled thumbs."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    n: int = 0
+    mean: float = 0.0
+
+
+class FeedbackEvaluations(BaseModel):
+    """What the eval sampler (spec §11 PR-4) concluded about this session's
+    down-thumbs: how many were judged, the mean per evaluator, and for
+    ``tool_failed`` thumbs whether the call's tool census corroborated them.
+    Scores and counts only — the judge's explanation is never stored."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    judged: int = 0
+    by_evaluator: Dict[str, EvaluatorAggregate] = Field(default_factory=dict, alias="byEvaluator")
+    tool_failures_reported: int = Field(0, alias="toolFailuresReported")
+    tool_failures_corroborated: int = Field(0, alias="toolFailuresCorroborated")
+
+
 class FeedbackProfile(BaseModel):
     """The outcome signal joined to the session's cost rows. ``byTurnClass``
     is ``None`` when no cost row carries the turn-class fields (they arrive
@@ -505,6 +526,8 @@ class FeedbackProfile(BaseModel):
     # a cost row to price.
     retried: int = 0
     rework_usd: Optional[float] = Field(None, alias="reworkUsd")
+    # Judged down-thumbs, or None when the sampler has not touched this session.
+    evaluations: Optional[FeedbackEvaluations] = None
 
 
 class DataCoverage(BaseModel):

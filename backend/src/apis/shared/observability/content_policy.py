@@ -60,6 +60,8 @@ CONTENT_BEARING: FrozenSet[str] = frozenset({
     "stateReason",
     "lastError",
     "errorDetail",
+    # F# feedback rows, judged: the evaluator's prose quotes the conversation
+    "explanation",
     # FILE# upload rows
     "filename",                       # user-chosen
     "s3Key",                          # embeds the filename
@@ -213,6 +215,8 @@ FEEDBACK_ROW_PROJECTION: Tuple[str, ...] = (
     "reason",
     "signal",
     "retryMessageId",   # a message index, the retry-with-correction link
+    "evaluation",       # judged verdict: per-evaluator value/label/n/tokens, never the explanation
+    "evaluatedAt",
     "updatedAt",
 )
 

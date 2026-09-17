@@ -108,7 +108,7 @@ def test_session_profile_returns_200():
         "feedback": False,
         "documents": False,
     }
-    assert body["feedback"] == {"up": 0, "down": 0, "byTurnClass": None, "unjoined": 0, "retried": 0, "reworkUsd": None}
+    assert body["feedback"] == {"up": 0, "down": 0, "byTurnClass": None, "unjoined": 0, "retried": 0, "reworkUsd": None, "evaluations": None}
     service.get_session_profile.assert_awaited_once_with("s1")
 
 

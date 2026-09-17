@@ -442,6 +442,13 @@ export interface FeedbackProfile {
   /** Down-thumbs followed by a retry-with-correction, and what the rework cost. */
   retried?: number;
   reworkUsd?: number | null;
+  /** Judged down-thumbs (eval sampling): counts and means only; null when none judged. */
+  evaluations?: {
+    judged: number;
+    byEvaluator: Record<string, { n: number; mean: number }>;
+    toolFailuresReported: number;
+    toolFailuresCorroborated: number;
+  } | null;
 }
 
 /** The content-free diagnostic profile of one conversation. */

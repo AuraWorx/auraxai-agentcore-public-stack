@@ -4,6 +4,7 @@ import {
   cleanCeiling,
   downRate,
   feedbackByTurnClassLine,
+  feedbackEvaluationsLine,
   feedbackRetryLine,
   formatBytes,
   formatEvidenceValue,
@@ -48,6 +49,23 @@ describe('session-profile.util', () => {
       expect(feedbackRetryLine({ up: 0, down: 1 })).toBeNull();
       expect(feedbackRetryLine({ up: 0, down: 1, retried: 1 })).toBe('1 retried');
       expect(feedbackRetryLine({ up: 0, down: 2, retried: 2, reworkUsd: 0.351 })).toBe('2 retried · $0.35 rework');
+    });
+
+    it('feedbackEvaluationsLine reports judged means and corroboration, null when nothing judged', () => {
+      expect(feedbackEvaluationsLine({ up: 0, down: 2 })).toBeNull();
+      expect(feedbackEvaluationsLine({ up: 0, down: 2, evaluations: null })).toBeNull();
+      expect(
+        feedbackEvaluationsLine({
+          up: 0,
+          down: 3,
+          evaluations: {
+            judged: 3,
+            byEvaluator: { 'Builtin.Faithfulness': { n: 1, mean: 0.5 }, 'Builtin.Correctness': { n: 2, mean: 0.25 } },
+            toolFailuresReported: 2,
+            toolFailuresCorroborated: 1,
+          },
+        }),
+      ).toBe('judged 3 · Correctness 0.25 · Faithfulness 0.50 · tool failures 1/2 confirmed');
     });
 
     it('feedbackByTurnClassLine is null when the turn class is not tracked', () => {

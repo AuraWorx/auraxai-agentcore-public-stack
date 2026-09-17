@@ -3,8 +3,9 @@
 **Status:** PARTIALLY BUILT — capture and the read model shipped in PR #1142
 (2026-09-16, as document-context-offload PR-7) and the consequence
 (retry-with-correction) in the PR stacked on it; §11 PR-1 is therefore
-complete. Implicit signals and eval sampling are not built. See §13. Written
-2026-09-04 from the "how would we benefit?" conversation.
+complete. Eval sampling (§11 PR-4) followed, opt-in per environment; implicit
+signals (PR-2) are in review. See §13. Written 2026-09-04 from the "how would
+we benefit?" conversation.
 **Refs:** `docs/specs/agentcore-evaluations-spike-findings.md` (the eval
 harness this feeds), `docs/specs/mid-turn-steering.md` (the injection path
 Phase 1 reuses), `docs/specs/agent-marketplace.md` D15 (the *other* feedback
@@ -368,7 +369,32 @@ points:
   so Phase 6 can find it once the consent decision is made. The profile
   reports `feedback.retried` and `reworkUsd` (§7 "rework cost": the thumbed
   call rows plus the retry turn's consecutive assistant rows).
-- **Not built**: implicit signals (PR-2), eval sampling (PR-4),
-  author/marketplace surfaces (PR-5), the report-dialog escape hatch in the
-  reason row.
+- **Eval sampling (§11 PR-4), fourth PR — opt-in.** Down-thumbs carry
+  `GSI1PK = FEEDBACK#down` / `GSI1SK = updatedAt` on the existing
+  `UserTimestampIndex`, so the fleet's recent down-thumbs are one query with
+  no new index. `POST /admin/feedback/evaluations/run` (scope `admin.costs`)
+  judges up to N not-yet-judged ones in a background task through
+  `bedrock_agentcore.evaluation.EvaluationClient` over the runtime log
+  group, keyed by the runtime session id the chat proxy already pins;
+  `GET /admin/feedback/evaluations` is the queue with verdicts. Routing is
+  §6's table: `wrong` → Correctness + Faithfulness, `instructions` →
+  InstructionFollowing, `length` → Conciseness, `other`/none → Helpfulness;
+  `tool_failed` gets **no judge** and is corroborated against the call's
+  tool census on the `C#` row (ops, not model); `outdated` gets no judge yet
+  (the KB-freshness join is a follow-up). The verdict stored on the `F#` row
+  is per-evaluator value / rating / n / tokens — **the judge's `explanation`
+  is dropped at summarisation, refused at the storage write, and denylisted
+  in the content policy**, because it quotes the conversation. The profile
+  shows `feedback.evaluations` (judged, mean per evaluator, tool failures
+  corroborated). **Default OFF** (`FEEDBACK_EVAL_SAMPLING_ENABLED`,
+  `CDK_FEEDBACK_EVAL_SAMPLING_ENABLED=true` to enable): the managed judge
+  reads the sampled conversation's spans, which is the scoping decision the
+  evaluations spike (§2) says to make explicitly per environment, and §8
+  rule 1 here. The IAM grant (Logs Insights on the runtime log group and
+  `aws/spans`; Evaluate / GetEvaluator) is wired but inert until an
+  environment opts in. Runs are admin-triggered; a schedule can follow once
+  a week of verdicts says the token spend is worth it.
+- **Not built**: author/marketplace surfaces (PR-5), the report-dialog
+  escape hatch in the reason row, abandonment, the `outdated` → KB-freshness
+  join, a schedule for the sampler.
 

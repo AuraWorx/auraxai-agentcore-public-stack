@@ -38,6 +38,7 @@ import {
   buildDiagnosticJson,
   downRate,
   feedbackByTurnClassLine,
+  feedbackEvaluationsLine,
   feedbackRetryLine,
   formatBytes,
   formatEvidenceValue,
@@ -256,6 +257,10 @@ import {
                 @if (feedbackRetryLine(); as retries) {
                   <!-- Quality in dollars: the thumbed answer plus the retry it took. -->
                   <p class="mt-0.5 text-xs/5 text-gray-500 dark:text-gray-400">{{ retries }}</p>
+                }
+                @if (feedbackEvaluationsLine(); as judged) {
+                  <!-- What the offline judge made of the down-thumbs (eval sampling). -->
+                  <p class="mt-0.5 truncate text-xs/5 text-gray-500 dark:text-gray-400" [title]="judged">{{ judged }}</p>
                 }
               } @else {
                 <p class="mt-1 text-lg/7 font-semibold text-gray-400 dark:text-gray-500">—</p>
@@ -842,6 +847,10 @@ export class SessionCostAnatomyPage {
     const feedback = this.profileResource.value().feedback;
     return feedback ? downRate(feedback) : null;
   });
+
+  readonly feedbackEvaluationsLine = computed(() =>
+    this.profileResource.hasValue() ? feedbackEvaluationsLine(this.profileResource.value().feedback) : null,
+  );
 
   readonly feedbackRetryLine = computed(() =>
     this.profileResource.hasValue() ? feedbackRetryLine(this.profileResource.value().feedback) : null,

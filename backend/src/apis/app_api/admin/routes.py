@@ -923,6 +923,11 @@ from .costs.routes import router as costs_router
 
 router.include_router(costs_router)
 
+# ========== Include Feedback Eval-Sampling Subrouter ==========
+from .feedback.routes import router as feedback_admin_router
+
+router.include_router(feedback_admin_router)
+
 # ========== Include User Admin Subrouter ==========
 from .users.routes import router as users_router
 

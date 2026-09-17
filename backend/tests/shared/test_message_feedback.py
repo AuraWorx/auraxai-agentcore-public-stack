@@ -73,7 +73,7 @@ async def test_put_writes_one_row_keyed_beside_the_cost_row(table):
     assert "ttl" in row
     # Content-free: nothing on the row but ids, a number, a timestamp and keys.
     assert row["signal"] == "explicit"
-    assert set(row) <= {"PK", "SK", "GSI_PK", "GSI_SK", "sessionId", "messageId", "userId", "value", "signal", "retryMessageId", "updatedAt", "ttl"}
+    assert set(row) <= {"PK", "SK", "GSI_PK", "GSI_SK", "GSI1PK", "GSI1SK", "sessionId", "messageId", "userId", "value", "signal", "retryMessageId", "updatedAt", "ttl"}
 
 
 @pytest.mark.asyncio

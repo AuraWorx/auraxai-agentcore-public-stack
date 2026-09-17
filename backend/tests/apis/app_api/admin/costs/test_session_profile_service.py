@@ -372,3 +372,36 @@ async def test_feedback_reader_failure_never_breaks_the_profile():
     service.storage.get_session_feedback_rows = AsyncMock(side_effect=RuntimeError("boom"))
     p = await service.get_session_profile("s1")
     assert p is not None and p.feedback.up == 0 and p.data_coverage.feedback is False
+
+
+@pytest.mark.asyncio
+async def test_judged_thumbs_aggregate_per_evaluator_and_corroboration():
+    def judged(message_id, reason, scores=None, corroborated=None):
+        row = _feedback(message_id, -1, reason)
+        row["evaluatedAt"] = "t"
+        row["evaluation"] = {"reason": reason, "evaluators": list((scores or {}).keys())}
+        if scores:
+            row["evaluation"]["scores"] = {k: {"value": v, "n": 1} for k, v in scores.items()}
+        if corroborated is not None:
+            row["evaluation"]["toolFailureCorroborated"] = corroborated
+        return row
+
+    feedback = [
+        judged(0, "wrong", {"Builtin.Correctness": 1.0, "Builtin.Faithfulness": 0.5}),
+        judged(1, "wrong", {"Builtin.Correctness": 0.0}),
+        judged(2, "tool_failed", corroborated=True),
+        judged(3, "tool_failed", corroborated=False),
+        _feedback(4, -1, "other"),  # not judged yet
+    ]
+    p = await _service_with_feedback(_row(), [_call(i) for i in range(5)], feedback).get_session_profile("s1")
+    ev = p.feedback.evaluations
+    assert ev is not None and ev.judged == 4
+    assert ev.by_evaluator["Builtin.Correctness"].n == 2 and ev.by_evaluator["Builtin.Correctness"].mean == 0.5
+    assert ev.by_evaluator["Builtin.Faithfulness"].mean == 0.5
+    assert (ev.tool_failures_reported, ev.tool_failures_corroborated) == (2, 1)
+    assert p.feedback.down == 5
+    wire = p.model_dump(by_alias=True)["feedback"]["evaluations"]
+    assert wire["byEvaluator"]["Builtin.Correctness"] == {"n": 2, "mean": 0.5}
+
+    p = await _service_with_feedback(_row(), [_call(0)], [_feedback(0, -1)]).get_session_profile("s1")
+    assert p.feedback.evaluations is None

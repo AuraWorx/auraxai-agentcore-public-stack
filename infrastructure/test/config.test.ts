@@ -426,6 +426,31 @@ describe('RAG Ingestion Configuration', () => {
   // (same ternary as kbSync; empty workflow var must not disable)
   // ============================================================
 
+  describe('Feedback eval sampling flag (opt-in)', () => {
+    test('defaults to DISABLED when CDK_FEEDBACK_EVAL_SAMPLING_ENABLED is unset', () => {
+      delete process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED;
+      expect(loadConfig(app).feedbackEvalSampling.enabled).toBe(false);
+    });
+
+    test('an empty string (unset workflow variable) stays disabled', () => {
+      process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED = '';
+      expect(loadConfig(app).feedbackEvalSampling.enabled).toBe(false);
+    });
+
+    test('only the literal "true" enables it', () => {
+      process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED = 'true';
+      expect(loadConfig(app).feedbackEvalSampling.enabled).toBe(true);
+      process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED = 'yes';
+      expect(loadConfig(app).feedbackEvalSampling.enabled).toBe(false);
+    });
+
+    test('cdk.json context feedbackEvalSampling.enabled=true enables when env is unset', () => {
+      delete process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED;
+      app.node.setContext('feedbackEvalSampling', { enabled: true });
+      expect(loadConfig(app).feedbackEvalSampling.enabled).toBe(true);
+    });
+  });
+
   describe('Scheduled Runs feature flag', () => {
     test('defaults to enabled when CDK_SCHEDULED_RUNS_ENABLED is unset', () => {
       delete process.env.CDK_SCHEDULED_RUNS_ENABLED;

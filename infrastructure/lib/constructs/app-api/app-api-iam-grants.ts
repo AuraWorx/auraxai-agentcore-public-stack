@@ -49,6 +49,12 @@ export interface AppApiIamGrantsProps {
    */
   agentCoreMemoryArn: string;
   /**
+   * AgentCore Runtime CloudWatch log group name. Feedback eval sampling runs
+   * Logs Insights queries against it (and `aws/spans`) to collect a
+   * conversation's spans for AgentCore Evaluations.
+   */
+  agentCoreRuntimeLogGroupName: string;
+  /**
    * SageMaker fine-tuning execution role ARN. Created by a sibling
    * construct in wireCompute() — passed in here.
    */
@@ -505,6 +511,44 @@ export function grantAppApiPermissions(props: AppApiIamGrantsProps): void {
         'bedrock-agentcore:DeleteMemoryRecord',
       ],
       resources: [memoryArn],
+    }),
+  );
+
+  // ── AgentCore Evaluations (feedback eval sampling, spec §11 PR-4) ──
+  // The admin batch judges down-thumbed conversations with the built-in
+  // evaluators. Two halves: the SDK's span collector runs Logs Insights
+  // queries over the runtime log group and `aws/spans` (StartQuery is
+  // resource-scoped; GetQueryResults/StopQuery are not), then calls the
+  // data-plane Evaluate with the spans and the control-plane GetEvaluator
+  // to learn each evaluator's level. Built-in evaluators are AWS-owned, so
+  // the bedrock-agentcore actions cannot be resource-scoped. The flag
+  // (FEEDBACK_EVAL_SAMPLING_ENABLED) defaults OFF; the grant is inert until
+  // an environment opts in.
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'FeedbackEvalSpanQueries',
+      effect: iam.Effect.ALLOW,
+      actions: ['logs:StartQuery'],
+      resources: [
+        `arn:aws:logs:${config.awsRegion}:${config.awsAccount}:log-group:${props.agentCoreRuntimeLogGroupName}:*`,
+        `arn:aws:logs:${config.awsRegion}:${config.awsAccount}:log-group:aws/spans:*`,
+      ],
+    }),
+  );
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'FeedbackEvalSpanQueryResults',
+      effect: iam.Effect.ALLOW,
+      actions: ['logs:GetQueryResults', 'logs:StopQuery'],
+      resources: ['*'],
+    }),
+  );
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'FeedbackEvalEvaluate',
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock-agentcore:Evaluate', 'bedrock-agentcore:GetEvaluator', 'bedrock-agentcore:ListEvaluators'],
+      resources: ['*'],
     }),
   );
 

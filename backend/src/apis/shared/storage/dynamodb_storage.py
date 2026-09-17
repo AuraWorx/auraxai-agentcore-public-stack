@@ -380,6 +380,30 @@ class DynamoDBStorage(MetadataStorage):
 
         return [strip_content(self._convert_decimal_to_float(item)) for item in items]
 
+    async def get_recent_down_thumbs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Newest-first down-thumb rows across the fleet — the eval sampler's
+        queue as an admin sees it: content-free by projection, no user id."""
+        from boto3.dynamodb.conditions import Key
+        from apis.shared.observability.content_policy import (
+            FEEDBACK_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FEEDBACK_ROW_PROJECTION)
+        try:
+            response = self.sessions_metadata_table.query(
+                IndexName="UserTimestampIndex",
+                KeyConditionExpression=Key("GSI1PK").eq("FEEDBACK#down"),
+                ScanIndexForward=False,
+                Limit=max(1, min(int(limit), 200)),
+                ProjectionExpression=projection,
+                ExpressionAttributeNames=names,
+            )
+        except ClientError as e:
+            raise Exception(f"Failed to list recent down-thumbs: {e}")
+        return [strip_content(self._convert_decimal_to_float(item)) for item in response.get("Items", [])]
+
     async def get_session_diagnostic_row(
         self,
         session_id: str,
