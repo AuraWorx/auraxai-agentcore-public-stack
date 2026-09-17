@@ -23,6 +23,7 @@ import { SpinnerComponent } from '../../../components/spinner/spinner.component'
 import { ContextTrajectoryChartComponent } from '../components/context-trajectory-chart.component';
 import { CacheStatus, DiagnosisSeverity, SessionDiagnosis,
   CompactionEvent,
+  SessionCallRow,
 } from '../models';
 import {
   AnatomyRow,
@@ -144,7 +145,13 @@ import {
             <div class="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
               <p class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Attachments</p>
               <p class="mt-1 text-lg/7 font-semibold text-gray-900 dark:text-white">{{ profile.attachments.count }}</p>
-              @if (profile.attachments.count > 0) {
+              @if (documentsLine(); as documents) {
+                <!-- How the documents were actually consumed: calls with the
+                     full document inline vs. a digest only, and what
+                     document_read pulled back. The digest-vs-full split is
+                     the quantity the offload work is judged on. -->
+                <p class="mt-1 truncate text-xs/5 text-gray-500 dark:text-gray-400" [title]="documents">{{ documents }}</p>
+              } @else if (profile.attachments.count > 0) {
                 <p class="mt-1 text-xs/5 text-gray-500 dark:text-gray-400">{{ bytes(profile.attachments.totalBytes) }}</p>
               }
             </div>
@@ -554,6 +561,16 @@ import {
                           >{{ event.kind }}</span
                         >
                       }
+                      @if (documentBadge(row.call); as badge) {
+                        <!-- What the model had of the attachments on this call:
+                             the full document inline, a digest only, or pages
+                             it retrieved with document_read. -->
+                        <span
+                          class="ml-1 rounded-sm bg-gray-100 px-1.5 font-mono text-[10px]/5 text-gray-600 dark:bg-white/10 dark:text-gray-300"
+                          [title]="documentDetail(row.call)"
+                          >{{ badge }}</span
+                        >
+                      }
                     </td>
                     <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums">
                       {{ formatGap(row.call.cacheGapSeconds) }}
@@ -661,6 +678,14 @@ import {
                               } @else {
                                 —
                               }
+                            </dd>
+                          </div>
+                          <div>
+                            <dt class="text-xs/5 font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                              Documents
+                            </dt>
+                            <dd class="mt-0.5 font-mono text-xs/5 text-gray-700 dark:text-gray-300">
+                              {{ documentDetail(row.call) || '—' }}
                             </dd>
                           </div>
                           @for (key of fingerprintKeys; track key) {
@@ -838,13 +863,61 @@ export class SessionCostAnatomyPage {
   });
 
   compactionEventTitle(event: CompactionEvent): string {
-    const parts = [event.kind.replace('_', ' ')];
+    const parts = [event.kind.replace(/_/g, ' ')];
     if (event.checkpoint != null) parts.push(`checkpoint ${event.checkpoint}`);
     if (event.summaryTokens != null) parts.push(`summary ${this.formatTokens(event.summaryTokens)}`);
     if (event.summarizedTurns != null) parts.push(`${event.summarizedTurns} turns summarized`);
     if (event.retainedMessages != null) parts.push(`${event.retainedMessages} messages retained`);
     if (event.truncatedToolResults) parts.push(`${event.truncatedToolResults} tool results truncated`);
+    if (event.documents != null) parts.push(`${event.documents} document${event.documents === 1 ? '' : 's'}`);
+    if (event.documentTokens != null) parts.push(`~${this.formatTokens(event.documentTokens)} tokens`);
+    if (event.digestTokens != null) parts.push(`→ ~${this.formatTokens(event.digestTokens)} digest`);
+    if (event.slices) parts.push(`${event.slices} page slice${event.slices === 1 ? '' : 's'} aged`);
+    if (event.cacheGapSeconds != null) parts.push(`cache gap ${this.formatGap(event.cacheGapSeconds)}`);
     return parts.join(' · ');
+  }
+
+  /**
+   * "2 full · 1 digest-only · read 4 pages · peak ~12K" — how the session's
+   * documents were consumed, call by call. Empty when the rows predate the
+   * document fields, so the card falls back to the upload byte total.
+   */
+  readonly documentsLine = computed(() => {
+    if (!this.profileResource.hasValue()) return '';
+    const p = this.profileResource.value();
+    if (!p.dataCoverage.documents) return '';
+    const parts: string[] = [];
+    if (p.fullDocumentCalls) parts.push(`${p.fullDocumentCalls} full`);
+    if (p.digestOnlyCalls) parts.push(`${p.digestOnlyCalls} digest-only`);
+    if (p.documentReadCalls) parts.push(`read ${p.documentReadPages ?? 0} pages in ${p.documentReadCalls} calls`);
+    if (p.peakDocumentTokens != null) parts.push(`peak ~${this.formatTokens(p.peakDocumentTokens)}`);
+    return parts.join(' · ');
+  });
+
+  /** Short row badge: `doc`, `digest`, or `+Np` for pages retrieved this call. */
+  documentBadge(call: SessionCallRow): string {
+    const reads = call.documentReads;
+    if (reads && reads.pages > 0) return `+${reads.pages}p`;
+    if (call.hasDocuments) return 'doc';
+    if (call.documentDigests) return 'digest';
+    return '';
+  }
+
+  /** The expanded-row line for the call's document context. */
+  documentDetail(call: SessionCallRow): string {
+    if (call.hasDocuments == null && !call.documentReads) return '';
+    const parts: string[] = [];
+    if (call.hasDocuments) {
+      const mime = Object.entries(call.documentMime ?? {})
+        .map(([fmt, n]) => `${fmt}×${n}`)
+        .join(' ');
+      parts.push(`${call.documentCount ?? 0} inline ~${this.formatTokens(call.documentTokens ?? 0)}${mime ? ` (${mime})` : ''}`);
+    }
+    if (call.documentDigests) parts.push(`${call.documentDigests} digest${call.documentDigests === 1 ? '' : 's'}`);
+    if (call.documentsAttached) parts.push(`${call.documentsAttached} attached this turn`);
+    if (call.documentSlices) parts.push(`${call.documentSlices} retrieved slice${call.documentSlices === 1 ? '' : 's'} ~${this.formatTokens(call.documentSliceTokens ?? 0)}`);
+    if (call.documentReads?.calls) parts.push(`document_read ×${call.documentReads.calls} → ${call.documentReads.pages} pages`);
+    return parts.length ? parts.join(' · ') : 'no documents in context';
   }
 
   readonly unexplainedMisses = computed(() => {

@@ -138,6 +138,25 @@ export interface CompactionEvent {
   retainedMessages?: number | null;
   truncatedToolResults?: number | null;
   inputTokens?: number | null;
+  /**
+   * Document lifecycle kinds (`document_stripped` / `document_rehydrated` /
+   * `document_offload`): documents touched, their estimated token weight,
+   * and — for an offload — the prompt-cache gap when it fired.
+   */
+  documents?: number | null;
+  documentTokens?: number | null;
+  cacheGapSeconds?: number | null;
+  /** `document_offload` only: digest tokens the evicted documents became, and aged page slices. */
+  digestTokens?: number | null;
+  slices?: number | null;
+  sliceTokens?: number | null;
+}
+
+/** `document_read` retrievals one model call requested. */
+export interface DocumentReads {
+  calls: number;
+  pages: number;
+  bytes: number;
 }
 
 /** One model call within a session's cost anatomy. */
@@ -181,6 +200,22 @@ export interface SessionCallRow {
   /** Messages trimmed since the previous ledger-bearing call; > 0 means the prefix changed before this call. */
   windowTrimmed?: number | null;
   compactionEvents?: CompactionEvent[] | null;
+  /**
+   * Document context at this call (absent on rows written before it shipped).
+   * `hasDocuments` + `documentDigests` classify the call: full document inline,
+   * digest only, or neither. `documentTokens` is a heuristic (bytes/4, flat per
+   * image), comparable across rows; `documentMime` is keyed by Bedrock's format
+   * enum plus `image` — never a filename.
+   */
+  hasDocuments?: boolean | null;
+  documentCount?: number | null;
+  documentTokens?: number | null;
+  documentDigests?: number | null;
+  documentsAttached?: number | null;
+  documentSlices?: number | null;
+  documentSliceTokens?: number | null;
+  documentMime?: Record<string, number> | null;
+  documentReads?: DocumentReads | null;
 }
 
 /** Per-call cost anatomy for one session (admin cache-miss forensics). */
@@ -338,6 +373,9 @@ export interface AttachmentProfile {
   count: number;
   totalBytes: number;
   byMime: Record<string, number>;
+  /** Uploads with a ready DocumentDigest, and the rendered tokens they would cost in context. */
+  digested?: number;
+  digestTokens?: number;
 }
 
 /** One model call's context occupancy (input + cacheRead + cacheWrite). */
@@ -377,6 +415,7 @@ export interface DataCoverage {
   prefixTokens?: boolean;
   windowTrim?: boolean;
   compactionEvents?: boolean;
+  documents?: boolean;
   /** Any thumbs row, or a session rollup written while diagnostics were on. */
   feedback?: boolean;
 }
@@ -433,6 +472,16 @@ export interface SessionProfile {
   lastSummaryTokens?: number | null;
   /** Thumbs up/down joined to the cost rows by (sessionId, messageId). */
   feedback?: FeedbackProfile;
+  /**
+   * Document lifecycle across the session's calls: calls that ran with the
+   * full document inline vs. a digest only, the largest estimated document
+   * footprint seen, and what `document_read` pulled back in total.
+   */
+  fullDocumentCalls?: number;
+  digestOnlyCalls?: number;
+  peakDocumentTokens?: number | null;
+  documentReadCalls?: number;
+  documentReadPages?: number;
 }
 
 // ========== API Request Options ==========
