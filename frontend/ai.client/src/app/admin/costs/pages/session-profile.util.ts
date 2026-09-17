@@ -232,6 +232,15 @@ export function downRate(counts: { up: number; down: number }): number | null {
  * (`full 50% of 4 · digest 0% of 2`). Classes with no thumbs are skipped;
  * null when the turn class is not tracked or nothing was thumbed.
  */
+/** `2 retried · $0.35 rework`, or null when nothing was retried. */
+export function feedbackRetryLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const retried = feedback?.retried ?? 0;
+  if (retried === 0) return null;
+  const parts = [`${retried} retried`];
+  if (feedback?.reworkUsd != null) parts.push(`$${feedback.reworkUsd.toFixed(2)} rework`);
+  return parts.join(' · ');
+}
+
 export function feedbackByTurnClassLine(feedback: FeedbackProfile | null | undefined): string | null {
   const by = feedback?.byTurnClass;
   if (!by) return null;

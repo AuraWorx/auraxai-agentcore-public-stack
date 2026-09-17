@@ -95,6 +95,18 @@ import { TooltipDirective } from '../../../../components/tooltip';
                 {{ reasonLabels[reason] }}
               </button>
             }
+            <button
+              type="button"
+              class="ml-1 inline-flex items-center gap-1 rounded-2xl px-2 py-0.5 text-xs/5 font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700"
+              appTooltip="Prefill a correction you can edit, then send"
+              appTooltipPosition="top"
+              aria-label="Retry with that in mind"
+              [disabled]="feedbackPending()"
+              (click)="retry()"
+            >
+              <ng-icon name="heroArrowPath" class="size-3.5" aria-hidden="true" />
+              <span>Retry with that in mind</span>
+            </button>
           </div>
         }
       }
@@ -235,6 +247,13 @@ export class MessageActionsComponent {
     } else {
       void this.feedbackService.setFeedback(last, value);
     }
+  }
+
+  /** The consequence: draft a correction for this thumb into the composer. */
+  retry(): void {
+    const last = this.lastMessage();
+    if (!last || this.feedbackValue() !== -1) return;
+    this.feedbackService.requestRetry(last);
   }
 
   pickReason(reason: FeedbackReason): void {

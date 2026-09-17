@@ -116,6 +116,8 @@ export interface MessageFeedback {
   /** +1 thumbs up, -1 thumbs down */
   value: 1 | -1;
   reason?: FeedbackReason;
+  /** Index of the user message sent as a retry-with-correction after this thumb. */
+  retryMessageId?: number;
   updatedAt: string;
 }
 

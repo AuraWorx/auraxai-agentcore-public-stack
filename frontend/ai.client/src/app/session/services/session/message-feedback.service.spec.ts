@@ -4,11 +4,13 @@ import { provideHttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ConfigService } from '../../../services/config.service';
+import { ComposerDraftService } from './composer-draft.service';
 import { Message } from '../models/message.model';
 import {
   MessageFeedbackService,
   parseMessageRef,
   readPersistedFeedback,
+  retryTemplate,
 } from './message-feedback.service';
 
 function message(id: string, metadata: Record<string, unknown> | null = null): Message {
@@ -110,5 +112,49 @@ describe('MessageFeedbackService', () => {
   it('ignores messages without a server index', async () => {
     await service.setFeedback(message('placeholder'), 1);
     http.expectNone(() => true);
+  });
+
+  describe('retry with correction', () => {
+    it('requestRetry drafts the reason\'s template into that session\'s composer', () => {
+      const drafts = TestBed.inject(ComposerDraftService);
+      const m = message('msg-s-3', { feedback: { value: -1, reason: 'instructions', updatedAt: 't' } });
+      service.requestRetry(m);
+      const draft = drafts.pending();
+      expect(draft?.sessionId).toBe('s');
+      expect(draft?.text).toBe(retryTemplate('instructions'));
+      expect(draft?.text).toContain('ignored my instructions');
+      http.expectNone(() => true);
+    });
+
+    it('links the sent correction to the thumb as retryMessageId, an index only', async () => {
+      const m = message('msg-s-3', { feedback: { value: -1, reason: 'wrong', updatedAt: 't' } });
+      service.requestRetry(m);
+      service.consumePendingRetry('s', message('msg-s-4'));
+      const req = http.expectOne('http://api.test/sessions/s/messages/3/feedback');
+      expect(req.request.method).toBe('PUT');
+      expect(req.request.body).toEqual({ value: -1, reason: 'wrong', retryMessageId: 4 });
+      req.flush({ value: -1, reason: 'wrong', retryMessageId: 4, updatedAt: 'u' });
+      await Promise.resolve();
+      expect(service.feedbackFor(m)?.retryMessageId).toBe(4);
+      // Consumed: a second send does not link again.
+      service.consumePendingRetry('s', message('msg-s-6'));
+      http.expectNone(() => true);
+    });
+
+    it('a message on another session leaves the retry pending; a withdrawn thumb drops it', () => {
+      const m = message('msg-s-3', { feedback: { value: -1, updatedAt: 't' } });
+      service.requestRetry(m);
+      service.consumePendingRetry('other', message('msg-other-1'));
+      http.expectNone(() => true);
+      service.consumePendingRetry('s', message('msg-s-4'));
+      http.expectOne('http://api.test/sessions/s/messages/3/feedback').flush({ value: -1, retryMessageId: 4, updatedAt: 'u' });
+    });
+
+    it('every reason has a template and none is empty', () => {
+      for (const reason of ['wrong', 'instructions', 'length', 'tool_failed', 'outdated', 'other'] as const) {
+        expect(retryTemplate(reason).length).toBeGreaterThan(10);
+      }
+      expect(retryTemplate(undefined)).toBe(retryTemplate('other'));
+    });
   });
 });

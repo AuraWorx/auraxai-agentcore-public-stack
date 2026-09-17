@@ -55,6 +55,7 @@ import {
 } from '../../../services/skill/skill-command.service';
 import { SkillCommandMenuComponent } from './skill-command-menu.component';
 import { SteeringService } from '../../services/chat/steering.service';
+import { ComposerDraftService } from '../../services/session/composer-draft.service';
 
 // Must stay in sync with the inline min-height/max-height on the textarea in
 // chat-input.component.html.
@@ -158,6 +159,7 @@ export class ChatInputComponent {
   private readonly fileUploadService = inject(FileUploadService);
   private readonly toastService = inject(ToastService);
   private readonly steering = inject(SteeringService);
+  private readonly composerDraft = inject(ComposerDraftService);
   private readonly toolService = inject(ToolService);
   private readonly voiceChatService = inject(VoiceChatService);
   protected readonly systemPromptsService = inject(SystemPromptsService);
@@ -611,6 +613,25 @@ export class ChatInputComponent {
       if (sessionId === null) {
         this.hintStep.set(0);
         this.hintsSettled.set(false);
+      }
+    });
+
+    // A feature (today: the feedback retry-with-correction) can hand this
+    // composer a draft for its session. Set it, size the textarea to it and
+    // focus so the user edits and sends; never submit on their behalf.
+    effect(() => {
+      const draft = this.composerDraft.pending();
+      const sessionId = untracked(this.sessionId);
+      if (!draft || draft.sessionId !== sessionId) return;
+      const taken = untracked(() => this.composerDraft.consume(sessionId));
+      if (!taken) return;
+      this.userInput.set(taken.text);
+      const textarea = this.messageInput()?.nativeElement;
+      if (textarea) {
+        textarea.value = taken.text;
+        this.autoResize(textarea);
+        textarea.focus();
+        textarea.setSelectionRange(taken.text.length, taken.text.length);
       }
     });
 

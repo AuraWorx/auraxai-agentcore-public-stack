@@ -130,6 +130,10 @@ class FakeFeedbackService {
   current: MessageFeedback | null = null;
   set: Array<{ id: string; value: 1 | -1; reason?: string }> = [];
   cleared: string[] = [];
+  retried: string[] = [];
+  requestRetry(message: Message): void {
+    this.retried.push(message.id);
+  }
   feedbackFor(): MessageFeedback | null {
     return this.current;
   }
@@ -207,7 +211,8 @@ describe('MessageActionsComponent — thumbs feedback', () => {
     fixture.detectChanges();
     const group = fixture.nativeElement.querySelector('[role="group"]');
     expect(group).not.toBeNull();
-    const chips = Array.from(group.querySelectorAll('button')) as HTMLButtonElement[];
+    // Reason chips are the pressable ones; the Retry button shares the group but is not a reason.
+    const chips = Array.from(group.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[];
     expect(chips.map((c) => c.textContent!.trim())).toEqual([
       'Wrong or made up',
       'Ignored instructions',
@@ -220,9 +225,20 @@ describe('MessageActionsComponent — thumbs feedback', () => {
     expect(feedback.set).toEqual([{ id: 'msg-sess-1-3', value: -1, reason: 'instructions' }]);
   });
 
+  it('a thumbs down offers "Retry with that in mind", which asks the service to draft a correction', () => {
+    feedback.current = { value: -1, reason: 'wrong', updatedAt: 't' };
+    fixture.detectChanges();
+    const retry = fixture.nativeElement.querySelector('button[aria-label="Retry with that in mind"]') as HTMLButtonElement;
+    expect(retry).not.toBeNull();
+    retry.click();
+    expect(feedback.retried).toEqual(['msg-sess-1-3']);
+    expect(feedback.set).toEqual([]);
+  });
+
   it('reason codes stay hidden on a thumbs up', () => {
     feedback.current = { value: 1, updatedAt: 't' };
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('[role="group"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('button[aria-label="Retry with that in mind"]')).toBeNull();
   });
 });

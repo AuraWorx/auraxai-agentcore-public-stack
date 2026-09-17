@@ -499,6 +499,12 @@ class FeedbackProfile(BaseModel):
     down: int = 0
     by_turn_class: Optional[FeedbackByTurnClass] = Field(None, alias="byTurnClass")
     unjoined: int = 0
+    # Down-thumbs the user followed with a retry-with-correction, and what
+    # that rework cost: the thumbed call(s) plus the retry turn's calls
+    # (response-feedback spec §7 "rework cost"). ``None`` when no retry has
+    # a cost row to price.
+    retried: int = 0
+    rework_usd: Optional[float] = Field(None, alias="reworkUsd")
 
 
 class DataCoverage(BaseModel):

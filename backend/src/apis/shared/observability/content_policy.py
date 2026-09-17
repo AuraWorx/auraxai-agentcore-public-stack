@@ -212,6 +212,7 @@ FEEDBACK_ROW_PROJECTION: Tuple[str, ...] = (
     "value",
     "reason",
     "signal",
+    "retryMessageId",   # a message index, the retry-with-correction link
     "updatedAt",
 )
 

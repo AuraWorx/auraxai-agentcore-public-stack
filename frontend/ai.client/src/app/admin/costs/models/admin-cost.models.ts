@@ -439,6 +439,9 @@ export interface FeedbackProfile {
   down: number;
   byTurnClass?: Record<TurnClass, FeedbackCounts> | null;
   unjoined?: number;
+  /** Down-thumbs followed by a retry-with-correction, and what the rework cost. */
+  retried?: number;
+  reworkUsd?: number | null;
 }
 
 /** The content-free diagnostic profile of one conversation. */

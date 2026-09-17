@@ -334,6 +334,29 @@ async def test_no_feedback_rows_falls_back_to_rollups_and_coverage_is_honest():
 
 
 @pytest.mark.asyncio
+async def test_retries_are_counted_and_rework_is_priced_from_the_cost_rows():
+    # Turn A: assistant 1 (thumbed down, $0.10). Retry sent as user message 2;
+    # its turn is assistant 3 + 4 ($0.20 + $0.05, a tool round trip). User 5,
+    # assistant 6 ($0.99) is the NEXT turn and must not be counted.
+    records = [_call(1, cost=0.10), _call(3, cost=0.20), _call(4, cost=0.05), _call(6, cost=0.99)]
+    feedback = [{**_feedback(1, -1, "wrong"), "retryMessageId": 2}, _feedback(6, 1)]
+    p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
+    assert p.feedback.retried == 1
+    assert p.feedback.rework_usd == 0.35
+    assert (p.feedback.up, p.feedback.down) == (1, 1)
+
+    # A retry whose turn has no cost rows yet (still streaming) counts, but prices only the thumbed side.
+    feedback = [{**_feedback(1, -1, "wrong"), "retryMessageId": 7}]
+    p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
+    assert p.feedback.retried == 1 and p.feedback.rework_usd == 0.10
+
+    # Nothing priced at all → None, not 0.
+    feedback = [{**_feedback(9, -1), "retryMessageId": 10}]
+    p = await _service_with_feedback(_row(), records, feedback).get_session_profile("s1")
+    assert p.feedback.retried == 1 and p.feedback.rework_usd is None
+
+
+@pytest.mark.asyncio
 async def test_implicit_signal_rows_are_never_summed_into_the_thumb_counts():
     records = [_call(0)]
     records[0]["hasDocuments"] = True

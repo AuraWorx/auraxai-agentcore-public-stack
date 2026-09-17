@@ -126,6 +126,13 @@ def _join_feedback(
     any_turn_class = any(_turn_class(r) is not None for r in records)
     buckets = FeedbackByTurnClass() if any_turn_class else None
     profile = FeedbackProfile()
+    # Every cost row per assistant message index, for pricing rework.
+    cost_by_message: Dict[int, float] = {}
+    for record in records:
+        message_id = _as_int(record.get("messageId"))
+        if message_id is not None:
+            cost_by_message[message_id] = cost_by_message.get(message_id, 0.0) + (_record_cost(record) or 0.0)
+    rework_total: Optional[float] = None
     for row in feedback_rows:
         # Explicit thumbs only — implicit signals (spec §10) share the row
         # family but answer a different question and must never be summed in.
@@ -139,6 +146,12 @@ def _join_feedback(
         else:
             profile.down += 1
         message_id = _as_int(row.get("messageId"))
+        retry_id = _as_int(row.get("retryMessageId"))
+        if value == -1 and retry_id is not None:
+            profile.retried += 1
+            rework = _rework_cost(cost_by_message, message_id, retry_id)
+            if rework is not None:
+                rework_total = (rework_total or 0.0) + rework
         record = by_message.get(message_id) if message_id is not None else None
         if record is None:
             profile.unjoined += 1
@@ -156,7 +169,31 @@ def _join_feedback(
         else:
             bucket.down += 1
     profile.by_turn_class = buckets
+    profile.rework_usd = round(rework_total, 6) if rework_total is not None else None
     return profile
+
+
+def _rework_cost(
+    cost_by_message: Dict[int, float],
+    thumbed_message_id: Optional[int],
+    retry_message_id: int,
+) -> Optional[float]:
+    """Dollars spent on a down-thumbed answer plus its retry: the thumbed
+    message's call rows, plus the retry turn's assistant rows. The retry is
+    a *user* message (no cost row); its turn's assistant messages are the
+    consecutive indexes after it — a gap means the next user message. ``None``
+    when neither side has a cost row to price."""
+    found = False
+    total = 0.0
+    if thumbed_message_id is not None and thumbed_message_id in cost_by_message:
+        total += cost_by_message[thumbed_message_id]
+        found = True
+    index = retry_message_id + 1
+    while index in cost_by_message:
+        total += cost_by_message[index]
+        found = True
+        index += 1
+    return total if found else None
 
 
 def _context_tokens(record: Dict[str, Any]) -> int:
