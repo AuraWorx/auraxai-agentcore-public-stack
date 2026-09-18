@@ -201,3 +201,23 @@ async def test_feedback_rows_come_back_content_free_and_keyed_to_the_call(storag
     records = await storage.get_session_cost_records(SESSION_ID)
     assert records[0]["messageId"] == row["messageId"]
     assert await storage.get_session_feedback_rows("no-such-session") == []
+
+
+@pytest.mark.asyncio
+async def test_recent_down_thumbs_queue_is_content_free_and_newest_first(storage):
+    _seed(storage)
+    for i, ts in ((1, "2026-09-16T00:00:01Z"), (2, "2026-09-16T00:00:02Z")):
+        storage.sessions_metadata_table.put_item(Item={
+            "PK": f"USER#{USER_ID}", "SK": f"F#{SESSION_ID}#{i}",
+            "GSI_PK": f"SESSION#{SESSION_ID}", "GSI_SK": f"F#{i}",
+            "GSI1PK": "FEEDBACK#down", "GSI1SK": ts,
+            "sessionId": SESSION_ID, "messageId": Decimal(i), "userId": USER_ID,
+            "value": Decimal(-1), "reason": "wrong", "signal": "explicit", "updatedAt": ts,
+            "evaluation": {"reason": "wrong", "scores": {"Builtin.Correctness": {"value": Decimal("0.5"), "n": Decimal(1), "explanation": "SECRET"}}},
+            "displayText": "SECRET",
+        })
+    rows = await storage.get_recent_down_thumbs(limit=10)
+    assert [r["messageId"] for r in rows] == [2, 1]
+    assert all(content_bearing_paths(r) == [] for r in rows)
+    assert "userId" not in rows[0] and "displayText" not in rows[0]
+    assert rows[0]["evaluation"]["scores"]["Builtin.Correctness"] == {"value": 0.5, "n": 1}

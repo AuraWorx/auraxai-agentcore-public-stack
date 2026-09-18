@@ -39,6 +39,7 @@ import {
   downRate,
   feedbackByTurnClassLine,
   feedbackImplicitLine,
+  feedbackEvaluationsLine,
   feedbackRetryLine,
   formatBytes,
   formatEvidenceValue,
@@ -262,6 +263,10 @@ import {
                   <!-- Implicit signals (spec §10) on their own line: a different
                        base rate from the thumbs, never added to them. -->
                   <p class="mt-0.5 text-xs/5 text-gray-500 dark:text-gray-400">{{ implicit }}</p>
+                }
+                @if (feedbackEvaluationsLine(); as judged) {
+                  <!-- What the offline judge made of the down-thumbs (eval sampling). -->
+                  <p class="mt-0.5 truncate text-xs/5 text-gray-500 dark:text-gray-400" [title]="judged">{{ judged }}</p>
                 }
               } @else {
                 <p class="mt-1 text-lg/7 font-semibold text-gray-400 dark:text-gray-500">—</p>
@@ -851,6 +856,9 @@ export class SessionCostAnatomyPage {
 
   readonly feedbackImplicitLine = computed(() =>
     this.profileResource.hasValue() ? feedbackImplicitLine(this.profileResource.value().feedback) : null,
+  );
+  readonly feedbackEvaluationsLine = computed(() =>
+    this.profileResource.hasValue() ? feedbackEvaluationsLine(this.profileResource.value().feedback) : null,
   );
 
   readonly feedbackRetryLine = computed(() =>

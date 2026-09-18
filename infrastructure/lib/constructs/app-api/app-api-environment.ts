@@ -83,6 +83,8 @@ export interface AppApiSsmParams {
   voiceTicketSigningSecretArn: string;
   // Inference
   inferenceApiRuntimeEndpointUrl: string;
+  /** AgentCore Runtime CloudWatch log group (spans + content log records) for eval sampling. */
+  agentCoreRuntimeLogGroupName: string;
   // File uploads
   userFilesBucketName: string;
   userFilesBucketArn: string;
@@ -119,6 +121,8 @@ export interface AppApiBackendOverrides {
   memoryId: string;
   /** AgentCore Runtime endpoint URL (from InferenceAgentCoreConstruct.runtimeEndpointUrl). */
   inferenceApiRuntimeEndpointUrl: string;
+  /** AgentCore Runtime log group name (from InferenceAgentCoreConstruct.runtimeLogGroupName). */
+  agentCoreRuntimeLogGroupName: string;
 }
 
 /** Resolve every value the App API construct needs.
@@ -204,6 +208,7 @@ export function resolveAppApiParams(
     voiceTicketSigningSecretArn: refs.voiceTicketSigningSecret.secretArn,
     // Inference
     inferenceApiRuntimeEndpointUrl: overrides.inferenceApiRuntimeEndpointUrl,
+    agentCoreRuntimeLogGroupName: overrides.agentCoreRuntimeLogGroupName,
     // File uploads
     userFilesBucketName: refs.fileUploadBucket.bucketName,
     userFilesBucketArn: refs.fileUploadBucket.bucketArn,
@@ -343,6 +348,13 @@ export function buildAppApiEnvironment(
     // every read 502s (ResourceNotFoundException). inference-api already sets
     // the identical trio — app-api owns the CRUD surface, so it needs them too.
     MEMORY_SPACES_ENABLED: config.memorySpaces.enabled ? 'true' : 'false',
+    // Feedback eval sampling (response-feedback spec §11 PR-4): OPT-IN per
+    // environment — the admin batch sends down-thumbed conversations' spans to
+    // an AWS-managed evaluator. The runtime log group is where those spans and
+    // the content-bearing log records live (evaluations spike §1); it is wired
+    // regardless so turning the flag on is a one-variable change.
+    FEEDBACK_EVAL_SAMPLING_ENABLED: config.feedbackEvalSampling.enabled ? 'true' : 'false',
+    AGENTCORE_RUNTIME_LOG_GROUP: params.agentCoreRuntimeLogGroupName,
     DYNAMODB_MEMORY_SPACES_TABLE_NAME: params.memorySpacesTableName,
     S3_MEMORY_SPACES_BUCKET_NAME: params.memorySpacesBucketName,
     // Skills v2 (default ON with a kill switch per env). Skills live in the

@@ -42,6 +42,12 @@ export interface AppApiServiceConstructProps {
    */
   inferenceApiRuntimeEndpointUrl: string;
   /**
+   * AgentCore Runtime CloudWatch log group name (same-stack ref via
+   * InferenceAgentCoreConstruct.runtimeLogGroupName). The App API reads it
+   * for feedback eval sampling and is granted Logs Insights queries on it.
+   */
+  agentCoreRuntimeLogGroupName: string;
+  /**
    * Artifacts iframe origin URL (https://artifacts.{domain}). Same-stack
    * ref via ArtifactsDistributionConstruct; used as the App API
    * container's `ARTIFACTS_ORIGIN` env var.
@@ -95,6 +101,7 @@ export class AppApiServiceConstruct extends Construct {
     const params = resolveAppApiParams(props.refs, {
       memoryId: props.agentCoreMemoryId,
       inferenceApiRuntimeEndpointUrl: props.inferenceApiRuntimeEndpointUrl,
+      agentCoreRuntimeLogGroupName: props.agentCoreRuntimeLogGroupName,
     });
 
     // ── Network resources (typed refs from PlatformStack) ──
@@ -247,6 +254,7 @@ export class AppApiServiceConstruct extends Construct {
       taskRole: taskDefinition.taskRole,
       refs: props.refs,
       agentCoreMemoryArn: props.agentCoreMemoryArn,
+      agentCoreRuntimeLogGroupName: props.agentCoreRuntimeLogGroupName,
       sagemakerExecutionRoleArn: props.sagemakerExecutionRoleArn,
     });
 

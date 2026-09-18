@@ -52,6 +52,7 @@ export interface AppConfig {
   managedKb: ManagedKbConfig;
   scheduledRuns: ScheduledRunsConfig;
   memorySpaces: MemorySpacesConfig;
+  feedbackEvalSampling: FeedbackEvalSamplingConfig;
   skills: SkillsConfig;
   agents: AgentsConfig;
   agentMarketplace: AgentMarketplaceConfig;
@@ -271,6 +272,16 @@ export interface ScheduledRunsConfig {
  * are provisioned unconditionally, so this only gates route mounting at runtime.
  */
 export interface MemorySpacesConfig {
+  enabled: boolean;
+}
+
+/**
+ * Feedback eval sampling (response-feedback spec §11 PR-4): lets an admin
+ * send down-thumbed conversations to AgentCore Evaluations. **Opt-in** —
+ * the managed evaluator reads the conversation's spans (system prompt and
+ * user messages), so each environment turns it on deliberately.
+ */
+export interface FeedbackEvalSamplingConfig {
   enabled: boolean;
 }
 
@@ -871,6 +882,17 @@ export function loadConfig(scope: cdk.App): AppConfig {
       enabled: process.env.CDK_SCHEDULED_RUNS_ENABLED
         ? process.env.CDK_SCHEDULED_RUNS_ENABLED !== 'false'
         : scope.node.tryGetContext('scheduledRuns')?.enabled ?? true,
+    },
+    feedbackEvalSampling: {
+      // Default OFF, opt-in (the `fineTuning`-style deferred pattern inverted):
+      // only the literal "true" enables. Sending real conversations to an
+      // AWS-managed judge is the scoping decision the evaluations spike says to
+      // make explicitly per environment — a workflow's empty/unset variable must
+      // never make it. A `feedbackEvalSampling.enabled: true` cdk.json context
+      // also enables it.
+      enabled: process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED
+        ? process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED === 'true'
+        : scope.node.tryGetContext('feedbackEvalSampling')?.enabled ?? false,
     },
     memorySpaces: {
       // Default ON with a kill switch: Memory Spaces is a complete feature and

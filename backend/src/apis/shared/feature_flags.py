@@ -405,3 +405,24 @@ def attachment_turn_guard_enabled() -> bool:
     live in ``apis.shared.files.models``.
     """
     return os.environ.get("ATTACHMENT_TURN_GUARD_ENABLED", "").strip().lower() != "false"
+
+
+def feedback_eval_sampling_enabled() -> bool:
+    """Whether down-thumbed turns may be sent to AgentCore Evaluations.
+
+    Covers ``POST /admin/feedback/evaluations/run`` (the offline batch that
+    judges recent down-thumbs, response-feedback spec §11 PR-4). **Defaults
+    OFF** (the ``FINE_TUNING_ENABLED``-style opt-in): set
+    ``FEEDBACK_EVAL_SAMPLING_ENABLED=true`` to turn it on.
+
+    Off by default on purpose, not by caution: the judge is an AWS-managed
+    evaluator that reads the conversation's spans — the full system prompt
+    and every user message of the sampled session. The evaluations spike
+    (``docs/specs/agentcore-evaluations-spike-findings.md`` §2) says to make
+    that decision explicitly per environment rather than let it happen as a
+    side effect, and the feedback spec's §8 puts conversation content behind
+    a scope. Flipping this flag is that decision. The read surfaces (the
+    queue list, the profile's judged aggregates) are not gated — they show
+    numbers only and tolerate the absence of any judged row.
+    """
+    return os.environ.get("FEEDBACK_EVAL_SAMPLING_ENABLED", "false").strip().lower() == "true"
