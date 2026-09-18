@@ -10,6 +10,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, List
 
+from apis.shared.sessions.models import FEEDBACK_REASONS
 from apis.shared.storage.dynamodb_storage import DynamoDBStorage
 from .diagnoses import (
     CHARS_PER_TOKEN,
@@ -155,6 +156,11 @@ def _join_feedback(
             profile.up += 1
         else:
             profile.down += 1
+            reason = row.get("reason")
+            # Closed set only: the write path types ``reason`` as a Literal, so
+            # an unknown code here means a row from a future schema.
+            if isinstance(reason, str) and reason in FEEDBACK_REASONS:
+                profile.reasons[reason] = profile.reasons.get(reason, 0) + 1
         message_id = _as_int(row.get("messageId"))
         verdict = row.get("evaluation")
         if isinstance(verdict, dict):

@@ -438,6 +438,12 @@ export interface FeedbackProfile {
   up: number;
   down: number;
   byTurnClass?: Record<TurnClass, FeedbackCounts> | null;
+  /**
+   * Down-thumb reason codes, `{code: count}` over the closed set. The same
+   * split the fleet view reports, for the one conversation drilled into.
+   * A code, never free text.
+   */
+  reasons?: Record<string, number>;
   unjoined?: number;
   /** Down-thumbs followed by a retry-with-correction, and what the rework cost. */
   retried?: number;

@@ -422,3 +422,46 @@ async def test_judged_thumbs_aggregate_per_evaluator_and_corroboration():
 
     p = await _service_with_feedback(_row(), [_call(0)], [_feedback(0, -1)]).get_session_profile("s1")
     assert p.feedback.evaluations is None
+
+
+class TestDownThumbReasons:
+    """The per-session half of the reason split the fleet view reports (#1152):
+    the fleet says *how much*, this says *why this conversation*.
+
+    A closed set of codes, never free text — the write path types ``reason`` as
+    a ``Literal``, so anything else is a row from a future schema and is dropped
+    rather than surfaced.
+    """
+
+    def _rows(self, *reasons):
+        return [
+            {"messageId": i, "value": -1, **({"reason": r} if r else {})}
+            for i, r in enumerate(reasons, start=1)
+        ]
+
+    def test_reasons_are_counted(self):
+        from apis.app_api.admin.costs.service import _join_feedback
+
+        profile = _join_feedback([], self._rows("tool_failed", "tool_failed", "length"))
+        assert profile.reasons == {"tool_failed": 2, "length": 1}
+        assert profile.down == 3
+
+    def test_a_reasonless_down_thumb_still_counts_as_one(self):
+        from apis.app_api.admin.costs.service import _join_feedback
+
+        profile = _join_feedback([], self._rows("wrong", None))
+        assert profile.reasons == {"wrong": 1}
+        assert profile.down == 2
+
+    def test_unknown_codes_are_dropped(self):
+        from apis.app_api.admin.costs.service import _join_feedback
+
+        profile = _join_feedback([], self._rows("from-a-future-schema"))
+        assert profile.reasons == {} and profile.down == 1
+
+    def test_up_thumbs_carry_no_reason(self):
+        from apis.app_api.admin.costs.service import _join_feedback
+
+        profile = _join_feedback([], [{"messageId": 1, "value": 1, "reason": "wrong"}])
+        assert profile.reasons == {}, "a reason on an up-thumb is meaningless"
+        assert profile.up == 1
