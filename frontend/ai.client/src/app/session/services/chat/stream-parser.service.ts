@@ -794,6 +794,9 @@ export class StreamParserService {
 
     const blockType: 'text' | 'tool_use' = data.type === 'tool_use' ? 'tool_use' : 'text';
 
+    // Output is starting, so any thinking that preceded it is over.
+    this.closeReasoningSpan(state);
+
     state.currentMessageBuilder.update((builder) => {
       if (!builder) return builder;
 
@@ -823,6 +826,10 @@ export class StreamParserService {
     }
 
     const inferredType = inferContentBlockType(data);
+
+    // The accurate end of thinking for a model that skips content_block_start
+    // for text (Claude does), which is the common case.
+    this.closeReasoningSpan(state);
 
     state.currentMessageBuilder.update((builder) => {
       if (!builder) return builder;
@@ -964,6 +971,10 @@ export class StreamParserService {
 
     this.chatStateService.setStopReason(state.sessionId, data.stopReason);
 
+    // Backstop for a cycle that reasoned and emitted nothing else — without it
+    // that block would keep the live "Thinking" header forever.
+    this.closeReasoningSpan(state);
+
     state.currentMessageBuilder.update((builder) => {
       if (!builder) return builder;
       return { ...builder, isComplete: true };
@@ -1070,6 +1081,47 @@ export class StreamParserService {
     }
   }
 
+  /**
+   * Stamp the end of an open reasoning span, if there is one.
+   *
+   * Called from every point where the model has demonstrably switched from
+   * thinking to producing output: a non-reasoning `content_block_start`, a
+   * non-reasoning `content_block_delta`, and `message_stop` as the backstop
+   * for a cycle that reasoned and then ended without emitting anything else.
+   *
+   * Idempotent and cheap: it reads the builder first and returns without
+   * touching the signal unless there is an open span to close. That matters
+   * because the delta path calls it on every token of the answer.
+   */
+  private closeReasoningSpan(state: ParserSessionState): void {
+    const builder = state.currentMessageBuilder();
+    if (!builder) return;
+
+    let openIndex = -1;
+    for (const [index, block] of builder.contentBlocks.entries()) {
+      if (
+        block.type === 'reasoningContent' &&
+        block.reasoningStartedAt !== undefined &&
+        block.reasoningEndedAt === undefined
+      ) {
+        openIndex = index;
+        break;
+      }
+    }
+    if (openIndex === -1) return;
+
+    const endedAt = Date.now();
+    state.currentMessageBuilder.update((current) => {
+      if (!current) return current;
+      const block = current.contentBlocks.get(openIndex);
+      if (!block || block.reasoningEndedAt !== undefined) return current;
+
+      const newBlocks = new Map(current.contentBlocks);
+      newBlocks.set(openIndex, { ...block, reasoningEndedAt: endedAt });
+      return { ...current, contentBlocks: newBlocks };
+    });
+  }
+
   private handleReasoning(state: ParserSessionState, data: { reasoningText?: string }): void {
     if (!data.reasoningText) {
       return;
@@ -1106,6 +1158,10 @@ export class StreamParserService {
           inputChunks: [],
           reasoningChunks: [],
           isComplete: false,
+          // Opens the span the header's "Thought for 17s" reports. Closed by
+          // `closeReasoningSpan` at the first non-reasoning content, or at
+          // message_stop. See docs/specs/agent-state-feedback.md PR-1.
+          reasoningStartedAt: Date.now(),
         };
       }
 
@@ -1294,7 +1350,7 @@ export class StreamParserService {
   private buildContentBlock(state: ParserSessionState, builder: ContentBlockBuilder): ContentBlock {
     // Handle reasoning content blocks
     if (builder.type === 'reasoningContent') {
-      return {
+      const block: ContentBlock = {
         type: 'reasoningContent',
         reasoningContent: {
           reasoningText: {
@@ -1302,6 +1358,21 @@ export class StreamParserService {
           },
         },
       } as ContentBlock;
+
+      // Only once the span is closed. A duration that ticked upward while the
+      // model was still thinking would be a stopwatch, not the summary the
+      // header is for — and the live state is already conveyed by the label.
+      if (
+        builder.reasoningStartedAt !== undefined &&
+        builder.reasoningEndedAt !== undefined
+      ) {
+        block.reasoningDurationMs = Math.max(
+          0,
+          builder.reasoningEndedAt - builder.reasoningStartedAt,
+        );
+      }
+
+      return block;
     }
 
     // Handle tool use blocks

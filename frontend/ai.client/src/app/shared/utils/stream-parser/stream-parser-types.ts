@@ -604,6 +604,25 @@ export interface ContentBlockBuilder {
   };
   status?: 'pending' | 'complete' | 'error';
   isComplete: boolean;
+  /**
+   * Epoch ms of the first reasoning delta in this block.
+   *
+   * Client-observed, unlike the tool durations on the rail, which Strands
+   * measures inside its own event loop and ships over `agent_status`. The
+   * parser has no server-side measurement of thinking time, so this is the
+   * arrival of the first reasoning byte — see docs/specs/agent-state-feedback.md
+   * PR-1 for why that span is sound (a reasoning block never spans a tool
+   * call, because the agent loop starts a new message at every round trip).
+   */
+  reasoningStartedAt?: number;
+  /**
+   * Epoch ms the model demonstrably stopped reasoning: the first non-reasoning
+   * content in the same message, or that message's end.
+   *
+   * Absent while the model is still thinking, which is what lets the header
+   * stay on the live "Thinking" label until there is a real number to show.
+   */
+  reasoningEndedAt?: number;
 }
 
 /**
