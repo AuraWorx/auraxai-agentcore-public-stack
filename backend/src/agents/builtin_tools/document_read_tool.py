@@ -23,6 +23,14 @@ Design notes
 * One call can never re-inject a whole document: page ranges are capped by
   ``max_pages`` (default 8, hard cap 20), pattern results by match count,
   text by the workspace read bound.
+* A pattern scan is bounded in *time* as well as in output. The regex is
+  model-supplied, and a nested-quantifier pattern makes Python's backtracking
+  engine run exponentially — measured at 14 s for a 28-character line, against
+  extracted PDF lines of 60–100 — with no way to cancel a running
+  ``re.search``. ``catastrophic_pattern`` refuses that family up front (the
+  pattern is searched literally, and the payload says so) and
+  ``DOCUMENT_READ_PATTERN_BUDGET_SECONDS`` bounds the walk for anything it
+  does not catch.
 * **Content-free record per call** in ``AgentCoreStack/Compaction``
   (``DocumentRead``, ``DocumentReadPages``, ``DocumentReadBytes``; properties
   ``mode`` / ``format``) — the same namespace as the compaction cut and
@@ -141,6 +149,10 @@ def make_document_read_tool(session_id: str, user_id: str):
             page_range: 1-indexed inclusive page range for PDFs, "start-end"
                 or a single page "5".
             pattern: Regular expression (case-insensitive) to search for.
+                Do not nest one unbounded quantifier inside another — write
+                "X+" rather than "(X+)+" — because such a pattern can take
+                exponential time; it is searched as literal text instead and
+                the result says so.
             max_pages: Cap on pages returned by page_range (default 8, hard
                 cap 20).
             offset: Byte offset to continue a truncated text read.

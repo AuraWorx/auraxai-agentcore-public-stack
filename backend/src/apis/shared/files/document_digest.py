@@ -22,7 +22,9 @@ Two parts, deliberately split:
 
 The rendered form (``render_digest``) is what enters context later. It is
 hard-capped at ``DOCUMENT_DIGEST_MAX_TOKENS`` (default 1,500, chars/4): the
-outline is trimmed from the end first, then the abstract. Every digest
+outline is trimmed from the end first, then the abstract — escaped *before* it
+is cut, so the cap is measured on what is actually rendered, and dropped
+entirely rather than allowed to overshoot. Every digest
 records its rendered token estimate so the cap is a stored fact per file.
 
 Content policy: the digest carries model prose about the user's document
@@ -287,6 +289,24 @@ async def generate_abstract(outline: DocumentDigest, sample: str, model_id: str 
 # ---------------------------------------------------------------------------
 
 
+def _truncate_escaped(text: str, limit: int) -> str:
+    """Cut an already-escaped string to ``limit`` characters without splitting
+    an entity — ``&amp;`` must never be left as ``&am``.
+
+    Escaping *after* slicing (what this replaces) silently broke the budget:
+    each ``&`` becomes five characters, so a slice measured on the raw text
+    could render up to 5x longer. Measured: an abstract of ``&`` rendered 388
+    tokens against a 100-token budget.
+    """
+    if limit <= 0:
+        return ""
+    cut = text[:limit]
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    return cut.rstrip()
+
+
 def _xml_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
@@ -301,15 +321,23 @@ def render_digest(
     filename: str,
     upload_id: str,
     budget_tokens: int = DOCUMENT_DIGEST_MAX_TOKENS,
+    include_handle: bool = True,
 ) -> str:
     """The ``<document-digest …>`` block, trimmed to ``budget_tokens``.
 
     Sections are dropped from the end first (the model can always ask
     ``document_read`` for more), then the abstract is truncated. The opening
     tag always fits: it is the ``document_read`` handle.
+
+    ``include_handle=False`` omits ``upload_id``. Callers pass it when
+    ``DOCUMENT_READ_ENABLED=false`` has taken the tool away: the outline and
+    abstract are still strictly more than the pre-PR-3 placeholder, but
+    advertising a retrieval id for a tool the model does not have would invite
+    a call that cannot be made. See ``feature_flags.document_read_enabled``.
     """
+    handle = f'upload_id="{upload_id}" ' if include_handle else ""
     header = (
-        f'<document-digest name="{_xml_escape(filename)}" upload_id="{upload_id}" '
+        f'<document-digest name="{_xml_escape(filename)}" {handle}'
         f'format="{digest.format or ""}" {digest.unit}s="{digest.count}"'
     )
     if digest.tables:
@@ -340,10 +368,17 @@ def render_digest(
     if len(text) > budget_chars and abstract_line:
         room = budget_chars - len(_build("", kept)) - len("  <abstract></abstract>") - 1
         if room > 20 and digest.abstract:
-            trimmed = _xml_escape(digest.abstract[: max(0, room - 1)].rstrip()) + "…"
+            # Escape first, then cut: the budget is measured on what is
+            # actually rendered, not on the raw text it came from.
+            trimmed = _truncate_escaped(_xml_escape(digest.abstract), room - 1) + "…"
             text = _build(f"  <abstract>{trimmed}</abstract>", kept)
         else:
             text = _build("", kept)
+    if len(text) > budget_chars:
+        # The cap is hard. Drop the abstract entirely rather than overshoot;
+        # only the opening tag — the ``document_read`` handle — is allowed to
+        # survive a budget this small.
+        text = _build("", kept)
     return text
 
 

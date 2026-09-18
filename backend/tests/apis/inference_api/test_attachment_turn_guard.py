@@ -187,10 +187,14 @@ class TestNothingReachesTheSessionExceptionPath:
         assert sum(len(f.bytes) for f in kept) <= EVENT_QUOTA_BYTES
 
     def test_default_cap_is_the_documented_derivation(self):
-        # 10 MB event quota × 3/4 (base64) = 7.5 MB raw. Encoding exactly the
-        # cap lands on the quota, not over it.
-        assert file_models.INLINE_ATTACHMENTS_MAX_TOTAL_BYTES == 7_500_000
-        assert len(_b64_of_size(7_500_000)) == EVENT_QUOTA_BYTES
+        # 10 MB event quota × 3/4 (base64) = 7.5 MB raw is the *break point*,
+        # not a safe cap: encoding exactly that lands ON the quota, and the
+        # event's JSON envelope (role, content keys, the prompt text block,
+        # per-file metadata, the wrapper) is then added on top. The default
+        # therefore sits below it, with room for the envelope.
+        assert len(_b64_of_size(7_500_000)) == EVENT_QUOTA_BYTES, "the break point is real"
+        assert file_models.INLINE_ATTACHMENTS_MAX_TOTAL_BYTES == 7_000_000
+        assert len(_b64_of_size(file_models.INLINE_ATTACHMENTS_MAX_TOTAL_BYTES)) < EVENT_QUOTA_BYTES
 
 
 class TestMessageFileCap:
@@ -380,3 +384,43 @@ class TestEstimateDecodedSize:
         for n in (0, 1, 2, 3, 4, 100, 7_500_000):
             f = _Attachment("x", size=n)
             assert _estimate_decoded_size(f) == n
+
+
+class TestBudgetHeadroom:
+    """The guard exists so a turn's inline attachments never exceed AgentCore's
+    10 MB *event* quota — past which ``create_message`` raises
+    ``SessionException`` and leaves a hole in history.
+
+    Its first default did not achieve that. base64 of N raw bytes is
+    ``4*ceil(N/3)``, so 7,500,000 encoded to **exactly 10,000,000** — the quota
+    itself, with nothing left for the event's JSON envelope. A guard whose
+    default sits precisely on the break point it exists to stay under does not
+    prevent the failure it was written for.
+    """
+
+    QUOTA_BYTES = 10_000_000
+
+    def _encoded(self, raw_bytes: int) -> int:
+        return 4 * math.ceil(raw_bytes / 3)
+
+    def test_the_default_leaves_room_for_the_event_envelope(self):
+        from apis.shared.files.models import INLINE_ATTACHMENTS_MAX_TOTAL_BYTES as cap
+
+        encoded = self._encoded(cap)
+        headroom = self.QUOTA_BYTES - encoded
+        assert headroom > 0, f"budget encodes to {encoded:,} against a {self.QUOTA_BYTES:,} quota"
+        # Enough for the role, content keys, prompt text and per-file metadata
+        # many times over, without being so conservative it trims real turns
+        # (prod p90 attachment cluster is 2.58 MB).
+        assert headroom >= 250_000, f"only {headroom:,} bytes of headroom"
+
+    def test_the_encoding_math_matches_base64(self):
+        """Pin the 4/3 inflation the budget is derived from, against the real
+        encoder rather than the arithmetic in a comment."""
+        for raw in (3, 3_000, 7_000_000):
+            assert len(base64.b64encode(b"\0" * raw)) == self._encoded(raw)
+
+    def test_a_turn_at_the_budget_still_fits_the_quota(self):
+        from apis.shared.files.models import INLINE_ATTACHMENTS_MAX_TOTAL_BYTES as cap
+
+        assert len(base64.b64encode(b"\0" * cap)) < self.QUOTA_BYTES
