@@ -103,6 +103,9 @@ export interface ContentBlock {
   fileAttachment?: FileAttachmentData | null;
 }
 
+/** Implicit signals (docs/specs/response-feedback.md §10): a closed enum, never summed with thumbs. */
+export type ImplicitSignalKind = 'copy' | 'continue';
+
 /** Reason codes a thumbs-down may carry — the six buckets of
  * docs/specs/response-feedback.md §6. A closed enum, never free text. */
 export type FeedbackReason = 'wrong' | 'instructions' | 'length' | 'tool_failed' | 'outdated' | 'other';

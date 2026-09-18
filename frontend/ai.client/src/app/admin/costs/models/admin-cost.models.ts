@@ -442,6 +442,8 @@ export interface FeedbackProfile {
   /** Down-thumbs followed by a retry-with-correction, and what the rework cost. */
   retried?: number;
   reworkUsd?: number | null;
+  /** Implicit signals as messages touched per kind; null when none. Never summed with thumbs. */
+  implicit?: { copied: number; continued: number } | null;
 }
 
 /** The content-free diagnostic profile of one conversation. */

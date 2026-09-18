@@ -487,6 +487,16 @@ class FeedbackByTurnClass(BaseModel):
     none: FeedbackCounts = Field(default_factory=FeedbackCounts)
 
 
+class ImplicitSignalCounts(BaseModel):
+    """Implicit signals (spec §10) as *messages touched* per kind — a message
+    copied three times counts once here. Kept apart from the thumbs; the two
+    have different base rates and are never summed."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    copied: int = 0
+    continued: int = 0
+
+
 class FeedbackProfile(BaseModel):
     """The outcome signal joined to the session's cost rows. ``byTurnClass``
     is ``None`` when no cost row carries the turn-class fields (they arrive
@@ -505,6 +515,8 @@ class FeedbackProfile(BaseModel):
     # a cost row to price.
     retried: int = 0
     rework_usd: Optional[float] = Field(None, alias="reworkUsd")
+    # Implicit signals, or None when the session has none.
+    implicit: Optional[ImplicitSignalCounts] = None
 
 
 class DataCoverage(BaseModel):
