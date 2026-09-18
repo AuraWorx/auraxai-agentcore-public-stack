@@ -49,6 +49,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Bound on a single RetrieveMemoryRecords attempt from the per-message
+# long-term memory retrieval hook (see `_get_retrieval_client`). Seconds.
+MEMORY_RETRIEVAL_TIMEOUT_ENV = "MEMORY_RETRIEVAL_TIMEOUT_SECONDS"
+MEMORY_RETRIEVAL_TIMEOUT_DEFAULT = 2.0
+# Attempts per retrieval, including the first. 1 = never retry a throttle.
+MEMORY_RETRIEVAL_MAX_ATTEMPTS_ENV = "MEMORY_RETRIEVAL_MAX_ATTEMPTS"
+MEMORY_RETRIEVAL_MAX_ATTEMPTS_DEFAULT = 1
+
+
+def memory_retrieval_timeout_seconds() -> float:
+    """Per-attempt timeout for long-term memory retrieval, from the environment."""
+    raw = os.environ.get(MEMORY_RETRIEVAL_TIMEOUT_ENV, "")
+    try:
+        value = float(raw) if raw else MEMORY_RETRIEVAL_TIMEOUT_DEFAULT
+    except ValueError:
+        value = MEMORY_RETRIEVAL_TIMEOUT_DEFAULT
+    return value if value > 0 else MEMORY_RETRIEVAL_TIMEOUT_DEFAULT
+
+
+def memory_retrieval_max_attempts() -> int:
+    """Attempts per long-term memory retrieval (including the first)."""
+    raw = os.environ.get(MEMORY_RETRIEVAL_MAX_ATTEMPTS_ENV, "")
+    try:
+        value = int(raw) if raw else MEMORY_RETRIEVAL_MAX_ATTEMPTS_DEFAULT
+    except ValueError:
+        value = MEMORY_RETRIEVAL_MAX_ATTEMPTS_DEFAULT
+    return value if value >= 1 else MEMORY_RETRIEVAL_MAX_ATTEMPTS_DEFAULT
+
 #: Compaction decisions the per-call ledger will record. Reserved kinds exist
 #: so a scheduling policy can report them without a schema change.
 #: Compaction-ledger event kinds. The ``document_*`` kinds are the document
@@ -196,6 +224,119 @@ class TurnBasedSessionManager(AgentCoreMemorySessionManager):
 
         super().append_message(filtered_message, agent, **kwargs)
         self.message_count += 1
+
+    # ------------------------------------------------------------------
+    # Long-term memory retrieval, bounded
+    # ------------------------------------------------------------------
+
+    def _get_retrieval_client(self) -> Any:
+        """A dedicated ``bedrock-agentcore`` data-plane client for
+        ``RetrieveMemoryRecords``, built on first use.
+
+        The SDK's ``MemoryClient`` serves reads and writes from one boto client
+        with default retries. Writes (``CreateEvent``) should keep retrying —
+        a dropped message is a corrupted conversation. Reads should not: the
+        retrieval hook runs on ``MessageAddedEvent`` and is awaited before the
+        model call, so under load a throttled ``RetrieveMemoryRecords`` (30/s
+        per account by default) put boto's retry backoff on the reply's
+        first-token latency, exactly the CountTokens mechanism from
+        docs/specs/load-test-assessment-2026-09.md §1 fix 3. One attempt and
+        a short timeout: a throttle costs one failed request and the turn
+        simply runs without long-term context, which is what a miss means.
+        """
+        if getattr(self, "_retrieval_client", None) is None:
+            import boto3
+            from botocore.config import Config as BotocoreConfig
+
+            timeout = memory_retrieval_timeout_seconds()
+            self._retrieval_client = boto3.client(
+                "bedrock-agentcore",
+                region_name=self.region_name,
+                config=BotocoreConfig(
+                    retries={"total_max_attempts": memory_retrieval_max_attempts(), "mode": "standard"},
+                    read_timeout=timeout,
+                    connect_timeout=timeout,
+                ),
+            )
+        return self._retrieval_client
+
+    def retrieve_customer_context(self, event: Any) -> None:
+        """Retrieve long-term memory for the last user message and prepend it.
+
+        Same contract as the SDK method this overrides (namespaces resolved
+        from ``retrieval_config``, relevance filter, results wrapped in
+        ``<context_tag>`` and inserted as the first content block of the last
+        user message so the user's own words stay last) — only the client
+        differs, see :meth:`_get_retrieval_client`. Registered by the SDK's
+        ``register_hooks`` in both sync and async mode via
+        ``self.retrieve_customer_context``, so the override is picked up.
+        """
+        messages = event.agent.messages
+        if not messages or messages[-1].get("role") != "user":
+            return None
+        content = messages[-1].get("content")
+        if not content or "text" not in content[0]:
+            return None
+        retrieval_config = getattr(self.config, "retrieval_config", None)
+        if not retrieval_config:
+            return None
+
+        user_query = messages[-1]["content"][0]["text"]
+        client = self._get_retrieval_client()
+
+        def retrieve_for_namespace(namespace: str, cfg: Any) -> List[str]:
+            resolved = namespace.format(
+                actorId=self.config.actor_id,
+                sessionId=self.config.session_id,
+                memoryStrategyId=getattr(cfg, "strategy_id", None) or "",
+            )
+            response = client.retrieve_memory_records(
+                memoryId=self.config.memory_id,
+                namespacePath=resolved,
+                searchCriteria={"searchQuery": user_query, "topK": cfg.top_k},
+            )
+            records = response.get("memoryRecordSummaries", [])
+            if getattr(cfg, "relevance_score", None):
+                records = [r for r in records if r.get("score", 0.0) >= cfg.relevance_score]
+            items: List[str] = []
+            for record in records:
+                text = (record.get("content") or {}).get("text", "") if isinstance(record, dict) else ""
+                text = text.strip() if isinstance(text, str) else ""
+                if text:
+                    items.append(text)
+            return items
+
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            all_context: List[str] = []
+            with ThreadPoolExecutor() as executor:
+                futures = {
+                    executor.submit(retrieve_for_namespace, ns, cfg): ns
+                    for ns, cfg in retrieval_config.items()
+                }
+                for future in as_completed(futures):
+                    try:
+                        all_context.extend(future.result())
+                    except Exception as e:  # noqa: BLE001 - one namespace failing must not sink the rest
+                        code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None
+                        if code in ("ThrottlingException", "TooManyRequestsException", "ServiceQuotaExceededException"):
+                            logger.info(
+                                "memory retrieval throttled namespace=%s; turn proceeds without long-term context",
+                                futures[future],
+                            )
+                        else:
+                            logger.warning("memory retrieval failed namespace=%s: %s", futures[future], e)
+
+            if all_context:
+                tag = getattr(self.config, "context_tag", "user_context")
+                event.agent.messages[-1]["content"].insert(
+                    0, {"text": f"<{tag}>{chr(10).join(all_context)}</{tag}>"}
+                )
+                logger.info("Retrieved %s customer context items", len(all_context))
+        except Exception as e:  # noqa: BLE001 - retrieval must never break a turn
+            logger.error("Failed to retrieve customer context: %s", e)
+        return None
 
     def initialize(self, agent: "Agent", **kwargs: Any) -> None:
         """

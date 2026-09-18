@@ -22,6 +22,18 @@ logger = logging.getLogger(__name__)
 SESSION_ASYNC_PERSISTENCE_ENABLED_ENV = "AGENTCORE_SESSION_ASYNC_PERSISTENCE_ENABLED"
 
 
+MEMORY_SUMMARY_RETRIEVAL_ENV = "MEMORY_SUMMARY_NAMESPACE_RETRIEVAL_ENABLED"
+
+
+def summary_namespace_retrieval_enabled() -> bool:
+    """Whether the current session's own summary is retrieved on every user
+    message and prepended to it. Off unless ``=true``: it re-injects a
+    conversation the model already holds, at a lookup per message. The
+    compaction path still reads summaries where they matter
+    (`TurnBasedSessionManager._retrieve_session_summaries`)."""
+    return os.environ.get(MEMORY_SUMMARY_RETRIEVAL_ENV, "").strip().lower() == "true"
+
+
 def session_async_persistence_enabled() -> bool:
     """Whether AgentCore Memory writes are offloaded off the event loop.
 
@@ -222,9 +234,20 @@ class SessionFactory:
             )
             logger.info(f"   • Facts namespace: {facts_namespace}")
 
-        if summary_id:
+        if summary_id and summary_namespace_retrieval_enabled():
             # Session summaries (condensed conversation context for the current session)
-            # Note: Summary namespace includes sessionId since summaries are per-session
+            # Note: Summary namespace includes sessionId since summaries are per-session.
+            #
+            # Off by default. This namespace holds AgentCore's summary of THIS
+            # session, and the SDK retrieves it on every user message and
+            # prepends it to that message — a second copy of a conversation
+            # the model already has in context, paid as input tokens on every
+            # turn, plus one RetrieveMemoryRecords call per message against a
+            # 30/s account quota. The summary is genuinely useful once the
+            # conversation has been compacted, and that path reads it directly
+            # (`_retrieve_session_summaries` at checkpoint advance), so nothing
+            # is lost by not retrieving it per message. See
+            # docs/specs/load-test-assessment-2026-09.md P2-F.
             summary_namespace = f"/strategies/{summary_id}/actors/{{actorId}}/sessions/{{sessionId}}"
             retrieval_config[summary_namespace] = RetrievalConfig(
                 top_k=top_k,
