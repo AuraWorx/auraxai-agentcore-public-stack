@@ -14,9 +14,12 @@ Three rules, all enforced here as pure functions over ``agent.messages``:
   subject: on the attach turn and the next ``pin_turns - 1`` turns; while
   the incoming or previous prompt names it; while a ``document_read`` result
   for it sits in the recent turns.
-* **Worth it** — the document's estimated tokens (bytes/4) are at least
+* **Worth it** — the document's estimated tokens are at least
   ``DOCUMENT_OFFLOAD_MIN_TOKENS``; below that the re-write costs more than the
-  eviction saves (the ``clear_at_least`` idea).
+  eviction saves (the ``clear_at_least`` idea). The estimate is
+  ``document_tokens.estimate_document_tokens`` — pages x the per-page image
+  estimate for a PDF, bytes/4 otherwise — *not* bytes/4 for everything, which
+  under-counted PDFs ~14x and held large scans below the floor forever.
 * **Free or unavoidable** — decided by the session manager, which owns the
   cache-gap facts: the prompt cache has expired since the last turn, the
   model/agent prefix changed, or the last turn's input exceeded the
@@ -50,6 +53,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from agents.main_agent.multimodal.file_sanitizer import FileSanitizer
 from agents.main_agent.session.compaction_policy import CHARS_PER_TOKEN
+from apis.shared.files.document_tokens import estimate_document_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +95,22 @@ def session_bucket(session_id: str) -> int:
 
 
 def offload_enabled_for(session_id: Optional[str]) -> bool:
-    """Kill switch and rollout bucket together. Sessions below the percent
-    are the treated arm; the rest keep today's inline-forever behavior."""
+    """Kill switch, the ``document_read`` gate, and the rollout bucket
+    together. Sessions below the percent are the treated arm; the rest keep
+    today's inline-forever behavior.
+
+    ``DOCUMENT_READ_ENABLED=false`` disables this path too. The live offload
+    is the one place bytes leave the prefix *optionally* — restore has to drop
+    them, this does not — so evicting a document while its only recovery path
+    is switched off would be strictly worse than the pre-offload world, in
+    which live bytes never left. Spec §5: "a digest that points at a tool
+    nobody has is no better than today's placeholder."
+    """
+    from apis.shared.feature_flags import document_read_enabled
+
     if not document_offload_enabled() or not session_id:
+        return False
+    if not document_read_enabled():
         return False
     return session_bucket(session_id) < rollout_percent()
 
@@ -153,6 +170,17 @@ def _inline_document(block: Any) -> Optional[Tuple[str, str, int]]:
     return str(doc.get("name", "")), str(doc.get("format", "")), len(raw)
 
 
+def _inline_document_bytes(block: Any) -> Optional[bytes]:
+    """The block's raw bytes, for weighing it (``estimate_document_tokens``)."""
+    if not isinstance(block, dict):
+        return None
+    doc = block.get("document")
+    if not isinstance(doc, dict):
+        return None
+    raw = (doc.get("source") or {}).get("bytes") if isinstance(doc.get("source"), dict) else None
+    return raw if isinstance(raw, (bytes, bytearray)) else None
+
+
 def pinned_document_names(
     messages: Sequence[Dict[str, Any]],
     incoming_prompt: Any = None,
@@ -208,10 +236,11 @@ class Candidate:
     name: str
     format: str
     size: int
-
-    @property
-    def tokens(self) -> int:
-        return self.size // CHARS_PER_TOKEN
+    #: Estimated prefix weight — pages x the per-page image estimate for PDFs,
+    #: bytes/4 otherwise. This, not ``size``, is what the ``min_tokens`` floor
+    #: and the ledger's ``documentTokens`` are measured against, so the row and
+    #: the eviction decision always read the same quantity.
+    tokens: int = 0
 
 
 def candidate_documents(
@@ -231,9 +260,12 @@ def candidate_documents(
             if not inline:
                 continue
             name, fmt, size = inline
-            if name in pinned or size // CHARS_PER_TOKEN < min_tokens:
+            if name in pinned:
                 continue
-            out.append(Candidate(mi, bi, name, fmt, size))
+            tokens = estimate_document_tokens(fmt, _inline_document_bytes(block))
+            if tokens < min_tokens:
+                continue
+            out.append(Candidate(mi, bi, name, fmt, size, tokens))
     return out
 
 
@@ -264,6 +296,7 @@ def offload_documents(
     restore path's own matcher and renderer so the bytes equal what a cold
     restore would produce. Unmatched candidates stay inline. Never raises."""
     from agents.main_agent.session.document_rehydration import digest_for, load_session_documents, match_document
+    from apis.shared.feature_flags import document_read_enabled
     from apis.shared.files.document_digest import render_digest
 
     result = OffloadResult()
@@ -293,7 +326,10 @@ def offload_documents(
             if digest is None:
                 result.skipped_unmatched += 1
                 continue
-            text = render_digest(digest, filename=meta.filename, upload_id=meta.upload_id)
+            text = render_digest(
+                digest, filename=meta.filename, upload_id=meta.upload_id,
+                include_handle=document_read_enabled(),
+            )
             content[cand.block_index] = {"text": text}
             used.add(meta.upload_id)
             result.offloaded += 1
@@ -340,10 +376,10 @@ def age_document_slices(
                 inline = _inline_document(inner)
                 if not inline:
                     continue
-                name, _fmt, size = inline
+                name, fmt, _size = inline
+                tokens += estimate_document_tokens(fmt, _inline_document_bytes(inner))
                 inner_content[ii] = {"text": slice_stub(name)}
                 count += 1
-                tokens += size // CHARS_PER_TOKEN
     return count, tokens
 
 

@@ -194,3 +194,54 @@ class TestBuild:
         assert dd.document_digest_enabled() is False
         monkeypatch.setenv("DOCUMENT_DIGEST_ENABLED", "")
         assert dd.document_digest_enabled() is True
+
+
+
+class TestRenderBudgetIsHard:
+    """``render_digest`` escaped the abstract *after* slicing it to the room
+    that was left, so ``&`` -> ``&amp;`` could render up to 5x longer than the
+    slice it was measured on. Measured: an all-``&`` abstract rendered 388
+    tokens against a 100-token budget. The cap is the contract (spec PR-2
+    decision #15 — ``digest.tokens`` is a stored fact per file), so it is now
+    measured on the rendered text, and the abstract is dropped rather than
+    allowed to overshoot.
+    """
+
+    def _digest(self, abstract: str) -> dd.DocumentDigest:
+        return dd.DocumentDigest(
+            status="ready", format="pdf", unit="page", count=10,
+            abstract=abstract, sections=[dd.DigestSection(start=1, title="Intro")],
+        )
+
+    @pytest.mark.parametrize(
+        "abstract",
+        [
+            "&" * 4000,                                  # worst case: every char expands 5x
+            "<tier> & <tier> " * 400,
+            "R&D spending rose. " * 300,
+            "Ordinary prose with no entities at all. " * 200,
+            "&amp; already-escaped-looking text " * 200,
+        ],
+        ids=["all-amps", "angle-and-amp", "r-and-d", "plain-prose", "looks-escaped"],
+    )
+    @pytest.mark.parametrize("budget", [40, 100, 400, 1_500])
+    def test_never_exceeds_the_budget(self, abstract, budget):
+        text = dd.render_digest(self._digest(abstract), filename="a.pdf", upload_id="u", budget_tokens=budget)
+        assert dd.estimate_tokens(text) <= budget, dd.estimate_tokens(text)
+
+    def test_entities_are_never_split(self):
+        text = dd.render_digest(self._digest("R&D " * 500), filename="a.pdf", upload_id="u", budget_tokens=60)
+        # A truncated "&amp;" would leave a bare "&" or a fragment like "&am".
+        assert text.count("&") == text.count("&amp;")
+
+    def test_the_handle_always_survives(self):
+        """Only the opening tag may outlive a budget this small — it is what
+        makes the document retrievable at all."""
+        text = dd.render_digest(self._digest("&" * 4000), filename="a.pdf", upload_id="u-keep", budget_tokens=1)
+        assert 'upload_id="u-keep"' in text
+
+    def test_a_normal_digest_is_unchanged(self):
+        digest = self._digest("A short, ordinary abstract of the policy.")
+        text = dd.render_digest(digest, filename="a.pdf", upload_id="u", budget_tokens=1_500)
+        assert "A short, ordinary abstract of the policy." in text
+        assert "Intro" in text
