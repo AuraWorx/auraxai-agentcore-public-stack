@@ -27,6 +27,7 @@ function seedRequiredContext(app: cdk.App): void {
   app.node.setContext('awsRegion', MOCK_REGION);
   app.node.setContext('awsAccount', MOCK_ACCOUNT);
   app.node.setContext('vpcCidr', '10.0.0.0/16');
+  app.node.setContext('corsOrigins', 'http://localhost:4200');
   app.node.setContext('production', false);
   app.node.setContext('retainDataOnDelete', false);
   app.node.setContext('frontend', { cloudFrontPriceClass: 'PriceClass_100' });

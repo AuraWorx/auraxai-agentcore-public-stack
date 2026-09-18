@@ -1473,11 +1473,18 @@ function validateConfig(config: AppConfig): void {
     });
   }
 
-  // Validate top-level CORS origins.
-  if (!config.corsOrigins) {
-    console.warn(
-      'Warning: no CORS origins configured. ' +
-      'Set CDK_DOMAIN_NAME or CDK_CORS_ORIGINS to enable browser uploads.'
+  // Validate top-level CORS origins. Without at least one origin the uploads
+  // bucket (`FileUploadConstruct`) is created with NO CORS rule, and every
+  // browser upload fails at S3 with no server-side signal. A production-mirror
+  // load test shipped exactly that (docs/specs/load-test-assessment-2026-09.md
+  // §1 fix 4) because this used to be a console.warn lost in synth output.
+  // Fail synth instead; a deployment that genuinely has no browser front-end
+  // opts out explicitly.
+  if (!config.corsOrigins && parseBooleanEnv(process.env.CDK_ALLOW_NO_CORS_ORIGINS) !== true) {
+    throw new Error(
+      'No CORS origins configured: the uploads bucket would be created without a CORS rule ' +
+      'and every browser upload would fail. Set CDK_DOMAIN_NAME (or CDK_CORS_ORIGINS), ' +
+      'or set CDK_ALLOW_NO_CORS_ORIGINS=true for a deployment with no browser front-end.'
     );
   }
 

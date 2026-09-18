@@ -13,6 +13,7 @@ const BASE: Record<string, unknown> = {
   awsRegion: 'us-west-2',
   awsAccount: '123456789012',
   vpcCidr: '10.0.0.0/16',
+  corsOrigins: 'http://localhost:4200',
   production: false,
   retainDataOnDelete: false,
   frontend: { cloudFrontPriceClass: 'PriceClass_100' },
