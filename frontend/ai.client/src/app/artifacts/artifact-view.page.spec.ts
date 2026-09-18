@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, provideRouter } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
+import { Dialog } from '@angular/cdk/dialog';
+import { of } from 'rxjs';
 
 import { ArtifactViewPage } from './artifact-view.page';
 import {
@@ -9,6 +11,8 @@ import {
   type LibraryArtifact,
 } from '../session/services/artifacts/artifact-http.service';
 import { ArtifactDownloadService } from '../session/services/artifacts/artifact-download.service';
+import { ArtifactShareModalComponent } from '../session/components/message-list/components/artifact/artifact-share-modal.component';
+import { UserService } from '../auth/user.service';
 
 function stubArtifact(overrides: Partial<LibraryArtifact> = {}): LibraryArtifact {
   return {
@@ -30,6 +34,7 @@ describe('ArtifactViewPage', () => {
     getArtifactContent: ReturnType<typeof vi.fn>;
   };
   let mockDownload: { download: ReturnType<typeof vi.fn> };
+  let mockDialog: { open: ReturnType<typeof vi.fn> };
   let paramId: string | null;
 
   beforeEach(() => {
@@ -48,6 +53,7 @@ describe('ArtifactViewPage', () => {
       }),
     };
     mockDownload = { download: vi.fn().mockResolvedValue(true) };
+    mockDialog = { open: vi.fn(() => ({ closed: of(undefined) })) };
 
     TestBed.configureTestingModule({
       providers: [
@@ -57,6 +63,14 @@ describe('ArtifactViewPage', () => {
         ]),
         { provide: ArtifactHttpService, useValue: mockHttp },
         { provide: ArtifactDownloadService, useValue: mockDownload },
+        { provide: Dialog, useValue: mockDialog },
+        // Stubbed rather than real: the real one computes off SessionService,
+        // which would drag HTTP into a page test that only needs an address
+        // to seed the share dialog's allowlist with.
+        {
+          provide: UserService,
+          useValue: { currentUser: () => ({ email: 'me@x.com' }) },
+        },
         {
           provide: ActivatedRoute,
           useValue: { snapshot: { paramMap: { get: () => paramId } } },
@@ -92,6 +106,7 @@ describe('ArtifactViewPage', () => {
       sourceError: () => string | null;
       download: () => Promise<void>;
       openInNewTab: () => void;
+      share: () => void;
       retry: () => void;
     };
   }
@@ -208,6 +223,49 @@ describe('ArtifactViewPage', () => {
     await Promise.resolve();
 
     expect(mockHttp.mintRenderToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares the version on screen, against the artifact id', async () => {
+    // Shares are immutable and pin a version. This page shows HEAD, so
+    // HEAD is what it must pin — and it pins against the artifact id,
+    // the owner authority, the same one download uses.
+    const c = api(await createComponent());
+
+    c.share();
+
+    expect(mockDialog.open).toHaveBeenCalledWith(ArtifactShareModalComponent, {
+      data: {
+        artifactId: 'a1',
+        version: 3,
+        title: 'Quarterly plan',
+        ownerEmail: 'me@x.com',
+      },
+    });
+  });
+
+  it('offers no share control when the artifact did not resolve', async () => {
+    // Ownership on this page is the DynamoDB partition, not a check in
+    // the template: an artifact that is not yours is simply absent from
+    // your library, so the whole header — share included — never renders.
+    mockHttp.listLibrary.mockResolvedValue([]);
+    const fixture = await createComponent();
+    const host = fixture.nativeElement as HTMLElement;
+
+    expect(api(fixture).notFound()).toBe(true);
+    expect(host.querySelector('[aria-label^="Share this artifact"]')).toBeNull();
+  });
+
+  it('names the version it would pin in the share control\'s label', async () => {
+    // The header shows "Version 3" in prose beside it, but the control's
+    // own accessible name has to carry it too — a screen-reader user
+    // tabbing the header never reaches that caption.
+    const fixture = await createComponent();
+    const host = fixture.nativeElement as HTMLElement;
+
+    const btn = host.querySelector('[aria-label^="Share this artifact"]');
+    expect(btn?.getAttribute('aria-label')).toBe(
+      'Share this artifact, version 3',
+    );
   });
 
   it('treats a missing route param as not-found', async () => {
