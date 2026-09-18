@@ -260,6 +260,7 @@ def _no_live_infrastructure_reads(monkeypatch):
         # Inference invocation path.
         ("apis.inference_api.chat.system_prompt_resolver.get_session_metadata", None),
         ("apis.shared.files.document_read.session_has_documents", False),
+        ("apis.shared.files.document_read.session_has_tabular_files", False),
         # Converse path: model routing, the rate-limit window, and the quota
         # override lookup. The 429 test drives quota through `get_quota_checker`,
         # which is a different seam, so stubbing these does not weaken it.
