@@ -22,7 +22,9 @@ Two parts, deliberately split:
 
 The rendered form (``render_digest``) is what enters context later. It is
 hard-capped at ``DOCUMENT_DIGEST_MAX_TOKENS`` (default 1,500, chars/4): the
-outline is trimmed from the end first, then the abstract. Every digest
+outline is trimmed from the end first, then the abstract — escaped *before* it
+is cut, so the cap is measured on what is actually rendered, and dropped
+entirely rather than allowed to overshoot. Every digest
 records its rendered token estimate so the cap is a stored fact per file.
 
 Content policy: the digest carries model prose about the user's document
@@ -287,6 +289,24 @@ async def generate_abstract(outline: DocumentDigest, sample: str, model_id: str 
 # ---------------------------------------------------------------------------
 
 
+def _truncate_escaped(text: str, limit: int) -> str:
+    """Cut an already-escaped string to ``limit`` characters without splitting
+    an entity — ``&amp;`` must never be left as ``&am``.
+
+    Escaping *after* slicing (what this replaces) silently broke the budget:
+    each ``&`` becomes five characters, so a slice measured on the raw text
+    could render up to 5x longer. Measured: an abstract of ``&`` rendered 388
+    tokens against a 100-token budget.
+    """
+    if limit <= 0:
+        return ""
+    cut = text[:limit]
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    return cut.rstrip()
+
+
 def _xml_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
@@ -348,10 +368,17 @@ def render_digest(
     if len(text) > budget_chars and abstract_line:
         room = budget_chars - len(_build("", kept)) - len("  <abstract></abstract>") - 1
         if room > 20 and digest.abstract:
-            trimmed = _xml_escape(digest.abstract[: max(0, room - 1)].rstrip()) + "…"
+            # Escape first, then cut: the budget is measured on what is
+            # actually rendered, not on the raw text it came from.
+            trimmed = _truncate_escaped(_xml_escape(digest.abstract), room - 1) + "…"
             text = _build(f"  <abstract>{trimmed}</abstract>", kept)
         else:
             text = _build("", kept)
+    if len(text) > budget_chars:
+        # The cap is hard. Drop the abstract entirely rather than overshoot;
+        # only the opening tag — the ``document_read`` handle — is allowed to
+        # survive a budget this small.
+        text = _build("", kept)
     return text
 
 

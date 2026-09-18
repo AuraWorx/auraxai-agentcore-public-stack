@@ -25,6 +25,21 @@ computed once per agent at cold start (two extra CountTokens calls) and cached;
 every turn afterward is pure arithmetic against the free, authoritative
 ``projected_input_tokens``.
 
+**Why the split is not computed while an attachment is in context.**
+``toolTokens`` is a *residual* between two independently sourced numbers —
+``full`` (Strands' projection for the upcoming request) and ``no_tools`` (our own
+CountTokens call) — so any disagreement between them about how a content block
+is counted lands wholly in it. Bedrock understands a PDF page as an image *and*
+a text layer; when the two sources do not agree on that, the document's entire
+weight is attributed to tools. Measured on dev 2026-09-16 (session
+``61de2256``): a call reported ``toolTokens`` of **106,756** where the session's
+real tools prefix was **12,516** — a difference of 94,240 against a document
+measured at ~94,485, i.e. the whole document. The split is therefore skipped on
+any turn whose context carries inline document or image bytes, and taken on a
+later clean turn instead. An absent ``prefixTokens`` reads "not tracked" (the
+ledger's convention); a wrong one silently corrupts every share computed from
+it.
+
 Best-effort: any failure is swallowed so context attribution can never break a
 model call. For non-Bedrock models ``count_tokens`` falls back to a heuristic,
 so the numbers are approximate there.
@@ -40,6 +55,31 @@ logger = logging.getLogger(__name__)
 # Stashed on the per-session Strands agent instance.
 _SPLIT_ATTR = "_context_attribution_split"          # cached stable {systemTokens, toolTokens}
 _BREAKDOWN_ATTR = "_context_attribution_breakdown"  # latest per-turn breakdown dict
+
+
+def _has_inline_attachment(messages: Any) -> bool:
+    """Whether any message carries inline ``document`` / ``image`` bytes.
+
+    The condition under which ``toolTokens`` cannot be trusted — see the module
+    docstring. Cheap: a walk over content blocks, no decoding."""
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            for key in ("document", "image"):
+                payload = block.get(key)
+                if isinstance(payload, dict):
+                    source = payload.get("source")
+                    if isinstance(source, dict) and isinstance(
+                        source.get("bytes"), (bytes, bytearray)
+                    ):
+                        return True
+    return False
 
 
 def get_context_breakdown(agent: Any) -> Optional[dict]:
@@ -90,6 +130,11 @@ class ContextAttributionHook(HookProvider):
         full = event.projected_input_tokens
 
         split = getattr(agent, _SPLIT_ATTR, None)
+        if split is None and _has_inline_attachment(agent.messages):
+            # Untrustworthy residual (see module docstring) — leave the split
+            # uncomputed and try again on a turn without inline bytes.
+            logger.debug("Context attribution deferred: inline attachment in context")
+            return
         if split is None:
             system_tokens = await model.count_tokens(
                 messages=[],
