@@ -404,6 +404,55 @@ class DynamoDBStorage(MetadataStorage):
             raise Exception(f"Failed to list recent down-thumbs: {e}")
         return [strip_content(self._convert_decimal_to_float(item)) for item in response.get("Items", [])]
 
+    async def get_feedback_in_window(
+        self,
+        start: str,
+        end: str,
+        limit: int = 2000,
+    ) -> List[Dict[str, Any]]:
+        """Every explicit thumb, both polarities, in an ISO time window —
+        content-free by projection (no user id: the fleet view is aggregates
+        only, per response-feedback spec §8 rule 1).
+
+        Returns at most ``limit`` rows per polarity; the caller reports
+        truncation rather than silently under-counting.
+        """
+        from boto3.dynamodb.conditions import Key
+        from apis.shared.observability.content_policy import (
+            FEEDBACK_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FEEDBACK_ROW_PROJECTION)
+        rows: List[Dict[str, Any]] = []
+        for partition in ("FEEDBACK#down", "FEEDBACK#up"):
+            collected: List[Dict[str, Any]] = []
+            last_key = None
+            try:
+                while len(collected) < limit:
+                    kwargs: Dict[str, Any] = {
+                        "IndexName": "UserTimestampIndex",
+                        "KeyConditionExpression": (
+                            Key("GSI1PK").eq(partition) & Key("GSI1SK").between(start, end)
+                        ),
+                        "ScanIndexForward": True,
+                        "Limit": min(500, limit - len(collected)),
+                        "ProjectionExpression": projection,
+                        "ExpressionAttributeNames": names,
+                    }
+                    if last_key:
+                        kwargs["ExclusiveStartKey"] = last_key
+                    response = self.sessions_metadata_table.query(**kwargs)
+                    collected.extend(response.get("Items", []))
+                    last_key = response.get("LastEvaluatedKey")
+                    if not last_key:
+                        break
+            except ClientError as e:
+                raise Exception(f"Failed to query feedback window: {e}")
+            rows.extend(collected[:limit])
+        return [strip_content(self._convert_decimal_to_float(item)) for item in rows]
+
     async def get_session_diagnostic_row(
         self,
         session_id: str,

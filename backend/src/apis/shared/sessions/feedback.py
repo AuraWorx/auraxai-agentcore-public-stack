@@ -302,6 +302,48 @@ def list_recent_down_thumbs(table, limit: int = 20) -> List[Dict[str, Any]]:
     return list(response.get("Items", []))
 
 
+def list_feedback_in_window(
+    table,
+    start: str,
+    end: str,
+    value: str = "down",
+    limit: int = 2000,
+) -> List[Dict[str, Any]]:
+    """Explicit thumbs of one polarity in an ISO time window, oldest first.
+
+    The ``FEEDBACK#down`` / ``FEEDBACK#up`` partitions on
+    ``UserTimestampIndex`` are sorted by ``updatedAt``, so a window is a
+    ``between`` on the sort key — no scan, no new index. Raw rows; the admin
+    surface reads through the projected storage reader instead.
+
+    Note implicit signals (spec §10) never appear here: they are written
+    without the ``GSI1*`` keys, so the fleet view is explicit-only by
+    construction as well as by filter.
+    """
+    from boto3.dynamodb.conditions import Key
+
+    partition = "FEEDBACK#down" if value == "down" else "FEEDBACK#up"
+    items: List[Dict[str, Any]] = []
+    last_key = None
+    while len(items) < limit:
+        kwargs: Dict[str, Any] = {
+            "IndexName": "UserTimestampIndex",
+            "KeyConditionExpression": (
+                Key("GSI1PK").eq(partition) & Key("GSI1SK").between(start, end)
+            ),
+            "ScanIndexForward": True,
+            "Limit": min(500, limit - len(items)),
+        }
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = table.query(**kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    return items[:limit]
+
+
 def store_evaluation(
     table,
     user_id: str,

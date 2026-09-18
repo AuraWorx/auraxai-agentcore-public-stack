@@ -49,6 +49,65 @@ class DownThumbQueueResponse(BaseModel):
     sampling_enabled: bool = Field(False, alias="samplingEnabled")
 
 
+class FleetArm(BaseModel):
+    """One arm of one dimension. ``downRate`` is deliberately ``None`` below
+    the coverage floor: there is then no number for anyone to quote."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    key: str
+    up: int = 0
+    down: int = 0
+    n: int = 0
+    down_rate: Optional[float] = Field(None, alias="downRate")
+    below_floor: bool = Field(False, alias="belowFloor")
+
+
+class FleetWindow(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    start: str
+    end: str
+    days: int
+
+
+class FleetCoverage(BaseModel):
+    """How much of the window the arms actually rest on. Spec §9: every
+    response carries its n and its coverage, so a comparison can be judged
+    rather than taken."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    thumbs: int = 0
+    joined: int = 0
+    unjoined: int = 0
+    join_rate: Optional[float] = Field(None, alias="joinRate")
+    sessions_with_feedback: int = Field(0, alias="sessionsWithFeedback")
+    sessions_joined: int = Field(0, alias="sessionsJoined")
+    sessions_omitted: int = Field(0, alias="sessionsOmitted")
+    truncated: bool = False
+
+
+class FleetTotals(BaseModel):
+    """Counts only. There is deliberately no fleet-wide rate field here —
+    see `fleet.py` and spec §9."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    up: int = 0
+    down: int = 0
+    thumbs: int = 0
+
+
+class FleetFeedbackResponse(BaseModel):
+    """Down-thumb rate by config arm across the fleet (spec §7)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    window: FleetWindow
+    totals: FleetTotals
+    coverage: FleetCoverage
+    arms: Dict[str, List[FleetArm]]
+    reasons: Dict[str, int] = Field(default_factory=dict)
+    minimum_n: int = Field(20, alias="minimumN")
+
+
 class SamplingRunResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

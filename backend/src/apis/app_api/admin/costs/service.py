@@ -84,7 +84,7 @@ def _record_cost(record: Dict[str, Any]) -> Optional[float]:
     return _as_float(raw)
 
 
-def _turn_class(record: Dict[str, Any]) -> Optional[str]:
+def turn_class(record: Dict[str, Any]) -> Optional[str]:
     """Turn class of one ``C#`` row from its document-context fields (spec
     §6.1): ``full`` (``hasDocuments``), ``retrieved`` (``documentReads.pages
     > 0``), ``digestOnly`` (``documentDigests > 0``), else ``none``.
@@ -126,7 +126,7 @@ def _join_feedback(
             # and later rows have the fuller context, so last write wins.
             by_message[message_id] = record
 
-    any_turn_class = any(_turn_class(r) is not None for r in records)
+    any_turn_class = any(turn_class(r) is not None for r in records)
     buckets = FeedbackByTurnClass() if any_turn_class else None
     profile = FeedbackProfile()
     implicit_messages: Dict[str, set] = {"copy": set(), "continue": set()}
@@ -179,7 +179,7 @@ def _join_feedback(
             continue
         if buckets is None:
             continue
-        klass = _turn_class(record) or "none"
+        klass = turn_class(record) or "none"
         bucket: FeedbackCounts = {
             "full": buckets.full,
             "digestOnly": buckets.digest_only,

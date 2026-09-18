@@ -221,3 +221,42 @@ async def test_recent_down_thumbs_queue_is_content_free_and_newest_first(storage
     assert all(content_bearing_paths(r) == [] for r in rows)
     assert "userId" not in rows[0] and "displayText" not in rows[0]
     assert rows[0]["evaluation"]["scores"]["Builtin.Correctness"] == {"value": 0.5, "n": 1}
+
+
+def _seed_thumb(storage, message_id, value, ts, *, reason=None, signal="explicit", session_id=SESSION_ID):
+    item = {
+        "PK": f"USER#{USER_ID}", "SK": f"F#{session_id}#{message_id}",
+        "GSI_PK": f"SESSION#{session_id}", "GSI_SK": f"F#{message_id}",
+        "GSI1PK": f"FEEDBACK#{'down' if value == -1 else 'up'}", "GSI1SK": ts,
+        "sessionId": session_id, "messageId": Decimal(message_id), "userId": USER_ID,
+        "value": Decimal(value), "signal": signal, "updatedAt": ts,
+        "displayText": "SECRET",
+    }
+    if reason:
+        item["reason"] = reason
+    storage.sessions_metadata_table.put_item(Item=item)
+
+
+@pytest.mark.asyncio
+async def test_feedback_window_reads_both_polarities_content_free_and_time_bounded(storage):
+    _seed(storage)
+    _seed_thumb(storage, 1, -1, "2026-09-02T00:00:00Z", reason="wrong")
+    _seed_thumb(storage, 2, 1, "2026-09-03T00:00:00Z")
+    _seed_thumb(storage, 3, -1, "2026-08-01T00:00:00Z")   # before the window
+    _seed_thumb(storage, 4, -1, "2026-10-01T00:00:00Z")   # after the window
+
+    rows = await storage.get_feedback_in_window(start="2026-09-01T00:00:00Z", end="2026-09-30T00:00:00Z")
+
+    assert sorted(r["messageId"] for r in rows) == [1, 2]
+    assert {r["value"] for r in rows} == {-1, 1}
+    # No user id reaches an aggregate surface, and no content of any kind.
+    assert all(content_bearing_paths(r) == [] for r in rows)
+    assert all("userId" not in r and "displayText" not in r for r in rows)
+    assert [r for r in rows if r["value"] == -1][0]["reason"] == "wrong"
+
+
+@pytest.mark.asyncio
+async def test_feedback_window_is_empty_when_nothing_falls_in_it(storage):
+    _seed(storage)
+    _seed_thumb(storage, 1, -1, "2026-08-01T00:00:00Z")
+    assert await storage.get_feedback_in_window(start="2026-09-01T00:00:00Z", end="2026-09-30T00:00:00Z") == []
