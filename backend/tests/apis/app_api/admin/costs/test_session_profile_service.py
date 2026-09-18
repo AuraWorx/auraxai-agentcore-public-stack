@@ -193,11 +193,23 @@ async def test_share_of_user_period_uses_the_current_month():
 
 
 @pytest.mark.asyncio
-async def test_agent_cache_bypass_names_the_offending_ids():
+async def test_agent_cache_bypass_names_the_offending_ids(monkeypatch):
+    # Every injected family is cache-eligible today, so the rule is silent on
+    # the live sets; un-promote spreadsheet analysis for this test to prove the
+    # profile still surfaces the diagnosis when a family does bypass.
+    from apis.app_api.admin.costs import diagnoses as dg
+
+    monkeypatch.setattr(dg, "KEY_DESCRIBED_INJECTED_TOOL_IDS", frozenset())
     p = await _service(_row(), []).get_session_profile("s1")
     bypass = next(d for d in p.diagnoses if d.code == "AGENT_CACHE_BYPASS")
     assert bypass.evidence["bypassingToolIds"] == ["analyze_spreadsheet"]
     assert p.enabled_tool_ids == ["analyze_spreadsheet", "calculator"]
+
+
+@pytest.mark.asyncio
+async def test_agent_cache_bypass_is_silent_when_every_family_is_promoted():
+    p = await _service(_row(), []).get_session_profile("s1")
+    assert not [d for d in p.diagnoses if d.code == "AGENT_CACHE_BYPASS"]
 
 
 @pytest.mark.asyncio

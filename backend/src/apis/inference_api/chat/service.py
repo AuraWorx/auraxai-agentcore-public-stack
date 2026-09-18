@@ -62,9 +62,17 @@ def _create_cache_key(
     agent_type: Optional[str],
     skills_hash: str = "",
     document_tools: bool = False,
+    assistant_id: Optional[str] = None,
 ) -> Tuple:
     """
     Create a cache key for agent instances.
+
+    `assistant_id` is the assistant (RAG corpus) the turn ran against. The
+    spreadsheet-analysis builders close over it, so without it in the key a
+    cached agent could answer a later turn against the wrong corpus — which
+    is why that family bypassed the cache until the key carried it. Empty
+    string when no assistant is attached, so keys for assistant-less turns are
+    byte-identical to the pre-field ones.
 
     `document_tools` is whether the turn built the session-state-gated
     ``document_read`` tool (the session has a readable attachment). It is not
@@ -105,6 +113,7 @@ def _create_cache_key(
         freshness_hash,
         agent_type or "chat",
         bool(document_tools),
+        assistant_id or "",
         skills_hash,
     )
 
@@ -251,6 +260,7 @@ async def get_agent(
     extra_tools_key_described: bool = False,
     cache_write: bool = True,
     has_document_tools: bool = False,
+    assistant_id: Optional[str] = None,
 ) -> BaseAgent:
     """
     Get or create agent instance with current configuration for session
@@ -326,6 +336,7 @@ async def get_agent(
         agent_type=agent_type,
         skills_hash=skills_hash,
         document_tools=has_document_tools,
+        assistant_id=assistant_id,
     )
 
     # Whether this turn's injected tools (if any) let it use the cache at all.
@@ -420,6 +431,9 @@ async def get_agent(
         agent._construction_snapshot["agent_type"] = resolved_agent_type
         if resolved_agent_type != "voice" and accessible_skill_ids is not None:
             agent._construction_snapshot["enabled_skills"] = list(accessible_skill_ids)
+        # The assistant is a key element (spreadsheet tools close over it), so
+        # resume must replay it verbatim or the paused agent is orphaned.
+        agent._construction_snapshot["assistant_id"] = assistant_id
 
     # Don't cache agents whose context-bound extra_tools captured anything the
     # key doesn't describe — a cached agent holds the *old* closures, so reuse

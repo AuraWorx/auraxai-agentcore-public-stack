@@ -95,14 +95,16 @@ INJECTED_TOOL_IDS = frozenset(
 #     (`_build_powerpoint_presentation_tools`), WORKSPACE
 #     (`_build_workspace_tools`).
 #
-# Still excluded, each for a stated reason:
+#   - SPREADSHEET (`_build_spreadsheet_tools`) closes over `assistant_id` as
+#     well. That was NOT a key element until `_create_cache_key` gained it,
+#     alongside `PausedTurnSnapshot.assistant_id` and the resume path replaying
+#     it — all three have to agree or a paused agent is orphaned. With the key
+#     carrying it, the closure is described and the family is eligible. This
+#     is the dominant cohort: the 2026-08-03 prod read put
+#     `analyze_spreadsheet` on ~2,669 of 3,565 sessions.
 #
-#   - SPREADSHEET: `make_*_tool(assistant_id, …)` closes over `assistant_id`,
-#     which is NOT a key element. Needs the key, `PausedTurnSnapshot` and the
-#     resume path extended first (a key/snapshot disagreement orphans a paused
-#     agent). This is the dominant cohort — the 2026-08-03 prod read put
-#     `analyze_spreadsheet` on ~2,669 of 3,565 sessions — so it is the next
-#     promotion, tracked in docs/specs/load-test-assessment-2026-09.md P1-C.
+# Still excluded:
+#
 #   - Memory-Space tools: capture the resolved binding (space id + access) and
 #     are not gated on `enabled_tools` at all, so they are not in any set here.
 #     `get_agent`'s caller must treat a live memory binding as an independent
@@ -113,6 +115,7 @@ KEY_DESCRIBED_INJECTED_TOOL_IDS = frozenset(
     | EXCEL_SPREADSHEET_TOOL_IDS
     | POWERPOINT_PRESENTATION_TOOL_IDS
     | WORKSPACE_TOOL_IDS
+    | SPREADSHEET_TOOL_IDS
 )
 
 

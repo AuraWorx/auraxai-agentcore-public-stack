@@ -1,9 +1,9 @@
 """`injected_tools_are_key_described` — which turns may reuse a cached Agent.
 
-The agent cache key carries session, user and a hash of enabled_tools. A
-per-request tool builder that closes over only those produces tools equivalent
-to freshly-built ones, so the cached agent is safe to reuse. One that captures
-anything else (an assistant id, a memory binding) is not.
+The agent cache key carries session, user, assistant and a hash of
+enabled_tools. A per-request tool builder that closes over only those produces
+tools equivalent to freshly-built ones, so the cached agent is safe to reuse.
+One that captures anything else (a memory binding) is not.
 
 Getting this predicate wrong in the permissive direction is a correctness bug —
 an agent answering against the wrong assistant's corpus or the wrong memory
@@ -34,17 +34,20 @@ class TestKeyDescribedPredicate:
         assert injected_tools_are_key_described(None, has_memory_binding=False)
         assert injected_tools_are_key_described([], has_memory_binding=False)
 
-    def test_spreadsheet_tools_are_not_key_described(self):
-        # They close over `assistant_id`, which the key does not carry.
+    def test_spreadsheet_tools_are_key_described(self):
+        # They close over `assistant_id`, which `_create_cache_key` now carries
+        # (and `PausedTurnSnapshot` replays on resume).
         for tool_id in SPREADSHEET_TOOL_IDS:
-            assert not injected_tools_are_key_described(
+            assert injected_tools_are_key_described(
                 [tool_id], has_memory_binding=False
             )
 
     def test_one_unkeyed_builder_disqualifies_the_whole_turn(self):
-        # The agent is one object; a single unkeyed capture taints it.
+        # The agent is one object; a single unkeyed capture taints it. With
+        # every enabled_tools-gated family now described, the only unkeyed
+        # capture left is the memory binding, which the caller flags.
         assert not injected_tools_are_key_described(
-            ["create_artifact", "analyze_spreadsheet"], has_memory_binding=False
+            ["create_artifact", "analyze_spreadsheet"], has_memory_binding=True
         )
 
     def test_a_memory_binding_vetoes_regardless_of_enabled_tools(self):
@@ -82,12 +85,11 @@ class TestKeyDescribedPredicate:
             has_memory_binding=False,
         )
 
-    def test_the_only_unpromoted_family_is_spreadsheet_analysis(self):
+    def test_every_enabled_tools_gated_family_is_key_described(self):
         """Fails the day a new injected family is added without deciding its
-        cache eligibility, and the day spreadsheet analysis is promoted without
-        first threading `assistant_id` through the key and the paused-turn
-        snapshot (see the module comment in `injected.py`)."""
-        assert INJECTED_TOOL_IDS - KEY_DESCRIBED_INJECTED_TOOL_IDS == SPREADSHEET_TOOL_IDS
+        cache eligibility: a new builder that closes over something the key
+        does not carry must be left OUT of the described set until it does."""
+        assert INJECTED_TOOL_IDS - KEY_DESCRIBED_INJECTED_TOOL_IDS == frozenset()
 
     def test_artifacts_remain_in_the_set(self):
         assert ARTIFACT_TOOL_IDS <= KEY_DESCRIBED_INJECTED_TOOL_IDS
@@ -97,6 +99,9 @@ class TestKeyDescribedPredicate:
         assert injected_tools_are_key_described(
             {"create_artifact"}, has_memory_binding=False
         )
-        assert not injected_tools_are_key_described(
+        assert injected_tools_are_key_described(
             frozenset({"analyze_spreadsheet"}), has_memory_binding=False
+        )
+        assert not injected_tools_are_key_described(
+            frozenset({"analyze_spreadsheet"}), has_memory_binding=True
         )
