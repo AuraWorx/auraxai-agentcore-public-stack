@@ -42,6 +42,12 @@ export const adminRoutes: Routes = [
     loadComponent: () => import('./costs/pages/session-cost-anatomy.page').then(m => m.SessionCostAnatomyPage),
   },
   {
+    path: 'feedback',
+    canActivate: [adminScopeGuard],
+    data: { scope: 'admin.costs' } satisfies AdminScopeRouteData,
+    loadComponent: () => import('./feedback/fleet-feedback.page').then(m => m.FleetFeedbackPage),
+  },
+  {
     path: 'quota',
     canActivate: [adminScopeGuard],
     data: { scope: 'admin.quota' } satisfies AdminScopeRouteData,

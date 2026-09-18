@@ -15,6 +15,7 @@ import {
   heroArrowLeft,
   heroShieldCheck,
   heroCurrencyDollar,
+  heroHandThumbDown,
   heroScale,
   heroAcademicCap,
   heroPencilSquare,
@@ -68,6 +69,7 @@ interface NavGroup {
       heroArrowLeft,
       heroShieldCheck,
       heroCurrencyDollar,
+      heroHandThumbDown,
       heroScale,
       heroAcademicCap,
       heroPencilSquare,
@@ -193,6 +195,10 @@ export class AdminLayout implements OnInit {
       label: 'Usage & Spend',
       items: [
         { label: 'Cost Analytics', icon: 'heroCurrencyDollar', route: '/admin/costs', scope: 'admin.costs' },
+        // Same scope as Cost Analytics on purpose: the feedback arms are read
+        // against the cost rows they join to, and there is no separate signal
+        // to delegate independently.
+        { label: 'Feedback', icon: 'heroHandThumbDown', route: '/admin/feedback', scope: 'admin.costs' },
         { label: 'Quotas', icon: 'heroScale', route: '/admin/quota', scope: 'admin.quota' },
         { label: 'Fine-Tuning', icon: 'heroAcademicCap', route: '/admin/fine-tuning', scope: 'admin.fine_tuning' },
       ],

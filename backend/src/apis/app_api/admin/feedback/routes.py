@@ -11,8 +11,10 @@ ingestion; minutes, not milliseconds) and 404s while
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
@@ -20,7 +22,14 @@ from apis.shared.auth import User, require_admin_scope
 from apis.shared.feature_flags import feedback_eval_sampling_enabled
 from apis.shared.storage.dynamodb_storage import DynamoDBStorage
 
-from .models import DownThumbQueueItem, DownThumbQueueResponse, SamplingRunResponse
+from .fleet import build_fleet_report
+
+from .models import (
+    DownThumbQueueItem,
+    DownThumbQueueResponse,
+    FleetFeedbackResponse,
+    SamplingRunResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +46,88 @@ def get_judge():
     from apis.shared.feedback_eval.sampler import AgentCoreJudge
 
     return AgentCoreJudge()
+
+
+#: Hard caps on one fleet query. The window is a GSI range read, but the
+#: join is one query per session, so an unbounded month would fan out
+#: without limit. Exceeding either is reported as `coverage.truncated` /
+#: `sessionsOmitted` rather than silently under-counted.
+MAX_THUMBS_PER_WINDOW = 2000
+MAX_SESSIONS_JOINED = 300
+#: Concurrent per-session cost-row reads.
+SESSION_FETCH_CONCURRENCY = 16
+
+
+@router.get("/fleet", response_model=FleetFeedbackResponse, response_model_by_alias=True)
+async def get_fleet_feedback(
+    days: int = Query(30, ge=1, le=90, description="Trailing window in days"),
+    current_user: User = Depends(require_feedback_admin),
+    storage: DynamoDBStorage = Depends(get_storage),
+):
+    """Down-thumb rate by config arm across the fleet — model, agent switch,
+    distance from a compaction cut, document turn class.
+
+    Content-free end to end: the thumbs arrive through the projected reader
+    (no user id), the cost rows through the anatomy's own projection, and
+    nothing but counts leaves. Per spec §9 every arm carries its ``n``, arms
+    under the floor report no rate at all, and there is no fleet-wide
+    "quality score" field.
+    """
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    window = {"start": start.isoformat(), "end": end.isoformat(), "days": days}
+
+    try:
+        thumbs = await storage.get_feedback_in_window(
+            start=window["start"], end=window["end"], limit=MAX_THUMBS_PER_WINDOW,
+        )
+    except Exception:
+        logger.error("Error reading the feedback window", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to read feedback window")
+
+    truncated = len(thumbs) >= MAX_THUMBS_PER_WINDOW
+    session_ids: List[str] = []
+    for row in thumbs:
+        sid = str(row.get("sessionId") or "")
+        if sid and sid not in session_ids:
+            session_ids.append(sid)
+    omitted = max(0, len(session_ids) - MAX_SESSIONS_JOINED)
+    session_ids = session_ids[:MAX_SESSIONS_JOINED]
+
+    records_by_session = await _load_session_records(storage, session_ids)
+    report = build_fleet_report(
+        thumbs,
+        records_by_session,
+        window=window,
+        truncated=truncated,
+        sessions_omitted=omitted,
+    )
+    logger.info(
+        "Fleet feedback: %d thumbs over %dd, %d sessions joined (%d omitted)",
+        report["totals"]["thumbs"], days, len(records_by_session), omitted,
+    )
+    return FleetFeedbackResponse(**report)
+
+
+async def _load_session_records(
+    storage: DynamoDBStorage, session_ids: List[str]
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Cost rows for each session, in bounded-concurrency batches. A session
+    that fails to read is dropped, not fatal: its thumbs then count toward
+    `coverage.unjoined`, which is the honest result."""
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for offset in range(0, len(session_ids), SESSION_FETCH_CONCURRENCY):
+        batch = session_ids[offset:offset + SESSION_FETCH_CONCURRENCY]
+        results = await asyncio.gather(
+            *(storage.get_session_cost_records(sid) for sid in batch),
+            return_exceptions=True,
+        )
+        for sid, result in zip(batch, results):
+            if isinstance(result, Exception):
+                logger.debug("Fleet join: session rows unavailable")
+                continue
+            out[sid] = list(result or [])
+    return out
 
 
 @router.get("/evaluations", response_model=DownThumbQueueResponse, response_model_by_alias=True)
