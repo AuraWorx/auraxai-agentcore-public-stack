@@ -197,6 +197,35 @@ async def test_implicit_signal_rows_share_the_family_but_never_read_as_thumbs(ta
 
 
 @pytest.mark.asyncio
+async def test_implicit_signals_count_under_their_own_key_beside_the_thumb(table):
+    """Spec §10: copy / continue rows share the F# family, keyed per kind so
+    they never collide with the thumb, ADD a count, and are invisible to
+    every thumb reader."""
+    await fb.put_message_feedback(SESSION, OWNER, 3, -1, reason="wrong")
+    await fb.record_implicit_signal(SESSION, OWNER, 3, "copy")
+    await fb.record_implicit_signal(SESSION, OWNER, 3, "copy")
+    await fb.record_implicit_signal(SESSION, OWNER, 3, "continue")
+
+    items = {i["SK"]: i for i in _feedback_items()}
+    assert set(items) == {f"F#{SESSION}#3", f"F#{SESSION}#3#copy", f"F#{SESSION}#3#continue"}
+    copy = items[f"F#{SESSION}#3#copy"]
+    assert copy["signal"] == "implicit" and copy["kind"] == "copy" and int(copy["count"]) == 2
+    assert copy["GSI_SK"] == "F#3#copy" and int(copy["messageId"]) == 3 and "value" not in copy
+    assert int(items[f"F#{SESSION}#3"]["value"]) == -1, "the thumb is untouched"
+
+    # Thumb readers see only the thumb; the session rollups did not move.
+    assert {k: v.value for k, v in fb.query_session_feedback(table, SESSION, OWNER).items()} == {"3": -1}
+    assert _session_row()["thumbsDown"] == 1 and _session_row()["thumbsUp"] == 0
+
+    with pytest.raises(ValueError):
+        await fb.record_implicit_signal(SESSION, OWNER, 3, "abandon")
+    with pytest.raises(fb.SessionNotOwned):
+        await fb.record_implicit_signal(SESSION, OTHER, 3, "copy")
+    await fb.record_implicit_signal("preview-x", OWNER, 0, "copy")
+    assert _feedback_items("preview-x") == []
+
+
+@pytest.mark.asyncio
 async def test_messages_list_metadata_index_carries_feedback(table, monkeypatch):
     """The read path the SPA uses on reload: F# rows merge into the metadata
     index by message id, beside (or in place of) the cost record."""

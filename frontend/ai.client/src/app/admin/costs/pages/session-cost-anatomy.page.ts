@@ -38,6 +38,7 @@ import {
   buildDiagnosticJson,
   downRate,
   feedbackByTurnClassLine,
+  feedbackImplicitLine,
   feedbackEvaluationsLine,
   feedbackRetryLine,
   formatBytes,
@@ -257,6 +258,11 @@ import {
                 @if (feedbackRetryLine(); as retries) {
                   <!-- Quality in dollars: the thumbed answer plus the retry it took. -->
                   <p class="mt-0.5 text-xs/5 text-gray-500 dark:text-gray-400">{{ retries }}</p>
+                }
+                @if (feedbackImplicitLine(); as implicit) {
+                  <!-- Implicit signals (spec §10) on their own line: a different
+                       base rate from the thumbs, never added to them. -->
+                  <p class="mt-0.5 text-xs/5 text-gray-500 dark:text-gray-400">{{ implicit }}</p>
                 }
                 @if (feedbackEvaluationsLine(); as judged) {
                   <!-- What the offline judge made of the down-thumbs (eval sampling). -->
@@ -848,6 +854,9 @@ export class SessionCostAnatomyPage {
     return feedback ? downRate(feedback) : null;
   });
 
+  readonly feedbackImplicitLine = computed(() =>
+    this.profileResource.hasValue() ? feedbackImplicitLine(this.profileResource.value().feedback) : null,
+  );
   readonly feedbackEvaluationsLine = computed(() =>
     this.profileResource.hasValue() ? feedbackEvaluationsLine(this.profileResource.value().feedback) : null,
   );

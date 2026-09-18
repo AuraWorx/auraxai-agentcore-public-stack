@@ -487,6 +487,16 @@ class FeedbackByTurnClass(BaseModel):
     none: FeedbackCounts = Field(default_factory=FeedbackCounts)
 
 
+class ImplicitSignalCounts(BaseModel):
+    """Implicit signals (spec §10) as *messages touched* per kind — a message
+    copied three times counts once here. Kept apart from the thumbs; the two
+    have different base rates and are never summed."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    copied: int = 0
+    continued: int = 0
+
+
 class EvaluatorAggregate(BaseModel):
     """Mean judged score for one evaluator over this session's sampled thumbs."""
     model_config = ConfigDict(populate_by_name=True)
@@ -526,6 +536,8 @@ class FeedbackProfile(BaseModel):
     # a cost row to price.
     retried: int = 0
     rework_usd: Optional[float] = Field(None, alias="reworkUsd")
+    # Implicit signals, or None when the session has none.
+    implicit: Optional[ImplicitSignalCounts] = None
     # Judged down-thumbs, or None when the sampler has not touched this session.
     evaluations: Optional[FeedbackEvaluations] = None
 

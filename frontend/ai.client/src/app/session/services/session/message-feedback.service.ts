@@ -3,7 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '../../../services/config.service';
 import { ComposerDraftService } from './composer-draft.service';
-import { Message, MessageFeedback, FeedbackReason } from '../models/message.model';
+import { Message, MessageFeedback, FeedbackReason, ImplicitSignalKind } from '../models/message.model';
 
 /**
  * Thumbs up / down on assistant messages — the outcome signal joined to the
@@ -116,6 +116,29 @@ export class MessageFeedbackService {
     const current = this.feedbackFor(pending.message);
     if (!current || current.value !== -1) return;
     void this.setFeedback(pending.message, -1, current.reason, sent.index);
+  }
+
+  /** `messageId:kind` pairs already sent this page load — one signal per
+   *  message per kind per visit is all the read model counts anyway. */
+  private readonly signalled = new Set<string>();
+
+  /**
+   * Implicit signal (spec §10): copy or continue on an assistant message.
+   * Fire-and-forget — nothing in the UI depends on it, so a failure is
+   * logged at debug level and never surfaces. Content-free: a kind code.
+   */
+  recordSignal(message: Message, kind: ImplicitSignalKind): void {
+    const target = parseMessageRef(message.id);
+    if (!target || this.unavailable()) return;
+    const key = `${message.id}:${kind}`;
+    if (this.signalled.has(key)) return;
+    this.signalled.add(key);
+    const base = this.config.appApiUrl().replace(/\/$/, '');
+    const url = `${base}/sessions/${encodeURIComponent(target.sessionId)}/messages/${target.index}/signals`;
+    firstValueFrom(this.http.post<void>(url, { kind })).catch((error) => {
+      if (isKillSwitch404(error)) this.unavailable.set(true);
+      console.debug('Implicit signal not recorded:', kind, error);
+    });
   }
 
   /** Withdraw the thumb on a message. */

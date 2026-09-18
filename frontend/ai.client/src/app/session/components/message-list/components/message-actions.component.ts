@@ -121,7 +121,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
           appTooltip="Resume response"
           appTooltipPosition="top"
           aria-label="Continue the truncated response"
-          (click)="continueRequested.emit()"
+          (click)="onContinue()"
         >
           <ng-icon name="heroArrowPath" class="size-4" aria-hidden="true" />
           <span>Continue</span>
@@ -136,7 +136,7 @@ import { TooltipDirective } from '../../../../components/tooltip';
           appTooltip="Resume response"
           appTooltipPosition="top"
           aria-label="Continue the interrupted response"
-          (click)="continueRequested.emit()"
+          (click)="onContinue()"
         >
           <ng-icon name="heroArrowPath" class="size-4" aria-hidden="true" />
           <span>Continue</span>
@@ -189,6 +189,13 @@ export class MessageActionsComponent {
   /** Emitted when the user asks to continue the truncated / interrupted
    *  response. */
   continueRequested = output<void>();
+
+  /** Continue click: emit as before, and record the implicit signal. */
+  protected onContinue(): void {
+    const last = this.lastMessage();
+    if (last) this.feedbackService.recordSignal(last, 'continue');
+    this.continueRequested.emit();
+  }
 
   protected copied = signal(false);
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -282,6 +289,9 @@ export class MessageActionsComponent {
     try {
       await this.writeRichClipboard(markdown);
       this.copied.set(true);
+      // Implicit signal (spec §10): a copied answer was worth keeping.
+      const last = this.lastMessage();
+      if (last) this.feedbackService.recordSignal(last, 'copy');
 
       if (this.resetTimeout) {
         clearTimeout(this.resetTimeout);
