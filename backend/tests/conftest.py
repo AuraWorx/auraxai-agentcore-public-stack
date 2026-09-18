@@ -299,29 +299,10 @@ if os.environ.get("AWS_TEST_ALLOW_OFF_BOX_SOCKETS") != "1":
     _socket.socket.connect_ex = _guard_connect_ex
 
 
-#: Known offenders, quarantined so the suite is green while they are burned
-#: down. **These files still cannot reach AWS** — the block above applies to
-#: every test; quarantine only suppresses the teardown *failure*, so the debt
-#: is visible and bounded rather than load-bearing. Each entry needs the same
-#: treatment the fixed files got: find the second, unmocked dependency the code
-#: path builds (a repository or service getter) and stub it. Remove the entry
-#: with the fix; never add one without a note saying why.
-_OFF_BOX_QUARANTINE = frozenset({
-    "tests/routes/test_admin.py",
-    "tests/routes/test_agent_pins.py",
-    "tests/routes/test_agent_reports.py",
-    "tests/routes/test_agents.py",
-    "tests/routes/test_api_converse_mantle.py",
-    "tests/routes/test_converse_cost_accounting.py",
-    "tests/routes/test_inference.py",
-    "tests/routes/test_model_access_enforcement.py",
-    "tests/routes/test_models.py",
-    "tests/routes/test_sessions.py",
-})
 
 
 @pytest.fixture(autouse=True)
-def _fail_on_off_box_sockets(request):
+def _fail_on_off_box_sockets():
     """Fail a test that tried to leave the box, *even if it swallowed the error*.
 
     The raise above stops the connection; this is what makes it visible. Without
@@ -335,9 +316,6 @@ def _fail_on_off_box_sockets(request):
         attempted = list(_off_box_attempts)
         _off_box_attempts.clear()
     if not attempted:
-        return
-    node = str(getattr(request.node, "nodeid", ""))
-    if any(node.startswith(path) for path in _OFF_BOX_QUARANTINE):
         return
     hosts = ", ".join(sorted(set(attempted)))
     pytest.fail(
