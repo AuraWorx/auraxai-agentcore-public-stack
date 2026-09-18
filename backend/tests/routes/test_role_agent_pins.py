@@ -39,6 +39,38 @@ ROLE_PIN_SERVICE = "apis.app_api.agent_designer.services.role_pin_service"
 ADMIN_ROUTES = "apis.app_api.admin.roles.agent_pins"
 
 
+@pytest.fixture(autouse=True)
+def _no_live_catalog_reads():
+    """Stub the two catalogs the pin surfaces read behind the mocked services.
+
+    ``role_pins.count_locked_outside`` -> ``get_app_role_admin_service().list_roles()``
+    -> ``rbac.repository.list_roles`` builds a real DynamoDB client. These tests
+    mock the pin services only, so that call used to leave the box; it is
+    fail-open, so the failure was swallowed and the assertions passed anyway.
+    The same applies to ``agent_detail._tool_labels`` (-> ``ToolCatalogService.get_tool``)
+    and ``_memory_labels`` (-> ``MemorySpaceService.resolve_permission``). All three
+    are fail-open, so the failures were swallowed and the assertions passed anyway. See the off-box socket guard
+    in ``tests/conftest.py``.
+    """
+    role_service = MagicMock()
+    role_service.list_roles = AsyncMock(return_value=[])
+    with patch(
+        "apis.shared.rbac.admin_service.get_app_role_admin_service",
+        return_value=role_service,
+    ), patch(
+        # Patched on the service, not the repository: ``_tool_labels`` receives
+        # an already-constructed ``ToolCatalogService``, so swapping the repo
+        # accessor comes too late.
+        "apis.app_api.tools.service.ToolCatalogService.get_tool",
+        new=AsyncMock(return_value=None),
+    ), patch(
+        # Same shape: ``_memory_labels`` gets a constructed service.
+        "apis.shared.memory.service.MemorySpaceService.resolve_permission",
+        new=MagicMock(return_value=(None, None)),
+    ):
+        yield
+
+
 def _make_assistant(**overrides) -> Assistant:
     defaults = dict(
         assistantId="ast-001",

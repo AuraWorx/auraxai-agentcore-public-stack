@@ -529,6 +529,11 @@ class FeedbackProfile(BaseModel):
     up: int = 0
     down: int = 0
     by_turn_class: Optional[FeedbackByTurnClass] = Field(None, alias="byTurnClass")
+    # Down-thumb reason codes, ``{code: count}`` over the closed set in
+    # ``FEEDBACK_REASONS`` — the same split the fleet view reports (#1152),
+    # here for the one conversation an admin has drilled into: the fleet says
+    # *how much*, this says *why this session*. A code, never free text.
+    reasons: Dict[str, int] = Field(default_factory=dict)
     unjoined: int = 0
     # Down-thumbs the user followed with a retry-with-correction, and what
     # that rework cost: the thumbed call(s) plus the retry turn's calls
