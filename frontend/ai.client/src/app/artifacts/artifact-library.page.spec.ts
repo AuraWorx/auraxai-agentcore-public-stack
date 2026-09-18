@@ -16,6 +16,8 @@ import {
 } from '../session/services/artifacts/artifact-share.service';
 import { LocalSettingsService, type ViewMode } from '../services/local-settings.service';
 import { ToastService } from '../services/toast/toast.service';
+import { UserService } from '../auth/user.service';
+import { ArtifactShareModalComponent } from '../session/components/message-list/components/artifact/artifact-share-modal.component';
 
 function stubShared(
   overrides: Partial<SharedWithMeArtifact> = {},
@@ -101,6 +103,13 @@ describe('ArtifactLibraryPage', () => {
         { provide: LocalSettingsService, useValue: mockSettings },
         { provide: ToastService, useValue: mockToast },
         { provide: Dialog, useValue: mockDialog },
+        // Stubbed rather than real: the real one computes off SessionService,
+        // which would drag HTTP into a page test that only needs an address
+        // to seed the share dialog's allowlist with.
+        {
+          provide: UserService,
+          useValue: { currentUser: () => ({ email: 'me@x.com' }) },
+        },
       ],
     });
   });
@@ -153,6 +162,7 @@ describe('ArtifactLibraryPage', () => {
       totalCount: () => number;
       tabCount: () => number;
       load: () => Promise<void>;
+      share: (item: LibraryArtifact) => void;
       rename: (item: LibraryArtifact) => Promise<void>;
       confirmDelete: (item: LibraryArtifact) => Promise<void>;
       busy: () => string | null;
@@ -631,6 +641,73 @@ describe('ArtifactLibraryPage', () => {
     });
   });
 
+  describe('share', () => {
+    it('opens the share dialog pinned to the row\'s version', async () => {
+      // The library lists HEAD, one row per artifact, so this is the
+      // version the dialog must caption and pin. A share never follows
+      // HEAD, so getting this wrong would silently share the wrong bytes.
+      mockHttp.listLibrary.mockResolvedValue([
+        stubArtifact({ artifactId: 'a', version: 4, title: 'Quarterly plan' }),
+      ]);
+      const c = api(await createComponent());
+
+      c.share(c.items()[0]);
+
+      expect(mockDialog.open).toHaveBeenCalledWith(
+        ArtifactShareModalComponent,
+        {
+          data: {
+            artifactId: 'a',
+            version: 4,
+            title: 'Quarterly plan',
+            ownerEmail: 'me@x.com',
+          },
+        },
+      );
+    });
+
+    it('offers share on your own rows and not on received ones', async () => {
+      // A received artifact has no artifact id — the share id is the only
+      // handle on it — so there is nothing to re-share. The button must
+      // not render rather than render and fail.
+      mockHttp.listLibrary.mockResolvedValue([stubArtifact({ title: 'Mine' })]);
+      mockShares.listSharedWithMe.mockResolvedValue({
+        artifacts: [stubShared({ title: 'Theirs' })],
+        nextCursor: null,
+      });
+      const fixture = await createComponent();
+      const host = fixture.nativeElement as HTMLElement;
+
+      const shareLabels = [...host.querySelectorAll('li .sr-only')]
+        .map((el) => (el.textContent ?? '').trim())
+        .filter((t) => t.startsWith('Share '));
+
+      expect(shareLabels).toHaveLength(1);
+      expect(shareLabels[0]).toContain('Mine');
+      expect(shareLabels[0]).not.toContain('Theirs');
+    });
+
+    it('carries the version in the accessible name, in both views', async () => {
+      // The icon is the same glyph as the conversation share, and the row
+      // is captioned with a version only when it is > 1 — so the version
+      // the link will pin has to be in the name itself.
+      mockHttp.listLibrary.mockResolvedValue([
+        stubArtifact({ version: 4, title: 'Quarterly plan' }),
+      ]);
+      for (const mode of ['list', 'grid'] as ViewMode[]) {
+        mockSettings.artifactsViewMode.set(mode);
+        const fixture = await createComponent();
+        const host = fixture.nativeElement as HTMLElement;
+        const label = [...host.querySelectorAll('.sr-only')]
+          .map((el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim())
+          .find((t) => t.startsWith('Share '));
+        expect(label, `view mode: ${mode}`).toBe(
+          'Share Quarterly plan, version 4',
+        );
+      }
+    });
+  });
+
   describe('delete', () => {
     it('removes the row only after the request succeeds', async () => {
       mockHttp.listLibrary.mockResolvedValue([
@@ -688,12 +765,19 @@ describe('ArtifactLibraryPage', () => {
 
   describe('grid card footer', () => {
     it('keeps both button labels in the DOM when they collapse', async () => {
-      // The footer carries four controls and the card is ~13rem wide at
+      // The footer carries five controls and the card is ~13rem wide at
       // three columns on a 1080px window, so a container query drops the
-      // "Open" / "Conversation" text below 19rem. It must be dropped to
+      // "Open" / "Conversation" text below 21rem. It must be dropped to
       // `sr-only`, never `hidden`: these buttons have no aria-label, so
       // removing the text would leave them with no accessible name at
       // exactly the width where they become bare icons.
+      //
+      // ⚠️ The threshold is a measured number, not a style choice: the
+      // labelled row needs 326px and the container is 306px at three
+      // columns, so a threshold below 21rem leaves the labels showing at
+      // a width where the last icon is clipped. This assertion is the
+      // only thing standing between the next control added to this row
+      // and that regression — re-measure in a browser before changing it.
       mockSettings.artifactsViewMode.set('grid');
       mockHttp.listLibrary.mockResolvedValue([stubArtifact()]);
       const fixture = await createComponent();
@@ -704,7 +788,7 @@ describe('ArtifactLibraryPage', () => {
       );
       expect(labels).toHaveLength(2);
       for (const label of labels) {
-        expect(label.className).toContain('@max-[19rem]:sr-only');
+        expect(label.className).toContain('@max-[21rem]:sr-only');
         expect(label.className).not.toContain('hidden');
       }
     });

@@ -177,8 +177,18 @@ INLINE_DOCUMENT_MAX_BYTES = int(
 # attachment turns exceed it, several with only 3–4 files, so the per-file
 # cap above and the SPA's 5-file cap do not protect on their own.
 # ``0`` (or any non-positive value) disables the aggregate budget.
+#
+# Why 7.0 MB and not the 7.5 MB the arithmetic above suggests: base64 of N raw
+# bytes is ``4*ceil(N/3)``, so 7,500,000 encodes to **exactly 10,000,000** — the
+# quota itself, with nothing left for the event's JSON envelope (role, content
+# keys, the prompt text block, per-file metadata, the wrapper). A guard whose
+# default sits precisely on the break point it exists to stay under does not
+# prevent the failure it was written for. 7,000,000 encodes to 9,333,336 and
+# leaves ~666 KB of headroom, which comfortably covers the envelope while still
+# admitting every attachment turn measured in prod (p90 cluster 2.58 MB, largest
+# legitimate 29.89 MB — already over either number and correctly trimmed).
 INLINE_ATTACHMENTS_MAX_TOTAL_BYTES = int(
-    os.environ.get("INLINE_ATTACHMENTS_MAX_TOTAL_BYTES", 7_500_000)  # 7.5MB
+    os.environ.get("INLINE_ATTACHMENTS_MAX_TOTAL_BYTES", 7_000_000)  # 7.0MB
 )
 
 # Files per message. The SPA enforces the same number client-side

@@ -4,6 +4,7 @@ import {
   cleanCeiling,
   downRate,
   feedbackByTurnClassLine,
+  feedbackImplicitLine,
   feedbackRetryLine,
   formatBytes,
   formatEvidenceValue,
@@ -48,6 +49,13 @@ describe('session-profile.util', () => {
       expect(feedbackRetryLine({ up: 0, down: 1 })).toBeNull();
       expect(feedbackRetryLine({ up: 0, down: 1, retried: 1 })).toBe('1 retried');
       expect(feedbackRetryLine({ up: 0, down: 2, retried: 2, reworkUsd: 0.351 })).toBe('2 retried · $0.35 rework');
+    });
+
+    it('feedbackImplicitLine names implicit signals apart from the thumbs', () => {
+      expect(feedbackImplicitLine({ up: 1, down: 0 })).toBeNull();
+      expect(feedbackImplicitLine({ up: 1, down: 0, implicit: null })).toBeNull();
+      expect(feedbackImplicitLine({ up: 1, down: 0, implicit: { copied: 0, continued: 0 } })).toBeNull();
+      expect(feedbackImplicitLine({ up: 0, down: 0, implicit: { copied: 3, continued: 1 } })).toBe('3 copied · 1 continued');
     });
 
     it('feedbackByTurnClassLine is null when the turn class is not tracked', () => {

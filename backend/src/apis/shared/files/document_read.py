@@ -40,6 +40,7 @@ import io
 import logging
 import os
 import re
+import time
 import uuid
 import zipfile
 from dataclasses import dataclass, field
@@ -76,6 +77,14 @@ DOCUMENT_READ_HARD_MAX_PAGES = int(os.environ.get("DOCUMENT_READ_HARD_MAX_PAGES"
 DOCUMENT_READ_MAX_MATCHES = int(os.environ.get("DOCUMENT_READ_MAX_MATCHES", 40))
 #: Index mode lists a snippet for at most this many pages.
 DOCUMENT_READ_INDEX_PAGES = int(os.environ.get("DOCUMENT_READ_INDEX_PAGES", 40))
+#: Wall-clock bound on one pattern scan. The backstop behind
+#: ``catastrophic_pattern``: a single ``re.search`` cannot be cancelled, but the
+#: walk across lines and pages can be stopped, so a merely-slow pattern over a
+#: long document degrades to a partial answer instead of hanging the turn to the
+#: 600 s SSE timeout. ``0`` disables the bound.
+DOCUMENT_READ_PATTERN_BUDGET_SECONDS = float(
+    os.environ.get("DOCUMENT_READ_PATTERN_BUDGET_SECONDS", 2.0)
+)
 #: Characters kept per matching / snippet line.
 _LINE_CHARS = 200
 _SNIPPET_CHARS = 90
@@ -398,19 +407,22 @@ def _pdf_pages(raw: bytes, pages: Tuple[int, int], limit: int, base: Dict[str, A
 
 
 def _pdf_pattern(raw: bytes, pattern: str, base: Dict[str, Any]) -> DocumentReadResult:
-    regex = _compile(pattern)
+    regex, note = _compile(pattern)
+    clock = _Budget(DOCUMENT_READ_PATTERN_BUDGET_SECONDS)
     pdf = _open_pdf(raw)
+    pages_searched = 0
     try:
         count = len(pdf)
         matches: List[Dict[str, Any]] = []
         pages_matched: List[int] = []
         for index in range(count):
-            if len(matches) >= DOCUMENT_READ_MAX_MATCHES:
+            if len(matches) >= DOCUMENT_READ_MAX_MATCHES or clock.out_of_time():
                 break
+            pages_searched = index + 1
             lines = _pdf_page_text(pdf, index).splitlines()
             page_no = index + 1
             hit = False
-            for entry in _grep_lines(lines, regex, DOCUMENT_READ_MAX_MATCHES - len(matches)):
+            for entry in _grep_lines(lines, regex, DOCUMENT_READ_MAX_MATCHES - len(matches), clock):
                 entry["page"] = page_no
                 matches.append(entry)
                 hit = True
@@ -429,6 +441,15 @@ def _pdf_pattern(raw: bytes, pattern: str, base: Dict[str, Any]) -> DocumentRead
         "matches": matches,
         "hint": "Call again with page_range to read the matching pages at full fidelity.",
     }
+    if note:
+        payload["pattern_note"] = note
+    if clock.expired:
+        payload["timed_out"] = True
+        payload["pages_searched"] = pages_searched
+        payload["hint"] = (
+            f"The search ran out of time after {pages_searched} of {count} pages; these are "
+            "the matches found so far. Use a simpler pattern, or read a page_range directly."
+        )
     return DocumentReadResult(mode="pattern", payload=payload, pages_returned=0, format="pdf")
 
 
@@ -525,18 +546,130 @@ def _docx_read(raw: bytes, pattern: Optional[str], offset: int, base: Dict[str, 
 # ---------------------------------------------------------------------------
 
 
-def _compile(pattern: str) -> "re.Pattern[str]":
+def _scan_flags(text: str):
+    """Yield ``(index, char)`` for the regex-significant characters of ``text``
+    — skipping escaped characters and the contents of ``[...]`` classes, where
+    ``*``, ``+``, ``|`` and parentheses are literals."""
+    i, in_class, n = 0, False, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+            i += 1
+            continue
+        yield i, ch
+        i += 1
+
+
+def _unbounded_quantifier_at(pattern: str, i: int) -> bool:
+    """Is there an unbounded quantifier (``*``, ``+`` or ``{n,}``) at ``i``?"""
+    if i >= len(pattern):
+        return False
+    if pattern[i] in "*+":
+        return True
+    if pattern[i] == "{":
+        close = pattern.find("}", i)
+        return close != -1 and pattern[i + 1: close].endswith(",")
+    return False
+
+
+def _has_unbounded_quantifier(body: str) -> bool:
+    return any(
+        _unbounded_quantifier_at(body, i) for i, ch in _scan_flags(body) if ch in "*+{"
+    )
+
+
+def catastrophic_pattern(pattern: str) -> bool:
+    """Whether ``pattern`` has the nested-quantifier shape that makes Python's
+    backtracking engine run in exponential time.
+
+    ``(a+)+``, ``(\\w+\\s*)*``, ``(a+|b){2,}`` — an unbounded quantifier applied to
+    a group that itself contains one. Measured on the real engine: ``(a+)+$``
+    against ``"a"*24 + "!"`` takes 0.87 s, 26 takes 3.5 s, 28 takes 14 s.
+    Extracted PDF lines run 60–100 characters, so such a pattern never returns.
+
+    Deliberately narrow. It flags only the unambiguous family, so ordinary
+    patterns — ``\\d+``, ``(invoice|receipt)``, ``(foo)+`` — are never refused.
+    Shapes it does not catch (overlapping literal alternations like ``(a|a)+``,
+    backreference blowups) are bounded by the wall-clock budget instead, not by
+    this test.
+    """
+    if not pattern:
+        return False
+    starts: List[int] = []
+    for i, ch in _scan_flags(pattern):
+        if ch == "(":
+            starts.append(i)
+        elif ch == ")" and starts:
+            body = pattern[starts.pop() + 1: i]
+            if _unbounded_quantifier_at(pattern, i + 1) and _has_unbounded_quantifier(body):
+                return True
+    return False
+
+
+def _compile(pattern: str) -> Tuple["re.Pattern[str]", Optional[str]]:
+    """``(regex, note)``. The note is non-``None`` when the pattern was searched
+    literally instead of as a regex, and is carried to the model on the payload
+    so a silently different result is never presented as the requested one.
+
+    Two reasons to fall back, both degrading rather than erroring: the pattern
+    does not compile, or it has the nested-quantifier shape that would hang the
+    turn (``catastrophic_pattern``)."""
+    if catastrophic_pattern(pattern):
+        logger.warning("document_read: refusing catastrophic pattern, searching literally")
+        return re.compile(re.escape(pattern), re.IGNORECASE), (
+            "This pattern nests one unbounded quantifier inside another, which can take "
+            "exponential time to match, so it was searched as literal text instead. "
+            "Rewrite it without the nesting (for example '\\w+' rather than '(\\w+)+')."
+        )
     try:
-        return re.compile(pattern, re.IGNORECASE)
+        return re.compile(pattern, re.IGNORECASE), None
     except re.error:
-        return re.compile(re.escape(pattern), re.IGNORECASE)
+        return re.compile(re.escape(pattern), re.IGNORECASE), (
+            "This pattern is not a valid regular expression, so it was searched as literal text."
+        )
 
 
-def _grep_lines(lines: Sequence[str], regex: "re.Pattern[str]", budget: int) -> List[Dict[str, Any]]:
+class _Budget:
+    """Wall-clock bound on one pattern scan.
+
+    The backstop behind ``catastrophic_pattern``: it cannot interrupt a single
+    ``re.search`` — CPython exposes no way to cancel one, and the scan runs in a
+    worker thread where signals are unavailable — but it stops the *walk*, so a
+    merely-slow pattern over a 200-page document cannot run away. A scan that
+    runs out reports ``timed_out`` with the matches it already has.
+    """
+
+    __slots__ = ("_deadline", "expired")
+
+    def __init__(self, seconds: float = 0.0) -> None:
+        self._deadline = (time.monotonic() + seconds) if seconds > 0 else None
+        self.expired = False
+
+    def out_of_time(self) -> bool:
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            self.expired = True
+        return self.expired
+
+
+def _grep_lines(
+    lines: Sequence[str],
+    regex: "re.Pattern[str]",
+    budget: int,
+    clock: Optional[_Budget] = None,
+) -> List[Dict[str, Any]]:
     """Matching lines with ``_CONTEXT_LINES`` of context, 1-indexed."""
     out: List[Dict[str, Any]] = []
     for i, line in enumerate(lines):
-        if len(out) >= budget:
+        if len(out) >= budget or (clock is not None and clock.out_of_time()):
             break
         if not regex.search(line):
             continue
@@ -547,9 +680,10 @@ def _grep_lines(lines: Sequence[str], regex: "re.Pattern[str]", budget: int) -> 
 
 
 def _text_pattern(text: str, pattern: str, base: Dict[str, Any], unit: str) -> DocumentReadResult:
-    regex = _compile(pattern)
+    regex, note = _compile(pattern)
+    clock = _Budget(DOCUMENT_READ_PATTERN_BUDGET_SECONDS)
     lines = text.splitlines()
-    matches = _grep_lines(lines, regex, DOCUMENT_READ_MAX_MATCHES)
+    matches = _grep_lines(lines, regex, DOCUMENT_READ_MAX_MATCHES, clock)
     payload = {
         **base,
         "mode": "pattern",
@@ -560,6 +694,14 @@ def _text_pattern(text: str, pattern: str, base: Dict[str, Any], unit: str) -> D
         "truncated": len(matches) >= DOCUMENT_READ_MAX_MATCHES,
         "matches": matches,
     }
+    if note:
+        payload["pattern_note"] = note
+    if clock.expired:
+        payload["timed_out"] = True
+        payload["hint"] = (
+            "The search ran out of time; these are the matches found so far. "
+            "Use a simpler pattern, or read the document directly."
+        )
     return DocumentReadResult(mode="pattern", payload=payload, format=base.get("format"))
 
 

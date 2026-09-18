@@ -17,10 +17,17 @@ row-family summary in ``apis.shared.sessions.metadata``)::
     GSI_SK:  F#{message_id}
     sessionId, messageId, userId, value, reason?, signal, retryMessageId?, updatedAt, ttl
 
-``signal`` is ``"explicit"`` for a thumb. ``docs/specs/response-feedback.md``
-§10 adds implicit signals (copy, continue, edit-and-resend, abandonment) to
-this same row family under ``signal: "implicit"``; every reader here filters
-to explicit rows so that phase needs no backfill and the two are never summed.
+``signal`` is ``"explicit"`` for a thumb. Implicit signals
+(``docs/specs/response-feedback.md`` §10 — today ``copy`` and ``continue``)
+live in the same family under their own key so they never collide with the
+thumb::
+
+    SK:      F#{session_id}#{message_id}#{kind}
+    GSI_SK:  F#{message_id}#{kind}
+    sessionId, messageId, userId, signal="implicit", kind, count (ADD), updatedAt, ttl
+
+Every thumb reader filters to explicit rows, so the two are never summed
+(§10's rule); the admin profile counts implicit rows per kind separately.
 
 ``retryMessageId`` is the index of the user message the SPA sent as a
 *retry with correction* after a down-thumb (response-feedback spec §7 "the
@@ -53,7 +60,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from .models import FEEDBACK_REASONS, MessageFeedback
+from .models import FEEDBACK_REASONS, IMPLICIT_SIGNAL_KINDS, MessageFeedback
 from .preview import is_preview_session
 
 logger = logging.getLogger(__name__)
@@ -233,6 +240,40 @@ async def delete_message_feedback(session_id: str, user_id: str, message_id: int
         down=-1 if previous_value == -1 else 0,
     )
     return True
+
+
+async def record_implicit_signal(session_id: str, user_id: str, message_id: int, kind: str) -> None:
+    """Count one implicit signal on one message (``ADD count :one``). Same
+    ownership rule as a thumb; a kind outside :data:`IMPLICIT_SIGNAL_KINDS`
+    is refused so the family stays a closed vocabulary. No session rollup:
+    the rows are the read model and the profile counts them directly."""
+    if kind not in IMPLICIT_SIGNAL_KINDS:
+        raise ValueError("implicit signal kind must be one of the fixed codes")
+    if is_preview_session(session_id):
+        return
+    table = _table()
+    await _owned_session_sk(session_id, user_id, table)
+    ttl = int((datetime.now(timezone.utc) + timedelta(days=FEEDBACK_TTL_DAYS)).timestamp())
+    table.update_item(
+        Key={"PK": f"USER#{user_id}", "SK": f"{feedback_sk(session_id, message_id)}#{kind}"},
+        UpdateExpression=(
+            "SET GSI_PK = :gpk, GSI_SK = :gsk, sessionId = :sid, messageId = :mid, userId = :uid, "
+            "#signal = :sig, kind = :kind, updatedAt = :now, #ttl = :ttl ADD #count :one"
+        ),
+        ExpressionAttributeNames={"#signal": "signal", "#ttl": "ttl", "#count": "count"},
+        ExpressionAttributeValues={
+            ":gpk": f"SESSION#{session_id}",
+            ":gsk": f"F#{message_id}#{kind}",
+            ":sid": session_id,
+            ":mid": int(message_id),
+            ":uid": user_id,
+            ":sig": "implicit",
+            ":kind": kind,
+            ":now": _now(),
+            ":ttl": ttl,
+            ":one": 1,
+        },
+    )
 
 
 def query_session_feedback(table, session_id: str, user_id: Optional[str] = None) -> Dict[str, MessageFeedback]:

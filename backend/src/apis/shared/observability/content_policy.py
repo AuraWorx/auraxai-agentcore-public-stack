@@ -212,6 +212,8 @@ FEEDBACK_ROW_PROJECTION: Tuple[str, ...] = (
     "value",
     "reason",
     "signal",
+    "kind",             # implicit rows: copy / continue (closed enum)
+    "count",            # implicit rows: how many times it fired
     "retryMessageId",   # a message index, the retry-with-correction link
     "updatedAt",
 )
