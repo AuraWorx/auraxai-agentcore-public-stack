@@ -107,13 +107,27 @@ def test_agent_switch_churn_threshold():
     assert dg.agent_switch_churn(_known(agent_switch_count=3)).severity == "info"
 
 
-def test_agent_cache_bypass_names_only_the_non_key_described_injected_ids():
-    # create_artifact is key-described (promoted); analyze_spreadsheet is not.
-    facts = _known(enabled_tools=["calculator", "create_artifact", "analyze_spreadsheet", "workspace_files"])
+def test_agent_cache_bypass_names_only_the_non_key_described_injected_ids(monkeypatch):
+    # The rule's mechanics, pinned against fixed sets so the test does not
+    # re-litigate which families are promoted today (that is
+    # tests/shared/test_injected_tool_cache_eligibility.py's job).
+    monkeypatch.setattr(dg, "INJECTED_TOOL_IDS", frozenset({"a_tool", "b_tool", "c_tool"}))
+    monkeypatch.setattr(dg, "KEY_DESCRIBED_INJECTED_TOOL_IDS", frozenset({"a_tool"}))
+    facts = _known(enabled_tools=["calculator", "a_tool", "c_tool", "b_tool"])
     d = dg.agent_cache_bypass(facts)
     assert d is not None
-    assert d.evidence["bypassingToolIds"] == ["analyze_spreadsheet", "workspace_files"]
-    assert dg.agent_cache_bypass(_known(enabled_tools=["calculator", "create_artifact"])) is None
+    assert d.evidence["bypassingToolIds"] == ["b_tool", "c_tool"]  # sorted, registry ids excluded
+    assert dg.agent_cache_bypass(_known(enabled_tools=["calculator", "a_tool"])) is None
+
+
+def test_agent_cache_bypass_tracks_the_live_promotion_state():
+    # Word/Excel/PowerPoint/workspace and artifacts are promoted; spreadsheet
+    # analysis still closes over assistant_id and bypasses.
+    promoted = ["create_artifact", "create_word_document", "create_excel_spreadsheet",
+                "create_powerpoint_presentation", "workspace_files"]
+    assert dg.agent_cache_bypass(_known(enabled_tools=["calculator", *promoted])) is None
+    d = dg.agent_cache_bypass(_known(enabled_tools=[*promoted, "analyze_spreadsheet"]))
+    assert d is not None and d.evidence["bypassingToolIds"] == ["analyze_spreadsheet"]
 
 
 def test_large_toolset_counts_catalog_ids():
