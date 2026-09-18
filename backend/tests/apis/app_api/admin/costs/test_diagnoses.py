@@ -121,13 +121,14 @@ def test_agent_cache_bypass_names_only_the_non_key_described_injected_ids(monkey
 
 
 def test_agent_cache_bypass_tracks_the_live_promotion_state():
-    # Word/Excel/PowerPoint/workspace and artifacts are promoted; spreadsheet
-    # analysis still closes over assistant_id and bypasses.
+    # Every enabled_tools-gated injected family is promoted (spreadsheet
+    # analysis last, once assistant_id joined the cache key), so the rule is
+    # silent for any toolset today. It stays wired for the next family that
+    # closes over something the key does not carry.
     promoted = ["create_artifact", "create_word_document", "create_excel_spreadsheet",
-                "create_powerpoint_presentation", "workspace_files"]
+                "create_powerpoint_presentation", "workspace_files",
+                "analyze_spreadsheet", "list_spreadsheets"]
     assert dg.agent_cache_bypass(_known(enabled_tools=["calculator", *promoted])) is None
-    d = dg.agent_cache_bypass(_known(enabled_tools=[*promoted, "analyze_spreadsheet"]))
-    assert d is not None and d.evidence["bypassingToolIds"] == ["analyze_spreadsheet"]
 
 
 def test_large_toolset_counts_catalog_ids():

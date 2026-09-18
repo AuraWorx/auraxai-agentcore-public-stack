@@ -150,6 +150,15 @@ class PausedTurnSnapshot(BaseModel):
                     "Mantle turn targets the same region. None for non-Mantle turns and "
                     "snapshots written before the field existed.",
     )
+    assistant_id: Optional[str] = Field(
+        default=None,
+        alias="assistantId",
+        description="Assistant (RAG corpus) the paused turn ran against. It is an "
+                    "agent-cache key element because the spreadsheet-analysis tools "
+                    "close over it, so resume replays it verbatim to land on the "
+                    "paused agent's slot. None for assistant-less turns and snapshots "
+                    "written before the field existed (those miss and rebuild).",
+    )
     captured_at: str = Field(..., alias="capturedAt", description="ISO 8601 timestamp when the turn paused")
     expires_at: str = Field(..., alias="expiresAt", description="ISO 8601 timestamp after which the snapshot is no longer valid for resume")
 

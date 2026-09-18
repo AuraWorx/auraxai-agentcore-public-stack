@@ -7,8 +7,11 @@ bedrock-agentcore 1.21.0.
 **Status:** assessment complete. **Phase 1 built 2026-09-18** on
 `claude/load-testing-assessment-c794d7` (P1-A bytecode + warm-up, P1-B bounded
 CountTokens, P1-C session split memo + four families promoted, P1-D CORS synth
-guard). Spreadsheet-analysis cache promotion moved to Phase 2 (needs
-`assistant_id` in the key, the paused-turn snapshot and the resume path). The
+guard). Spreadsheet-analysis cache promotion followed on
+`feature/spreadsheet-tools-agent-cache` (PR #1154 is its base): `assistant_id`
+is now a `_create_cache_key` element, stamped on the construction snapshot,
+carried by `PausedTurnSnapshot.assistantId`, and replayed by the resume path;
+every `enabled_tools`-gated injected family is cache-eligible. The
 Dockerfile change is verified by review and `compileall` semantics only — the
 Docker daemon was not available for a local build; the `backend.yml` build is
 the proof. Phase 0 asks and the Phase 3 A/B rerun are still open.

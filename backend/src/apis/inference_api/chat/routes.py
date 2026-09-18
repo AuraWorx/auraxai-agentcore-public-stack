@@ -1634,6 +1634,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 # This path builds no injected tools, but shares a cache slot
                 # with the real turns that do. Read the slot; never seed it.
                 cache_write=False,
+                assistant_id=input_data.rag_assistant_id,
             )
             payload = await dispatch_app_tool_call(
                 agent,
@@ -1689,6 +1690,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 accessible_skill_ids=effective_skill_ids,
                 # Same partial-toolset hazard as app_tool_call above.
                 cache_write=False,
+                assistant_id=input_data.rag_assistant_id,
             )
             payload = dispatch_app_context_update(
                 agent,
@@ -2701,6 +2703,12 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 has_document_tools=await _document_tools_gate(
                     input_data.session_id, user_id
                 ),
+                # The assistant the original turn ran against is a key element
+                # (spreadsheet tools close over it). Replay the snapshot's
+                # value, not the request's: a snapshot written before the
+                # field existed carries None, which misses the slot and
+                # rebuilds — the pre-existing eviction path, never a wrong hit.
+                assistant_id=snapshot.assistant_id,
                 # Resume must rebuild the SAME cache key the original turn used,
                 # or the paused agent is orphaned. New snapshots carry the
                 # original turn's exact effective set in enabled_skills, so
@@ -2906,6 +2914,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 accessible_skill_ids=effective_skill_ids,
                 extra_tools_key_described=extra_tools_key_described,
                 has_document_tools=bool(document_tools),
+                assistant_id=input_data.rag_assistant_id,
             )
 
         # Resume requests must target interrupts that the cached agent

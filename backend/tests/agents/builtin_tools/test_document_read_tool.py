@@ -202,7 +202,9 @@ def test_cache_key_carries_the_document_tool_bit_without_moving_the_skills_hash(
     with_docs = service._create_cache_key(**base, skills_hash="k", document_tools=True)
     assert without != with_docs
     assert without[-1] == with_docs[-1] == "k"
-    assert without[-2] is False and with_docs[-2] is True
+    # Trailing layout: (..., document_tools, assistant_id, skills_hash).
+    assert without[-2] == with_docs[-2] == ""
+    assert without[-3] is False and with_docs[-3] is True
 
 
 # ---------------------------------------------------------------------------
