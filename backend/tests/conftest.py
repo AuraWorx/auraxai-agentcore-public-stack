@@ -294,6 +294,23 @@ def _guard_connect_ex(self, address):
     return _real_socket_connect_ex(self, address)
 
 
+# Warm tiktoken's BPE vocabulary *before* the guard arms. `csv_chunker` calls
+# `tiktoken.get_encoding("cl100k_base")`, which downloads the vocabulary from an
+# external CDN on first use and caches it on disk. That is a legitimate asset
+# fetch, not an escaped AWS call — but it is also a real network dependency of
+# the test run, which is why it only showed up on CI (cold cache) and never
+# locally (warm one). Fetching it here keeps the guarded window hermetic without
+# widening the allowlist, and makes the dependency explicit rather than
+# incidental. Best-effort: offline, the CSV chunker tests fail on their own terms
+# rather than on a confusing socket error.
+try:  # noqa: SIM105
+    import tiktoken as _tiktoken
+
+    _tiktoken.get_encoding("cl100k_base")
+except Exception:  # noqa: BLE001 - never block collection on a cache warm-up
+    pass
+
+
 if os.environ.get("AWS_TEST_ALLOW_OFF_BOX_SOCKETS") != "1":
     _socket.socket.connect = _guard_connect
     _socket.socket.connect_ex = _guard_connect_ex
