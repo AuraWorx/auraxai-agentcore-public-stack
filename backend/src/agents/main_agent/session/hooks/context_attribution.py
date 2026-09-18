@@ -45,8 +45,12 @@ model call. For non-Bedrock models ``count_tokens`` falls back to a heuristic,
 so the numbers are approximate there.
 """
 
+import hashlib
+import json
 import logging
-from typing import Any, Dict, Optional
+import threading
+from collections import OrderedDict
+from typing import Any, Dict, Optional, Tuple
 
 from strands.hooks import BeforeModelCallEvent, HookProvider, HookRegistry
 
@@ -55,6 +59,62 @@ logger = logging.getLogger(__name__)
 # Stashed on the per-session Strands agent instance.
 _SPLIT_ATTR = "_context_attribution_split"          # cached stable {systemTokens, toolTokens}
 _BREAKDOWN_ATTR = "_context_attribution_breakdown"  # latest per-turn breakdown dict
+
+# Process-level memo of the stable split, keyed by *session and configuration*
+# rather than by ``Agent`` instance. The instance attribute above is enough
+# only while one Agent serves a session for its whole life; it does not, for
+# every session whose injected tools keep it out of the agent cache (the
+# spreadsheet-analysis family — see `apis/shared/tools/injected.py`), for
+# `@`-mention turns, and for any Memory-Space binding. Those rebuild the Agent
+# every turn and, without this memo, paid the two cold-start CountTokens calls
+# every turn as well — on top of the SDK's own pre-call count, which is the
+# "counted three times per turn" of docs/specs/load-test-assessment-2026-09.md
+# §1 fix 1. The key carries a digest of the system prompt and of the full tool
+# specs, so any configuration change that would move the split misses cleanly.
+_SPLIT_MEMO_MAX = 512
+_split_memo: "OrderedDict[Tuple[str, str, str], Dict[str, int]]" = OrderedDict()
+_split_memo_lock = threading.Lock()
+
+
+def clear_split_memo() -> None:
+    """Drop every memoised split (tests, and any admin reset path)."""
+    with _split_memo_lock:
+        _split_memo.clear()
+
+
+def _digest(payload: Any) -> str:
+    try:
+        raw = json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        raw = repr(payload)
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _memo_key(session_id: str, agent: Any) -> Optional[Tuple[str, str, str]]:
+    """``(session, prompt digest, tool-spec digest)`` or None if any part is
+    unavailable — in which case the memo is simply not consulted."""
+    try:
+        prompt_payload = getattr(agent, "_system_prompt_content", None) or getattr(agent, "system_prompt", None)
+        specs = agent.tool_registry.get_all_tool_specs()
+    except Exception:  # noqa: BLE001 - never let key construction break a turn
+        return None
+    return (session_id, _digest(prompt_payload), _digest(specs))
+
+
+def _memo_get(key: Tuple[str, str, str]) -> Optional[Dict[str, int]]:
+    with _split_memo_lock:
+        split = _split_memo.get(key)
+        if split is not None:
+            _split_memo.move_to_end(key)
+        return dict(split) if split is not None else None
+
+
+def _memo_put(key: Tuple[str, str, str], split: Dict[str, int]) -> None:
+    with _split_memo_lock:
+        _split_memo[key] = dict(split)
+        _split_memo.move_to_end(key)
+        while len(_split_memo) > _SPLIT_MEMO_MAX:
+            _split_memo.popitem(last=False)
 
 
 def _has_inline_attachment(messages: Any) -> bool:
@@ -111,7 +171,16 @@ def get_prefix_token_split(agent: Any) -> Optional[Dict[str, int]]:
 
 
 class ContextAttributionHook(HookProvider):
-    """Compute the system / tools / messages token breakdown each turn."""
+    """Compute the system / tools / messages token breakdown each turn.
+
+    ``session_id`` enables the process-level split memo (see the module
+    comment): a rebuilt Agent for the same session and configuration adopts
+    the split its predecessor measured instead of re-counting. Without it the
+    split lives on the Agent instance only.
+    """
+
+    def __init__(self, session_id: Optional[str] = None) -> None:
+        self._session_id = session_id or None
 
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
         registry.add_callback(BeforeModelCallEvent, self._on_before_model_call)
@@ -130,6 +199,14 @@ class ContextAttributionHook(HookProvider):
         full = event.projected_input_tokens
 
         split = getattr(agent, _SPLIT_ATTR, None)
+        memo_key = _memo_key(self._session_id, agent) if (split is None and self._session_id) else None
+        if split is None and memo_key is not None:
+            split = _memo_get(memo_key)
+            if split is not None:
+                # A predecessor Agent for this session + configuration already
+                # measured it; adopt without spending two CountTokens calls.
+                setattr(agent, _SPLIT_ATTR, split)
+                logger.debug("Context attribution split adopted from session memo")
         if split is None and _has_inline_attachment(agent.messages):
             # Untrustworthy residual (see module docstring) — leave the split
             # uncomputed and try again on a turn without inline bytes.
@@ -164,6 +241,8 @@ class ContextAttributionHook(HookProvider):
                 "toolTokens": max(0, full - no_tools),
             }
             setattr(agent, _SPLIT_ATTR, split)
+            if memo_key is not None:
+                _memo_put(memo_key, split)
 
         if full is None:
             # No authoritative total this turn — can't place the messages

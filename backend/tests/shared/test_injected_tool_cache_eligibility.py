@@ -12,9 +12,13 @@ space — so these lean on the "unless proven, bypass" default.
 
 from apis.shared.tools.injected import (
     ARTIFACT_TOOL_IDS,
+    EXCEL_SPREADSHEET_TOOL_IDS,
     INJECTED_TOOL_IDS,
     KEY_DESCRIBED_INJECTED_TOOL_IDS,
+    POWERPOINT_PRESENTATION_TOOL_IDS,
     SPREADSHEET_TOOL_IDS,
+    WORD_DOCUMENT_TOOL_IDS,
+    WORKSPACE_TOOL_IDS,
     injected_tools_are_key_described,
 )
 
@@ -51,21 +55,42 @@ class TestKeyDescribedPredicate:
         )
         assert not injected_tools_are_key_described([], has_memory_binding=True)
 
-    def test_every_family_still_awaiting_promotion_bypasses(self):
-        """The experiment measures one variable (spec §6).
-
-        Word/Excel/PowerPoint/workspace capture only session+user, so they are
-        eligible on the same reasoning as artifacts — but they stay out until the
-        artifact arm reads clean. This fails the day someone widens the set
-        without revisiting the experiment.
-        """
-        for tool_id in INJECTED_TOOL_IDS - KEY_DESCRIBED_INJECTED_TOOL_IDS:
-            assert not injected_tools_are_key_described(
+    def test_session_only_families_are_key_described(self):
+        """Word/Excel/PowerPoint/workspace close over `(session_id, user_id)`
+        only — both key elements — so they are eligible on exactly the artifact
+        reasoning. Promoted once the artifact arm read clean (spec §8)."""
+        for tool_id in (
+            WORD_DOCUMENT_TOOL_IDS
+            | EXCEL_SPREADSHEET_TOOL_IDS
+            | POWERPOINT_PRESENTATION_TOOL_IDS
+            | WORKSPACE_TOOL_IDS
+        ):
+            assert injected_tools_are_key_described(
                 [tool_id], has_memory_binding=False
-            ), f"{tool_id} was promoted without updating the experiment"
+            ), f"{tool_id} closes over session+user only and must be cacheable"
 
-    def test_the_experiment_arm_is_artifacts_only(self):
-        assert KEY_DESCRIBED_INJECTED_TOOL_IDS == ARTIFACT_TOOL_IDS
+    def test_a_turn_mixing_every_promoted_family_is_key_described(self):
+        assert injected_tools_are_key_described(
+            [
+                "create_artifact",
+                "create_word_document",
+                "create_excel_spreadsheet",
+                "create_powerpoint_presentation",
+                "workspace_files",
+                "web_search",
+            ],
+            has_memory_binding=False,
+        )
+
+    def test_the_only_unpromoted_family_is_spreadsheet_analysis(self):
+        """Fails the day a new injected family is added without deciding its
+        cache eligibility, and the day spreadsheet analysis is promoted without
+        first threading `assistant_id` through the key and the paused-turn
+        snapshot (see the module comment in `injected.py`)."""
+        assert INJECTED_TOOL_IDS - KEY_DESCRIBED_INJECTED_TOOL_IDS == SPREADSHEET_TOOL_IDS
+
+    def test_artifacts_remain_in_the_set(self):
+        assert ARTIFACT_TOOL_IDS <= KEY_DESCRIBED_INJECTED_TOOL_IDS
 
     def test_accepts_a_set_as_well_as_a_list(self):
         # Callers pass whatever `effective_enabled_tools` happens to be.

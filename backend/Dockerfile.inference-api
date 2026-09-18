@@ -8,6 +8,15 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.12 /uv /uvx /bin/
 
 WORKDIR /app
 
+# Compile every installed package to bytecode at build time. uv skips this by
+# default, so the venv shipped with no .pyc files and every fresh AgentCore
+# micro-VM compiled the whole dependency tree (strands, boto3, sympy behind the
+# calculator tool, ...) on the first message of a new session. The runtime user
+# is non-root and each micro-VM starts from the image layer, so nothing written
+# at runtime survives to the next session — the image is the only place the
+# bytecode can live. See docs/specs/load-test-assessment-2026-09.md §1 fix 2.
+ENV UV_COMPILE_BYTECODE=1
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc=4:14.2.0-1 \
@@ -47,6 +56,11 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy application code
 COPY backend/src /app/src
+
+# Precompile our own source the same way the venv was (see UV_COMPILE_BYTECODE
+# above). `-q` keeps the layer log quiet; a syntax error still fails the build,
+# which is the right time to learn about it.
+RUN python -m compileall -q /app/src
 
 # Create necessary directories
 RUN mkdir -p /app/output /app/uploads /app/generated_images

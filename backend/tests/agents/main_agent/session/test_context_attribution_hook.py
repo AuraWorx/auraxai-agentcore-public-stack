@@ -11,6 +11,7 @@ from strands.hooks import BeforeModelCallEvent
 
 from agents.main_agent.session.hooks.context_attribution import (
     ContextAttributionHook,
+    clear_split_memo,
     get_context_breakdown,
 )
 
@@ -246,3 +247,102 @@ class TestInlineAttachmentGuard:
         parts = _parts(get_context_breakdown(agent))
         assert parts["system"] == 100 and parts["tools"] == 540
         assert parts["messages"] == 95_000 - 640, "the document lands in messages, where it belongs"
+
+
+class TestSessionSplitMemo:
+    """A rebuilt Agent for the same session + configuration adopts the split
+    its predecessor measured instead of paying two CountTokens calls again.
+
+    Sessions whose injected tools keep them out of the agent cache rebuild
+    their Agent every turn; without the memo that was 2 extra counts per turn
+    (docs/specs/load-test-assessment-2026-09.md §1 fix 1)."""
+
+    def setup_method(self):
+        clear_split_memo()
+
+    def teardown_method(self):
+        clear_split_memo()
+
+    @pytest.mark.asyncio
+    async def test_second_agent_for_same_session_makes_no_count_calls(self):
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        first_model = FakeModel(system=100, per_msg=10, tool_overhead=500)
+        first = FakeAgent(first_model, messages=list(msgs))
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(_event(first, projected=650))
+        assert len(first_model.calls) == 2
+
+        second_model = FakeModel(system=100, per_msg=10, tool_overhead=500)
+        second = FakeAgent(second_model, messages=list(msgs) + [{"role": "assistant", "content": [{"text": "yo"}]}])
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(_event(second, projected=660))
+
+        assert second_model.calls == []
+        assert _parts(get_context_breakdown(second)) == {"system": 100, "tools": 540, "messages": 20}
+
+    @pytest.mark.asyncio
+    async def test_different_session_recounts(self):
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(
+            _event(FakeAgent(FakeModel(), messages=list(msgs)), projected=650)
+        )
+        other_model = FakeModel()
+        await ContextAttributionHook(session_id="s2")._on_before_model_call(
+            _event(FakeAgent(other_model, messages=list(msgs)), projected=650)
+        )
+        assert len(other_model.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_changed_tools_or_prompt_recounts(self):
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(
+            _event(FakeAgent(FakeModel(), messages=list(msgs)), projected=650)
+        )
+
+        tools_changed = FakeModel()
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(
+            _event(FakeAgent(tools_changed, messages=list(msgs), tool_specs=[{"name": "t"}, {"name": "u"}]), projected=700)
+        )
+        assert len(tools_changed.calls) == 2
+
+        prompt_changed = FakeModel()
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(
+            _event(FakeAgent(prompt_changed, messages=list(msgs), system_prompt="OTHER"), projected=650)
+        )
+        assert len(prompt_changed.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_means_instance_only(self):
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        await ContextAttributionHook()._on_before_model_call(
+            _event(FakeAgent(FakeModel(), messages=list(msgs)), projected=650)
+        )
+        again = FakeModel()
+        await ContextAttributionHook()._on_before_model_call(
+            _event(FakeAgent(again, messages=list(msgs)), projected=650)
+        )
+        assert len(again.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_split_is_not_memoised(self):
+        # Inline attachment → the split is skipped, so nothing must be stored
+        # for a later clean agent to adopt.
+        pdf = {"role": "user", "content": [{"document": {"format": "pdf", "name": "d", "source": {"bytes": b"%PDF"}}}]}
+        skipped = FakeModel()
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(
+            _event(FakeAgent(skipped, messages=[pdf]), projected=650)
+        )
+        assert skipped.calls == []
+
+        clean = FakeModel()
+        await ContextAttributionHook(session_id="s1")._on_before_model_call(
+            _event(FakeAgent(clean, messages=[{"role": "user", "content": [{"text": "hi"}]}]), projected=650)
+        )
+        assert len(clean.calls) == 2
+
+    def test_memo_is_bounded(self):
+        from agents.main_agent.session.hooks import context_attribution as ca
+
+        for i in range(ca._SPLIT_MEMO_MAX + 50):
+            ca._memo_put((f"s{i}", "p", "t"), {"systemTokens": 1, "toolTokens": 1})
+        assert len(ca._split_memo) == ca._SPLIT_MEMO_MAX
+        assert ca._memo_get(("s0", "p", "t")) is None
+        assert ca._memo_get((f"s{ca._SPLIT_MEMO_MAX + 49}", "p", "t")) is not None

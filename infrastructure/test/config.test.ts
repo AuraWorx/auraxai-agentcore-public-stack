@@ -1216,6 +1216,79 @@ describe('RAG Ingestion Configuration', () => {
   });
 
   // ============================================================
+  // Uploads-bucket CORS guard
+  // ============================================================
+
+  describe('Top-level CORS origins guard', () => {
+    /**
+     * Without an origin the uploads bucket is created with no CORS rule and
+     * every browser upload fails at S3. This used to be a console.warn; a
+     * production-mirror environment shipped the bug that way
+     * (docs/specs/load-test-assessment-2026-09.md §1 fix 4).
+     */
+    beforeEach(() => {
+      // The shared beforeEach seeds domainName; remove it so the top-level
+      // origin list is genuinely empty.
+      app = new cdk.App();
+      app.node.setContext('projectPrefix', 'test-project');
+      app.node.setContext('awsRegion', 'us-east-1');
+      app.node.setContext('awsAccount', '123456789012');
+      app.node.setContext('vpcCidr', '10.0.0.0/16');
+      app.node.setContext('frontend', { cloudFrontPriceClass: 'PriceClass_100' });
+      app.node.setContext('appApi', { cpu: 256, memory: 512, desiredCount: 1, maxCapacity: 2 });
+      app.node.setContext('inferenceApi', {});
+      app.node.setContext('fineTuning', {});
+      app.node.setContext('artifacts', { retentionDays: 90, extraFrameAncestors: [] });
+      app.node.setContext('mcpSandbox', { extraFrameAncestors: [] });
+      app.node.setContext('ragIngestion', {
+        additionalCorsOrigins: '',
+        lambdaMemorySize: 10240,
+        lambdaTimeout: 900,
+        embeddingModel: 'amazon.titan-embed-text-v2',
+        vectorDimension: 1024,
+        vectorDistanceMetric: 'cosine',
+      });
+      delete process.env.CDK_DOMAIN_NAME;
+      delete process.env.CDK_CORS_ORIGINS;
+      delete process.env.CDK_ALLOW_NO_CORS_ORIGINS;
+    });
+
+    afterEach(() => {
+      delete process.env.CDK_ALLOW_NO_CORS_ORIGINS;
+    });
+
+    test('fails synth when neither a domain nor CORS origins is configured', () => {
+      expect(() => loadConfig(app)).toThrow(/uploads bucket would be created without a CORS rule/);
+    });
+
+    test('passes when CDK_DOMAIN_NAME supplies the origin', () => {
+      process.env.CDK_DOMAIN_NAME = 'ai.example.edu';
+
+      const config = loadConfig(app);
+
+      expect(config.corsOrigins).toBe('https://ai.example.edu');
+    });
+
+    test('passes when CDK_CORS_ORIGINS supplies an origin without a domain', () => {
+      process.env.CDK_CORS_ORIGINS = 'http://localhost:4200';
+
+      expect(loadConfig(app).corsOrigins).toBe('http://localhost:4200');
+    });
+
+    test('CDK_ALLOW_NO_CORS_ORIGINS=true is the explicit opt-out', () => {
+      process.env.CDK_ALLOW_NO_CORS_ORIGINS = 'true';
+
+      expect(loadConfig(app).corsOrigins).toBe('');
+    });
+
+    test('a non-true opt-out value does not disable the guard', () => {
+      process.env.CDK_ALLOW_NO_CORS_ORIGINS = 'false';
+
+      expect(() => loadConfig(app)).toThrow(/CDK_ALLOW_NO_CORS_ORIGINS=true/);
+    });
+  });
+
+  // ============================================================
   // Precedence Tests
   // ============================================================
 
@@ -1585,6 +1658,7 @@ describe('Observability Configuration', () => {
     a.node.setContext('awsRegion', 'us-east-1');
     a.node.setContext('awsAccount', '123456789012');
     a.node.setContext('vpcCidr', '10.0.0.0/16');
+    a.node.setContext('corsOrigins', 'http://localhost:4200');
     a.node.setContext('frontend', { cloudFrontPriceClass: 'PriceClass_100' });
     a.node.setContext('appApi', {
       cpu: 256, memory: 512, desiredCount: 1, maxCapacity: 4,

@@ -82,24 +82,38 @@ INJECTED_TOOL_IDS = frozenset(
 # `initialize()` + AgentCore Memory restore (see
 # docs/specs/agent-cache-extra-tools-bypass.md §1–§2).
 #
-# Deliberately starting at ARTIFACT only. That spec's §6 asks for a
-# single-builder experiment rather than more observational data, because the
-# bypass→cache-write correlation is confounded by workload; artifacts are the
-# clean arm (no `assistant_id`, no memory binding, ~957 sessions). The rest are
-# excluded for now, each for a stated reason:
+# The set started at ARTIFACT only, as the single-variable arm of that spec's
+# §6 experiment. The arm read clean (§8, 2026-08-05: hit/hit/hit after turn 1
+# once #841 pinned sessions to a microVM, ~60% per-turn latency win, no
+# prompt-cache regression), so the families that capture exactly what
+# artifacts capture are promoted on the same reasoning. Each builder in
+# `inference_api/chat/routes.py` closes over `(session_id, user_id)` and
+# nothing else — both are key elements:
+#
+#   - WORD (`_build_word_document_tools`), EXCEL
+#     (`_build_excel_spreadsheet_tools`), POWERPOINT
+#     (`_build_powerpoint_presentation_tools`), WORKSPACE
+#     (`_build_workspace_tools`).
+#
+# Still excluded, each for a stated reason:
 #
 #   - SPREADSHEET: `make_*_tool(assistant_id, …)` closes over `assistant_id`,
-#     which is NOT a key element. Needs the key (and `PausedTurnSnapshot`)
-#     extended first, per that spec's §6.
-#   - WORD / EXCEL / POWERPOINT / WORKSPACE: capture only session+user, so they
-#     are *eligible on the same reasoning as artifacts* — held back only so the
-#     experiment measures one variable. Promote them once the artifact arm reads
-#     clean.
+#     which is NOT a key element. Needs the key, `PausedTurnSnapshot` and the
+#     resume path extended first (a key/snapshot disagreement orphans a paused
+#     agent). This is the dominant cohort — the 2026-08-03 prod read put
+#     `analyze_spreadsheet` on ~2,669 of 3,565 sessions — so it is the next
+#     promotion, tracked in docs/specs/load-test-assessment-2026-09.md P1-C.
 #   - Memory-Space tools: capture the resolved binding (space id + access) and
 #     are not gated on `enabled_tools` at all, so they are not in any set here.
 #     `get_agent`'s caller must treat a live memory binding as an independent
 #     veto — see `injected_tools_are_key_described`.
-KEY_DESCRIBED_INJECTED_TOOL_IDS = frozenset(ARTIFACT_TOOL_IDS)
+KEY_DESCRIBED_INJECTED_TOOL_IDS = frozenset(
+    ARTIFACT_TOOL_IDS
+    | WORD_DOCUMENT_TOOL_IDS
+    | EXCEL_SPREADSHEET_TOOL_IDS
+    | POWERPOINT_PRESENTATION_TOOL_IDS
+    | WORKSPACE_TOOL_IDS
+)
 
 
 def injected_tools_are_key_described(

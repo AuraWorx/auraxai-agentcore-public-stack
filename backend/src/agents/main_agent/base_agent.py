@@ -330,8 +330,10 @@ class BaseAgent(ABC):
         # Per-turn context-token attribution (system / tools / messages).
         # Best-effort; computes the breakdown on BeforeModelCallEvent and
         # stashes it on the agent for the stream coordinator to surface on the
-        # final metadata SSE event.
-        hooks.append(ContextAttributionHook())
+        # final metadata SSE event. The session id keys a process-level memo
+        # of the stable split, so an Agent rebuilt for this session (cache
+        # bypass, @-mention, memory binding) adopts it instead of re-counting.
+        hooks.append(ContextAttributionHook(session_id=self.session_id))
 
         # Live narration of what the agent is doing (model call / tool call
         # boundaries) plus Strands-measured per-tool durations. Held on the
