@@ -222,3 +222,127 @@ def override_admin_auth(app, impl) -> None:
         "did the router fail to mount, or was the app built before a module "
         "reload replaced its dependencies?"
     )
+
+
+# ---------------------------------------------------------------------------
+# No off-box sockets. Every AWS call in this suite is supposed to be mocked
+# (moto), and moto never opens a real socket — so "connected to something that
+# is not localhost" is a precise detector for a test that escaped the mock.
+#
+# It is worth enforcing because the failure is otherwise *invisible*. Service
+# code here is deliberately fail-open (a user should not lose their session
+# because a table blipped), so a test that mocks one dependency and misses a
+# second gets a real DynamoDB client, a real request, a swallowed exception,
+# and a green assertion. That is not hypothetical: 25 cases across 6 files were
+# doing it, and the suite reported the same 9196 passed with and without the
+# connections. On a developer machine `~/.aws/config` carries a `[default]`
+# profile, so those were *authenticated* requests to real AWS from a unit test;
+# in CI one occasionally stalled in TLS and botocore's connect timeout ×
+# retries turned a silent escape into a 72-minute hang.
+#
+# Hooking botocore would be ambiguous — moto intercepts `before-send` itself —
+# so the guard sits at the socket layer, below every SDK.
+#
+# Two halves, because raising is not enough: the fail-open code under test
+# swallows the error, so the violation is also recorded and asserted at
+# teardown. `AWS_TEST_ALLOW_OFF_BOX_SOCKETS=1` disables it for the rare test
+# that genuinely needs the network.
+# ---------------------------------------------------------------------------
+import socket as _socket
+
+_OFF_BOX_ALLOWED_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0", ""})
+_off_box_attempts: list = []
+_real_socket_connect = _socket.socket.connect
+_real_socket_connect_ex = _socket.socket.connect_ex
+
+
+def _is_off_box(sock, address) -> "str | None":
+    """The destination host when this is an off-box TCP connect, else ``None``.
+
+    Only AF_INET/AF_INET6 **stream** sockets are guarded: UDP is left alone so
+    DNS resolution keeps working, and AF_UNIX has no host to check.
+    """
+    if getattr(sock, "type", None) != _socket.SOCK_STREAM:
+        return None
+    if getattr(sock, "family", None) not in (_socket.AF_INET, _socket.AF_INET6):
+        return None
+    if not isinstance(address, tuple) or not address:
+        return None
+    host = str(address[0])
+    if host in _OFF_BOX_ALLOWED_HOSTS or host.startswith("127."):
+        return None
+    return host
+
+
+def _guard_connect(self, address):
+    host = _is_off_box(self, address)
+    if host is not None:
+        _off_box_attempts.append(host)
+        raise RuntimeError(
+            f"Blocked an off-box connection to {host!r}. Tests must not reach real "
+            "AWS — mock it (moto, or patch the repository/client this code path "
+            "builds). See the 'No off-box sockets' note in tests/conftest.py."
+        )
+    return _real_socket_connect(self, address)
+
+
+def _guard_connect_ex(self, address):
+    host = _is_off_box(self, address)
+    if host is not None:
+        _off_box_attempts.append(host)
+        raise RuntimeError(f"Blocked an off-box connection to {host!r} (see tests/conftest.py).")
+    return _real_socket_connect_ex(self, address)
+
+
+if os.environ.get("AWS_TEST_ALLOW_OFF_BOX_SOCKETS") != "1":
+    _socket.socket.connect = _guard_connect
+    _socket.socket.connect_ex = _guard_connect_ex
+
+
+#: Known offenders, quarantined so the suite is green while they are burned
+#: down. **These files still cannot reach AWS** — the block above applies to
+#: every test; quarantine only suppresses the teardown *failure*, so the debt
+#: is visible and bounded rather than load-bearing. Each entry needs the same
+#: treatment the fixed files got: find the second, unmocked dependency the code
+#: path builds (a repository or service getter) and stub it. Remove the entry
+#: with the fix; never add one without a note saying why.
+_OFF_BOX_QUARANTINE = frozenset({
+    "tests/routes/test_admin.py",
+    "tests/routes/test_agent_pins.py",
+    "tests/routes/test_agent_reports.py",
+    "tests/routes/test_agents.py",
+    "tests/routes/test_api_converse_mantle.py",
+    "tests/routes/test_converse_cost_accounting.py",
+    "tests/routes/test_inference.py",
+    "tests/routes/test_model_access_enforcement.py",
+    "tests/routes/test_models.py",
+    "tests/routes/test_sessions.py",
+})
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_off_box_sockets(request):
+    """Fail a test that tried to leave the box, *even if it swallowed the error*.
+
+    The raise above stops the connection; this is what makes it visible. Without
+    it a fail-open code path turns the block into a silent no-op and the test
+    still passes — which is exactly how this went unnoticed.
+    """
+    _off_box_attempts.clear()
+    try:
+        yield
+    finally:
+        attempted = list(_off_box_attempts)
+        _off_box_attempts.clear()
+    if not attempted:
+        return
+    node = str(getattr(request.node, "nodeid", ""))
+    if any(node.startswith(path) for path in _OFF_BOX_QUARANTINE):
+        return
+    hosts = ", ".join(sorted(set(attempted)))
+    pytest.fail(
+        f"This test opened {len(attempted)} connection(s) off-box ({hosts}). "
+        "Something it exercises built a real AWS client. Mock that dependency; "
+        "a fail-open except block hides the failure but the call still happens. "
+        "See the 'No off-box sockets' note above."
+    )
