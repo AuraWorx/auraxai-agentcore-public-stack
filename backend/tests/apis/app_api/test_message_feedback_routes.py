@@ -28,8 +28,9 @@ def _user() -> User:
     return User(user_id="user-1", email="u@example.com", name="U", roles=["default"], raw_token="tok")
 
 
-def _client(monkeypatch, put=None, delete=None) -> TestClient:
+def _client(monkeypatch, put=None, delete=None, signal=None) -> TestClient:
     monkeypatch.delenv("RESPONSE_FEEDBACK_ENABLED", raising=False)
+    monkeypatch.setattr(session_routes, "record_implicit_signal", signal or AsyncMock(return_value=None))
     monkeypatch.setattr(session_routes, "put_message_feedback", put or AsyncMock(
         return_value=MessageFeedback(value=1, updated_at="2026-09-16T00:00:00Z")
     ))
@@ -94,6 +95,17 @@ def test_kill_switch_hides_the_surface(monkeypatch):
     assert client.put("/sessions/s1/messages/3/feedback", json={"value": 1}).status_code == 404
     assert client.delete("/sessions/s1/messages/3/feedback").status_code == 404
     put.assert_not_awaited()
+
+
+def test_implicit_signal_is_fire_and_forget_204(monkeypatch):
+    signal = AsyncMock(return_value=None)
+    client = _client(monkeypatch, signal=signal)
+    assert client.post("/sessions/s1/messages/3/signals", json={"kind": "copy"}).status_code == 204
+    signal.assert_awaited_once_with(session_id="s1", user_id="user-1", message_id=3, kind="copy")
+    assert client.post("/sessions/s1/messages/3/signals", json={"kind": "abandon"}).status_code == 422
+    assert client.post("/sessions/s1/messages/3/signals", json={"kind": "I copied it"}).status_code == 422
+    monkeypatch.setenv("RESPONSE_FEEDBACK_ENABLED", "false")
+    assert client.post("/sessions/s1/messages/3/signals", json={"kind": "copy"}).status_code == 404
 
 
 def test_missing_table_is_503_not_500(monkeypatch):

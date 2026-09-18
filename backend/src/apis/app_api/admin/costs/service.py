@@ -31,6 +31,7 @@ from .models import (
     EvaluatorAggregate,
     FeedbackEvaluations,
     FeedbackProfile,
+    ImplicitSignalCounts,
     FingerprintChanges,
     SessionDiagnosis,
     SessionProfile,
@@ -128,6 +129,7 @@ def _join_feedback(
     any_turn_class = any(turn_class(r) is not None for r in records)
     buckets = FeedbackByTurnClass() if any_turn_class else None
     profile = FeedbackProfile()
+    implicit_messages: Dict[str, set] = {"copy": set(), "continue": set()}
     evaluations = FeedbackEvaluations()
     evaluator_sums: Dict[str, List[float]] = {}
     # Every cost row per assistant message index, for pricing rework.
@@ -138,9 +140,13 @@ def _join_feedback(
             cost_by_message[message_id] = cost_by_message.get(message_id, 0.0) + (_record_cost(record) or 0.0)
     rework_total: Optional[float] = None
     for row in feedback_rows:
-        # Explicit thumbs only — implicit signals (spec §10) share the row
-        # family but answer a different question and must never be summed in.
+        # Explicit thumbs only below — implicit signals (spec §10) share the
+        # row family but answer a different question and are counted apart.
         if row.get("signal") not in (None, "explicit"):
+            if row.get("signal") == "implicit" and row.get("kind") in implicit_messages:
+                message_id = _as_int(row.get("messageId"))
+                if message_id is not None:
+                    implicit_messages[row["kind"]].add(message_id)
             continue
         value = _as_int(row.get("value"))
         if value not in (1, -1):
@@ -185,6 +191,11 @@ def _join_feedback(
             bucket.down += 1
     profile.by_turn_class = buckets
     profile.rework_usd = round(rework_total, 6) if rework_total is not None else None
+    if any(implicit_messages.values()):
+        profile.implicit = ImplicitSignalCounts(
+            copied=len(implicit_messages["copy"]),
+            continued=len(implicit_messages["continue"]),
+        )
     if evaluations.judged:
         evaluations.by_evaluator = {
             name: EvaluatorAggregate(n=len(values), mean=round(sum(values) / len(values), 4))

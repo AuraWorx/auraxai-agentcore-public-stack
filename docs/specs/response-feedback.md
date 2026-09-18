@@ -3,10 +3,11 @@
 **Status:** PARTIALLY BUILT — capture and the read model shipped in PR #1142
 (2026-09-16, as document-context-offload PR-7) and the consequence
 (retry-with-correction) in the PR stacked on it; §11 PR-1 is therefore
-complete. Eval sampling (§11 PR-4) followed, opt-in per environment, and
-§11 PR-3's config-dimension attribution now has a fleet page; implicit
-signals (PR-2) are in review. See §13. Written 2026-09-04 from the "how would
-we benefit?" conversation.
+complete, and §11 PR-2 (implicit signals) followed for copy and continue.
+Eval sampling (§11 PR-4) followed too, opt-in per environment, and §11 PR-3's
+config-dimension attribution now has a fleet page. The author surfaces are not
+built. See §13. Written 2026-09-04 from the "how would we benefit?"
+conversation.
 **Refs:** `docs/specs/agentcore-evaluations-spike-findings.md` (the eval
 harness this feeds), `docs/specs/mid-turn-steering.md` (the injection path
 Phase 1 reuses), `docs/specs/agent-marketplace.md` D15 (the *other* feedback
@@ -370,6 +371,20 @@ points:
   so Phase 6 can find it once the consent decision is made. The profile
   reports `feedback.retried` and `reworkUsd` (§7 "rework cost": the thumbed
   call rows plus the retry turn's consecutive assistant rows).
+- **Implicit signals (§11 PR-2), third PR — copy and continue only.**
+  Same `F#` family under their own key, `F#{session}#{message}#{kind}`, so
+  they never collide with the thumb; `signal: "implicit"`, `kind`, and an
+  `ADD`ed `count`. `POST /sessions/{id}/messages/{message_id}/signals`,
+  fire-and-forget from the SPA (the Copy and Continue clicks in the actions
+  rail, once per message per kind per page load). The profile reports
+  `feedback.implicit` as *messages touched* per kind, on its own line — the
+  §10 rule that explicit and implicit are never summed is enforced in every
+  reader. Two of §10's four signals are deliberately not here:
+  **edit-and-resend** has no affordance in the SPA to hook, and
+  **abandonment** is deferred — a session that goes quiet after a good
+  answer is indistinguishable from one that goes quiet after a bad one, so
+  it needs its own design (or the §10 "dissatisfaction in the next message"
+  offline classifier) before it is worth a row.
 - **Eval sampling (§11 PR-4), fourth PR — opt-in.** Down-thumbs carry
   `GSI1PK = FEEDBACK#down` / `GSI1SK = updatedAt` on the existing
   `UserTimestampIndex`, so the fleet's recent down-thumbs are one query with

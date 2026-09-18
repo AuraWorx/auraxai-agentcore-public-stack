@@ -442,6 +442,8 @@ export interface FeedbackProfile {
   /** Down-thumbs followed by a retry-with-correction, and what the rework cost. */
   retried?: number;
   reworkUsd?: number | null;
+  /** Implicit signals as messages touched per kind; null when none. Never summed with thumbs. */
+  implicit?: { copied: number; continued: number } | null;
   /** Judged down-thumbs (eval sampling): counts and means only; null when none judged. */
   evaluations?: {
     judged: number;

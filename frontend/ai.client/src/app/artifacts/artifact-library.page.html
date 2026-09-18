@@ -334,6 +334,23 @@
                 <span class="sr-only">Open {{ row.title }}</span>
               </button>
               @if (row.owned; as item) {
+                <!-- Share pins this row's version, which in the library is
+                     always HEAD — the list is one row per artifact, not per
+                     version. The dialog captions the version before it
+                     creates anything. -->
+                <button
+                  type="button"
+                  (click)="share(item)"
+                  [appTooltip]="'Share'"
+                  appTooltipPosition="top"
+                  class="grid size-8 place-items-center rounded-2xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                >
+                  <ng-icon name="heroArrowUpOnSquare" class="size-4" aria-hidden="true" />
+                  <span class="sr-only"
+                    >Share {{ item.title || 'Untitled artifact' }}, version
+                    {{ item.version }}</span
+                  >
+                </button>
                 <button
                   type="button"
                   (click)="rename(item)"
@@ -419,16 +436,25 @@
                 }
               </p>
 
-              <!-- Four controls in one row: labelled Open + Conversation need
-                   ~290px, and three columns give the card far less than that
-                   on a narrow window (~166px at 1080px), so the two text
-                   labels drop to `sr-only` below 19rem — kept in the
+              <!-- Five controls in one row: labelled Open + Conversation plus
+                   three icons need 326px, and three columns give the card far
+                   less than that on a narrow window (~166px at 1080px), so the
+                   two text labels drop to `sr-only` below 21rem — kept in the
                    accessible name, since these controls have no aria-label of
                    their own and would otherwise become nameless icons, with
                    [appTooltip] standing in for the text a sighted user can no
                    longer see.
 
-                   19rem is measured against the container's CONTENT box, which
+                   ⚠️ 21rem, not the 19rem this started at. 19rem was tuned for
+                   FOUR controls and fit with zero slack: at three columns on a
+                   1280px window the container measures exactly 306px and the
+                   labelled row needed exactly 306px. Adding Share pushed the
+                   row to 326px while leaving it 2px above the collapse
+                   threshold, so the labels stayed visible and the last icon
+                   was clipped. Measured in the browser, not derived — any
+                   further control added to this row has to re-measure it.
+
+                   21rem is measured against the container's CONTENT box, which
                    is what an `inline-size` container query reports — the
                    body's `p-5` means the card is 40px wider than the number
                    here. Sizing the threshold off the card (the intuitive
@@ -445,7 +471,7 @@
                   class="inline-flex items-center gap-1.5 rounded-2xl px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-300 dark:hover:bg-gray-700"
                 >
                   <ng-icon name="heroEye" class="size-4" aria-hidden="true" />
-                  <span class="@max-[19rem]:sr-only">Open</span>
+                  <span class="@max-[21rem]:sr-only">Open</span>
                 </button>
                 @if (row.kind === 'owned' && row.sessionId) {
                   <a
@@ -455,11 +481,24 @@
                     class="inline-flex items-center gap-1.5 rounded-2xl px-2.5 py-1.5 text-sm/6 font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-300 dark:hover:bg-gray-700"
                   >
                     <ng-icon name="heroChatBubbleLeftRight" class="size-4" aria-hidden="true" />
-                    <span class="@max-[19rem]:sr-only">Conversation</span>
+                    <span class="@max-[21rem]:sr-only">Conversation</span>
                   </a>
                 }
                 @if (row.owned; as item) {
                   <div class="ml-auto flex items-center gap-1">
+                    <button
+                      type="button"
+                      (click)="share(item)"
+                      [appTooltip]="'Share'"
+                      appTooltipPosition="top"
+                      class="grid size-8 place-items-center rounded-2xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                    >
+                      <ng-icon name="heroArrowUpOnSquare" class="size-4" aria-hidden="true" />
+                      <span class="sr-only"
+                        >Share {{ item.title || 'Untitled artifact' }}, version
+                        {{ item.version }}</span
+                      >
+                    </button>
                     <button
                       type="button"
                       (click)="rename(item)"

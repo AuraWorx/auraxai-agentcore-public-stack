@@ -367,6 +367,23 @@ async def test_implicit_signal_rows_are_never_summed_into_the_thumb_counts():
 
 
 @pytest.mark.asyncio
+async def test_implicit_signals_are_counted_as_messages_touched_per_kind():
+    def implicit(message_id, kind, count):
+        return {"sessionId": "s1", "messageId": message_id, "signal": "implicit", "kind": kind, "count": count, "updatedAt": "t"}
+
+    feedback = [implicit(0, "copy", 3), implicit(2, "copy", 1), implicit(2, "continue", 1), implicit(4, "weird", 1)]
+    p = await _service_with_feedback(_row(), [_call(0), _call(2)], feedback).get_session_profile("s1")
+    assert p.feedback.implicit is not None
+    assert (p.feedback.implicit.copied, p.feedback.implicit.continued) == (2, 1)
+    assert (p.feedback.up, p.feedback.down) == (0, 0)
+    assert p.data_coverage.feedback is True
+    assert p.model_dump(by_alias=True)["feedback"]["implicit"] == {"copied": 2, "continued": 1}
+
+    p = await _service_with_feedback(_row(), [_call(0)], [_feedback(0, 1)]).get_session_profile("s1")
+    assert p.feedback.implicit is None
+
+
+@pytest.mark.asyncio
 async def test_feedback_reader_failure_never_breaks_the_profile():
     service = _service(_row(), [_call(0)])
     service.storage.get_session_feedback_rows = AsyncMock(side_effect=RuntimeError("boom"))

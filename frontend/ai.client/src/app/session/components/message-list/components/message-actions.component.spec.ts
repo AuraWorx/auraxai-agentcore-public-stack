@@ -134,6 +134,10 @@ class FakeFeedbackService {
   requestRetry(message: Message): void {
     this.retried.push(message.id);
   }
+  signals: Array<{ id: string; kind: string }> = [];
+  recordSignal(message: Message, kind: string): void {
+    this.signals.push({ id: message.id, kind });
+  }
   feedbackFor(): MessageFeedback | null {
     return this.current;
   }
@@ -233,6 +237,16 @@ describe('MessageActionsComponent — thumbs feedback', () => {
     retry.click();
     expect(feedback.retried).toEqual(['msg-sess-1-3']);
     expect(feedback.set).toEqual([]);
+  });
+
+  it('Continue records the implicit signal on the run\'s last message and still emits', () => {
+    fixture.componentRef.setInput('canContinue', true);
+    fixture.detectChanges();
+    let emitted = 0;
+    fixture.componentInstance.continueRequested.subscribe(() => emitted++);
+    (fixture.nativeElement.querySelector('button[aria-label="Continue the truncated response"]') as HTMLButtonElement).click();
+    expect(emitted).toBe(1);
+    expect(feedback.signals).toEqual([{ id: 'msg-sess-1-3', kind: 'continue' }]);
   });
 
   it('reason codes stay hidden on a thumbs up', () => {

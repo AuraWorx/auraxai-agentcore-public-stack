@@ -7,6 +7,7 @@ import {
   signal,
 } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { Dialog } from '@angular/cdk/dialog';
 import { DatePipe } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
@@ -16,6 +17,7 @@ import {
   heroArrowLeft,
   heroArrowPath,
   heroArrowTopRightOnSquare,
+  heroArrowUpOnSquare,
   heroChatBubbleLeftRight,
   heroCheck,
   heroClipboard,
@@ -31,7 +33,12 @@ import {
 } from '../session/services/artifacts/artifact-http.service';
 import { ArtifactDownloadService } from '../session/services/artifacts/artifact-download.service';
 import { ArtifactViewerComponent } from '../session/components/message-list/components/artifact/artifact-viewer.component';
+import {
+  ArtifactShareModalComponent,
+  type ArtifactShareModalData,
+} from '../session/components/message-list/components/artifact/artifact-share-modal.component';
 import { TooltipDirective } from '../components/tooltip/tooltip.directive';
+import { UserService } from '../auth/user.service';
 
 /**
  * Owner-facing artifact viewer at `/artifacts/:artifactId`.
@@ -73,6 +80,7 @@ import { TooltipDirective } from '../components/tooltip/tooltip.directive';
       heroArrowLeft,
       heroArrowPath,
       heroArrowTopRightOnSquare,
+      heroArrowUpOnSquare,
       heroChatBubbleLeftRight,
       heroCheck,
       heroClipboard,
@@ -88,6 +96,8 @@ export class ArtifactViewPage implements OnInit {
   private artifacts = inject(ArtifactHttpService);
   private downloadService = inject(ArtifactDownloadService);
   private sanitizer = inject(DomSanitizer);
+  private dialog = inject(Dialog);
+  private userService = inject(UserService);
 
   protected readonly artifact = signal<LibraryArtifact | null>(null);
   protected readonly isLoading = signal(true);
@@ -193,6 +203,34 @@ export class ArtifactViewPage implements OnInit {
     } finally {
       this.downloading.set(false);
     }
+  }
+
+  /**
+   * Share the version on screen.
+   *
+   * No ownership check is needed here, and adding one would be
+   * misleading about where the guarantee comes from: this page resolves
+   * its artifact out of `listLibrary()`, which reads the caller's own
+   * DynamoDB partition, so an artifact that is not yours does not
+   * resolve at all — `ngOnInit` has already rendered "Artifact not
+   * found" by the time anything on this header exists. The ownership
+   * boundary is the partition key, not a comparison in the template.
+   *
+   * Pins the version this page is showing, which is HEAD. Shares are
+   * immutable, so a later version will not follow the link; the dialog
+   * captions the version before creating one.
+   */
+  protected share(): void {
+    const a = this.artifact();
+    if (!a) return;
+    this.dialog.open(ArtifactShareModalComponent, {
+      data: {
+        artifactId: a.artifactId,
+        version: a.version,
+        title: a.title,
+        ownerEmail: this.userService.currentUser()?.email ?? '',
+      } as ArtifactShareModalData,
+    });
   }
 
   /**

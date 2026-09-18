@@ -164,3 +164,85 @@ class TestRobustness:
     def test_get_context_breakdown_is_none_when_absent(self):
         agent = FakeAgent(FakeModel(), messages=[])
         assert get_context_breakdown(agent) is None
+
+
+class TestInlineAttachmentGuard:
+    """``toolTokens`` is a residual between two independently sourced counts
+    (``full`` from Strands' projection, ``no_tools`` from our CountTokens call),
+    so any disagreement about how a content block is counted lands wholly in it.
+
+    Measured on dev 2026-09-16 (session ``61de2256``): a call reported
+    ``toolTokens`` of 106,756 where the session's real tools prefix was 12,516 —
+    a 94,240 difference against a document measured at ~94,485, i.e. the entire
+    document attributed to tools. The split is therefore not computed while
+    inline bytes are in context.
+    """
+
+    def _doc_message(self):
+        return {
+            "role": "user",
+            "content": [
+                {"text": "what does it say?"},
+                {"document": {"format": "pdf", "name": "d_pdf", "source": {"bytes": b"%PDF-1.4"}}},
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_split_is_computed_while_a_document_is_inline(self):
+        model = FakeModel()
+        agent = FakeAgent(model, messages=[self._doc_message()])
+        await ContextAttributionHook()._on_before_model_call(_event(agent, projected=100_000))
+
+        assert get_context_breakdown(agent) is None, "a contaminated split must not be published"
+        assert model.calls == [], "and it must not pay for CountTokens to compute one"
+
+    @pytest.mark.asyncio
+    async def test_an_image_counts_too(self):
+        model = FakeModel()
+        agent = FakeAgent(model, messages=[{
+            "role": "user",
+            "content": [{"image": {"format": "png", "source": {"bytes": b"\x89PNG"}}}],
+        }])
+        await ContextAttributionHook()._on_before_model_call(_event(agent, projected=50_000))
+        assert get_context_breakdown(agent) is None
+
+    @pytest.mark.asyncio
+    async def test_a_digest_is_not_an_attachment_so_the_split_is_taken(self):
+        """The offload turns the document into text, which counts normally —
+        so an attachment session still gets ``prefixTokens`` from turn 2."""
+        model = FakeModel(system=100, per_msg=10, tool_overhead=500)
+        agent = FakeAgent(model, messages=[{
+            "role": "user",
+            "content": [{"text": '<document-digest name="d.pdf" upload_id="u1" pages="60">'}],
+        }])
+        await ContextAttributionHook()._on_before_model_call(_event(agent, projected=650))
+        assert _parts(get_context_breakdown(agent)) == {"system": 100, "tools": 540, "messages": 10}
+
+    @pytest.mark.asyncio
+    async def test_a_later_clean_turn_computes_the_split(self):
+        """Deferred, not abandoned: the same agent takes the split once the
+        attachment has left the live context."""
+        model = FakeModel(system=100, per_msg=10, tool_overhead=500)
+        agent = FakeAgent(model, messages=[self._doc_message()])
+        hook = ContextAttributionHook()
+        await hook._on_before_model_call(_event(agent, projected=100_000))
+        assert get_context_breakdown(agent) is None
+
+        agent.messages = [{"role": "user", "content": [{"text": "follow-up"}]}]
+        await hook._on_before_model_call(_event(agent, projected=650))
+        assert _parts(get_context_breakdown(agent)) == {"system": 100, "tools": 540, "messages": 10}
+
+    @pytest.mark.asyncio
+    async def test_a_cached_split_is_still_used_when_a_document_arrives_later(self):
+        """The guard only defers the *computation*. An agent that already has a
+        trustworthy split keeps reporting against it."""
+        model = FakeModel(system=100, per_msg=10, tool_overhead=500)
+        agent = FakeAgent(model, messages=[{"role": "user", "content": [{"text": "hi"}]}])
+        hook = ContextAttributionHook()
+        await hook._on_before_model_call(_event(agent, projected=650))
+
+        agent.messages = [{"role": "user", "content": [{"text": "hi"}]}, self._doc_message()]
+        await hook._on_before_model_call(_event(agent, projected=95_000))
+        parts = _parts(get_context_breakdown(agent))
+        assert parts["system"] == 100 and parts["tools"] == 540
+        assert parts["messages"] == 95_000 - 640, "the document lands in messages, where it belongs"
