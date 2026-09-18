@@ -18,6 +18,12 @@ export interface ToolInsight {
   batchId?: string;
 }
 
+/** One tool the runtime has started and not yet reported finishing. */
+export interface RunningTool {
+  toolUseId: string;
+  toolName: string;
+}
+
 /**
  * Per-conversation registry of what the agent did with each tool call:
  * execution durations and model-generated batch summaries.
@@ -73,6 +79,25 @@ export class ToolInsightService {
     new Map(),
   );
 
+  /**
+   * Tools the runtime has started and not yet reported finishing, per
+   * conversation, in the order they started.
+   *
+   * This is what makes a parallel batch legible. The content stream can say
+   * *that* tools are in flight, but the loader was reading the first
+   * unresolved `toolUse` block off the streaming message, so three tools
+   * running at once named one of them arbitrarily. `tool_start`/`tool_end`
+   * are a matched pair, so the count here is the real one.
+   *
+   * Only trustworthy because the drain now runs concurrently with the agent
+   * stream (docs/specs/agent-state-feedback.md PR-2). Before that a
+   * `tool_start` arrived bundled with its own `tool_end` and this set would
+   * have been empty for the entire time the tools were running.
+   */
+  private readonly runningBySession = signal<
+    ReadonlyMap<string, readonly RunningTool[]>
+  >(new Map());
+
   // -- reads ---------------------------------------------------------------
 
   /** Everything known about one tool call in one conversation. */
@@ -98,6 +123,14 @@ export class ToolInsightService {
       if (summary) return summary;
     }
     return undefined;
+  }
+
+  /**
+   * Tools in flight for a conversation, oldest first. Empty when the model is
+   * generating rather than calling tools.
+   */
+  runningTools(sessionId: string): readonly RunningTool[] {
+    return this.runningBySession().get(sessionId) ?? [];
   }
 
   /** The live status of a conversation's streaming turn, or undefined. */
@@ -136,6 +169,46 @@ export class ToolInsightService {
         durationMs: event.durationMs,
       });
     }
+
+    this.updateRunning(sessionId, event);
+  }
+
+  /**
+   * Open or close this conversation's set of in-flight tools.
+   *
+   * `thinking` clears it rather than leaving it alone: that phase means the
+   * model is generating, which can only happen once the batch before it
+   * finished. It is the backstop for a `tool_end` that never arrived — a tool
+   * that raised past the hook, or a batch cut short by an interrupt — because
+   * a tool stuck in this set forever would have the loader naming a tool that
+   * stopped running minutes ago.
+   */
+  private updateRunning(sessionId: string, event: AgentStatusEvent): void {
+    if (event.phase === 'thinking') {
+      this.runningBySession.update(map => {
+        if (!map.get(sessionId)?.length) return map;
+        return new Map(map).set(sessionId, []);
+      });
+      return;
+    }
+
+    if (!event.toolUseId || !event.toolName) return;
+    const { toolUseId, toolName } = event;
+
+    this.runningBySession.update(map => {
+      const current = map.get(sessionId) ?? [];
+
+      if (event.phase === 'tool_start') {
+        // Re-delivery of a start we already hold is a no-op, not a duplicate
+        // row — the count drives "and 2 more".
+        if (current.some(t => t.toolUseId === toolUseId)) return map;
+        return new Map(map).set(sessionId, [...current, { toolUseId, toolName }]);
+      }
+
+      const next = current.filter(t => t.toolUseId !== toolUseId);
+      if (next.length === current.length) return map;
+      return new Map(map).set(sessionId, next);
+    });
   }
 
   /**
@@ -147,6 +220,14 @@ export class ToolInsightService {
    */
   clearStatus(sessionId: string): void {
     this.statusBySession.update(map => {
+      if (!map.has(sessionId)) return map;
+      const next = new Map(map);
+      next.delete(sessionId);
+      return next;
+    });
+    // In-flight tools go with it. A turn that ended — normally, by Stop, or by
+    // an error — has nothing running, whatever the last transition claimed.
+    this.runningBySession.update(map => {
       if (!map.has(sessionId)) return map;
       const next = new Map(map);
       next.delete(sessionId);

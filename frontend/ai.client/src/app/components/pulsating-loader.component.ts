@@ -73,7 +73,7 @@ import { isPlatformBrowser } from '@angular/common';
           [class.shimmer]="!notice()"
         >
           @if (statusTool(); as tool) {
-            {{ label() }} <span class="font-mono text-[13px]">{{ tool }}</span>{{ trailer() }}
+            {{ label() }} <span class="font-mono text-[13px]">{{ tool }}</span>{{ extraLabel() }}{{ trailer() }}
           } @else {
             {{ label() }}{{ trailer() }}
           }
@@ -234,6 +234,15 @@ export class PulsatingLoaderComponent implements OnInit, OnDestroy {
   statusTool = input<string | null>(null);
 
   /**
+   * How many OTHER tools are running alongside `statusTool`, or null for none.
+   *
+   * A parallel batch is the case this exists for: naming one tool and staying
+   * silent about the other two is not wrong, exactly, but it makes a 3-second
+   * wait look like a 1-second one that hung.
+   */
+  statusToolExtra = input<number | null>(null);
+
+  /**
    * Epoch ms the turn started. Null hides the timer entirely rather than
    * showing a zero that never moves.
    */
@@ -267,6 +276,13 @@ export class PulsatingLoaderComponent implements OnInit, OnDestroy {
    */
   protected readonly trailer = computed(() => (this.notice() ? '' : '…'));
 
+  /** " and 2 more" — empty for a lone tool, and never shown under a notice. */
+  protected readonly extraLabel = computed(() => {
+    const extra = this.statusToolExtra();
+    if (this.notice() || !extra || extra < 1) return '';
+    return ` and ${extra} more`;
+  });
+
   protected readonly elapsedLabel = computed(() => {
     const started = this.startedAt();
     if (!started) return null;
@@ -287,7 +303,7 @@ export class PulsatingLoaderComponent implements OnInit, OnDestroy {
    */
   protected readonly stateFrames = computed(() => {
     const tool = this.statusTool();
-    return [tool ? `${this.label()} ${tool}` : this.label()];
+    return [tool ? `${this.label()} ${tool}${this.extraLabel()}` : this.label()];
   });
 
   /**
@@ -296,7 +312,7 @@ export class PulsatingLoaderComponent implements OnInit, OnDestroy {
    */
   protected readonly ariaLabel = computed(() => {
     const tool = this.statusTool();
-    return tool ? `${this.label()} ${tool}` : this.label();
+    return tool ? `${this.label()} ${tool}${this.extraLabel()}` : this.label();
   });
 
   ngOnInit(): void {

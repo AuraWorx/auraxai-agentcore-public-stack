@@ -272,6 +272,38 @@ def agent_status_enabled() -> bool:
     return os.environ.get("AGENT_STATUS_ENABLED", "").strip().lower() != "false"
 
 
+def agent_status_live_drain_enabled() -> bool:
+    """Whether ``agent_status`` transitions are drained DURING agent-stream silence.
+
+    The hook records its transitions from inside Strands' event loop, which has
+    no route to the SSE stream — so the coordinator drains them. Draining
+    between yields of the agent stream means a transition can only leave the
+    container when the agent stream next produces an event, and during tool
+    execution the agent stream produces nothing. A ``tool_start`` therefore
+    queued for exactly the silence it existed to explain and arrived bundled
+    with its own ``tool_end`` (measured: a three-tool browse turn narrated
+    nothing for 4.5s). This flag turns on the concurrent drain that fixes it.
+
+    **Default ON with a kill switch** (house style): unset or empty resolves to
+    enabled; only the literal ``"false"`` (case-insensitive) disables.
+
+    Its own kill switch rather than riding ``AGENT_STATUS_ENABLED`` because the
+    two carry different risk. That flag gates what the hook *records*, all of
+    it in-process. This one changes how the turn's stream is consumed — the
+    merge races the agent stream against a short timer — so a regression here
+    would be a streaming bug, not a missing status line. Turning it off
+    restores the original between-yields drain exactly, leaving every other
+    part of the feature intact.
+
+    Costs nothing against the model: it changes only when an already-recorded
+    transition is written to the SSE channel. Nothing reaches the prompt.
+    """
+    return (
+        os.environ.get("AGENT_STATUS_LIVE_DRAIN_ENABLED", "").strip().lower()
+        != "false"
+    )
+
+
 def tool_summaries_enabled() -> bool:
     """Whether tool batches get a model-generated one-line summary.
 

@@ -297,30 +297,83 @@ export class MessageListComponent {
    * Returns null once text starts streaming: at that point the loader is gone
    * anyway, and a lingering "Thinking" under a visible answer would be wrong.
    */
-  protected readonly loaderStatus = computed<string | null>(() =>
-    this.loaderStatusTool() ? 'Running' : 'Thinking',
-  );
+  protected readonly loaderStatus = computed<string | null>(() => {
+    if (this.loaderStatusTool()) return 'Running';
+
+    // `thinking` is the runtime telling us the model call is in flight, which
+    // is a narrower and more useful claim than the fallback: it rules out the
+    // agent build, the session restore and the head-of-turn context work that
+    // all precede it and all read "Thinking" today.
+    //
+    // Only while the answer is still silent, though. The loader stays mounted
+    // for the whole turn — `isChatLoading` clears at stream close, not at the
+    // first token — so once text is arriving, "Waiting for the model" would
+    // contradict what the user can already read. In that case this says
+    // exactly what it said before, which is vague but not wrong.
+    const sessionId = this.chatStateService.viewedSessionId();
+    const phase = sessionId ? this.toolInsight.status(sessionId)?.phase : undefined;
+    if (phase === 'thinking' && !this.hasStreamedText()) {
+      return 'Waiting for the model';
+    }
+
+    return 'Thinking';
+  });
+
+  /**
+   * Whether the turn's newest assistant message has produced visible text yet.
+   *
+   * First-hand from the content stream, which is the only place this is
+   * knowable without the backend duplicating a fact the client already holds.
+   */
+  private readonly hasStreamedText = computed<boolean>(() => {
+    const messages = this.messages();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role !== 'assistant') continue;
+      return message.content.some(block => !!block.text?.trim());
+    }
+    return false;
+  });
+
+  /**
+   * How many tools beyond the named one are running, or null.
+   *
+   * A parallel batch used to be invisible: the loader named whichever
+   * unresolved `toolUse` block came first and said nothing about the other
+   * two. `tool_start`/`tool_end` are a matched pair, so this count is real —
+   * see `ToolInsightService.runningTools`.
+   */
+  protected readonly loaderStatusToolExtra = computed<number | null>(() => {
+    const sessionId = this.chatStateService.viewedSessionId();
+    if (!sessionId) return null;
+    const extra = this.toolInsight.runningTools(sessionId).length - 1;
+    return extra > 0 ? extra : null;
+  });
 
   /**
    * The tool currently executing, or null.
    *
-   * Derived from the CONTENT stream — a `toolUse` block on the streaming
-   * message that has no result yet — rather than from `agent_status`, and
-   * that choice is load-bearing.
+   * `agent_status` first, the content stream as the fallback.
    *
-   * `agent_status` transitions are drained by the stream coordinator when the
-   * agent stream yields its next event. During tool execution the agent
-   * stream yields nothing, so a `tool_start` sits in the queue for exactly
-   * the silent stretch it exists to explain, and arrives alongside its own
-   * `tool_end` once the batch finishes. Measured on a three-tool browse turn:
-   * the indicator read "Thinking" for the entire 4.5s the tools were running
-   * and never once showed their name.
+   * The order used to be the other way round, for a good reason that no
+   * longer holds: the coordinator drained status transitions only between
+   * yields of the agent stream, and during tool execution that stream yields
+   * nothing — so a `tool_start` sat in the queue for exactly the silent
+   * stretch it exists to explain and arrived alongside its own `tool_end`.
+   * Measured on a three-tool browse turn: the indicator read "Thinking" for
+   * the entire 4.5s the tools were running and never once showed their name.
+   * PR-2 drains concurrently, so the transitions now arrive while the tools
+   * are running (docs/specs/agent-state-feedback.md).
    *
-   * The client does not have that problem. It knows a tool is in flight the
-   * moment the block streams in, first-hand, with no round trip. So this is
-   * both simpler and strictly more current. `agent_status` keeps its real
-   * job: the event-loop-measured durations, which the client genuinely
-   * cannot derive.
+   * `agent_status` is preferred because it knows things the content stream
+   * cannot: that a batch has THREE tools in it rather than one, and that a
+   * tool has finished (a `toolUse` block whose result has not streamed in yet
+   * looks identical to one still executing).
+   *
+   * The content-stream derivation stays as the fallback rather than being
+   * deleted. It needs no round trip, so it is strictly more current when it
+   * fires, and it is the only source left if the live drain is killed by its
+   * flag or a future SDK change starves the queue.
    *
    * Shown verbatim rather than prettified — `list_assignments` is the thing
    * that is running, and it is the same identifier the tool rail and the
@@ -328,6 +381,12 @@ export class MessageListComponent {
    * thing.
    */
   protected readonly loaderStatusTool = computed<string | null>(() => {
+    const sessionId = this.chatStateService.viewedSessionId();
+    if (sessionId) {
+      const running = this.toolInsight.runningTools(sessionId);
+      if (running.length) return running[0].toolName;
+    }
+
     const messages = this.messages();
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
