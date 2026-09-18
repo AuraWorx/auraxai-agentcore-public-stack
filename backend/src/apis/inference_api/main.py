@@ -96,6 +96,14 @@ async def lifespan(app: FastAPI):
     os.makedirs(generated_images_dir, exist_ok=True)
     logger.info("Output directories ready")
 
+    # Pull the first turn's lazy imports and boto service-model loads forward
+    # to container start, off the request path. Daemon thread: /ping answers
+    # immediately and a request that arrives mid-warm-up waits on the import
+    # lock rather than redoing the work. See apis/inference_api/warmup.py.
+    from apis.inference_api.warmup import start_warmup_in_background
+
+    start_warmup_in_background()
+
     yield  # Application is running
 
     # Shutdown
