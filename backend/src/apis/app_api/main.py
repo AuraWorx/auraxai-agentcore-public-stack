@@ -17,7 +17,6 @@ env_path = Path(__file__).parent.parent.parent / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -82,17 +81,6 @@ async def lifespan(app: FastAPI):
     _validate_skip_auth_or_raise()
     logger.info("=== AgentCore Public Stack API Starting ===")
     logger.info("Agent execution engine initialized")
-
-    # Create output directories if they don't exist
-    base_dir = Path(__file__).parent.parent
-    output_dir = os.path.join(base_dir, "output")
-    uploads_dir = os.path.join(base_dir, "uploads")
-    generated_images_dir = os.path.join(base_dir, "generated_images")
-
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(uploads_dir, exist_ok=True)
-    os.makedirs(generated_images_dir, exist_ok=True)
-    logger.info("Output directories ready")
 
     yield  # Application is running
 
@@ -315,26 +303,6 @@ if os.environ.get("ARTIFACTS_RENDER_TOKEN_SECRET_ARN"):
     app.include_router(artifact_shares_router)
     app.include_router(shared_artifacts_router)
     logger.info("Artifact render-token and sharing routes enabled")
-
-# Mount static file directories for serving generated content
-# These are created by tools (visualization, code interpreter, etc.)
-# Use parent directory (src/) as base
-base_dir = Path(__file__).parent.parent
-output_dir = os.path.join(base_dir, "output")
-uploads_dir = os.path.join(base_dir, "uploads")
-generated_images_dir = os.path.join(base_dir, "generated_images")
-
-if os.path.exists(output_dir):
-    app.mount("/output", StaticFiles(directory=output_dir), name="output")
-    logger.info(f"Mounted static files: /output -> {output_dir}")
-
-if os.path.exists(uploads_dir):
-    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
-    logger.info(f"Mounted static files: /uploads -> {uploads_dir}")
-
-if os.path.exists(generated_images_dir):
-    app.mount("/generated_images", StaticFiles(directory=generated_images_dir), name="generated_images")
-    logger.info(f"Mounted static files: /generated_images -> {generated_images_dir}")
 
 if __name__ == "__main__":
     import uvicorn
