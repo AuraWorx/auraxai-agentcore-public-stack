@@ -262,11 +262,26 @@ export class MessageListComponent {
           ? this.toolInsight.status(sessionId)?.phase
           : undefined;
 
+        // Armed on the way IN, never cleared on the way out.
+        //
+        // Clearing it when the phase left `preparing` opened a propagation
+        // window where the label computed with the phase still `preparing`
+        // and the flag already false, fell through to "Thinking", and showed
+        // a ~40ms step backwards — "Getting ready…" → "Thinking…" → "Waiting
+        // for the model…" — on every single turn. Observed on dev 5/5 turns;
+        // it is the exact reading this delay exists to prevent.
+        //
+        // Leaving the flag set costs nothing: the only branch that reads it
+        // is unreachable unless the phase IS `preparing`, and entering that
+        // phase again re-arms it below. The fast-build case is still
+        // suppressed by `onCleanup` cancelling the pending timer, which is
+        // what actually keeps a 38ms build off the screen.
         if (phase !== 'preparing') {
-          // Untracked: writing a signal this effect also reads would loop.
-          untracked(() => this.preparingSettled.set(false));
           return;
         }
+
+        // Untracked: writing a signal this effect also reads would loop.
+        untracked(() => this.preparingSettled.set(false));
 
         const timer = setTimeout(
           () => this.preparingSettled.set(true),

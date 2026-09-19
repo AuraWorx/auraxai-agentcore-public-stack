@@ -263,6 +263,21 @@ deferred path can need an HTTP status after the first byte.
    (Peeking `_agent_cache` to predict a miss was considered and rejected both
    times: it means rebuilding its key out in the route, and a key that drifts
    from the real one is a bug this repo has paid for.)
+
+   **Verified on dev (2026-09-19), and it found one more bug.** Five turns,
+   builds of 1504ms / 549ms / ~650ms×3, all narrated correctly — turn 1 showed
+   "Getting ready…" for 2.1s of a 2.3s wait. But the label stepped *backwards*
+   on the way out — "Getting ready…" → "Thinking…" (~40ms) → "Waiting for the
+   model…" — on all five. The settle flag was cleared when the phase left
+   `preparing`, which opened a propagation window where the label read the old
+   phase and the new flag. It is now armed on the way IN and never cleared on
+   the way out; the fast-build case is suppressed by cancelling the pending
+   timer, which is what was doing that work anyway.
+
+   **Still unverified in a browser:** fast-build suppression. Every turn in the
+   session missed the agent cache (~650ms builds), so the warm path was never
+   observed live. The logs prove warm builds exist (`agent_build` of 1ms and
+   41ms on other sessions) and the suppression is unit-tested.
 2. **A failed build needs its own error path.** The handler has already
    returned by then, so neither `except` arm can see it; without an in-generator
    catch a build failure is a silent hung stream. It now surfaces as a
