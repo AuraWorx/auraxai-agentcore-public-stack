@@ -312,6 +312,15 @@ export class MessageListComponent {
     // exactly what it said before, which is vague but not wrong.
     const sessionId = this.chatStateService.viewedSessionId();
     const phase = sessionId ? this.toolInsight.status(sessionId)?.phase : undefined;
+
+    // The agent is being built — tool registry, MCP pre-flight, session
+    // restore. The backend only sends this once the build has already proven
+    // slow (measured: 1478ms on a cold agent-cache miss, 0-38ms warm), so it
+    // never flickers past on the common path.
+    if (phase === 'preparing') {
+      return 'Getting ready';
+    }
+
     if (phase === 'thinking' && !this.hasStreamedText()) {
       return 'Waiting for the model';
     }

@@ -679,8 +679,20 @@ export function validateAgentStatusEvent(data: unknown): data is AgentStatusEven
 
   const event = data as Partial<AgentStatusEvent>;
 
+  if (event.type !== 'agent_status') {
+    return false;
+  }
+
+  // `preparing` precedes the event loop, so it carries no cycle to check. It
+  // is also the only phase emitted by the chat route rather than the status
+  // hook — requiring `cycle` here would have dropped every one of them
+  // silently, which is exactly the failure mode this validator exists to
+  // avoid on the OTHER phases.
+  if (event.phase === 'preparing') {
+    return true;
+  }
+
   return (
-    event.type === 'agent_status' &&
     (event.phase === 'thinking' ||
       event.phase === 'tool_start' ||
       event.phase === 'tool_end') &&

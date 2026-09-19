@@ -1,8 +1,8 @@
 # Agent state feedback
 
 **Status:** PR-1 SHIPPED (#1159). PR-2 SHIPPED (#1160), VERIFIED on dev.
-Cleanup + instrumentation SHIPPED (#1163). PR-3 RESCOPED by measurement
-(2026-09-19) to one narrow change — see its section.
+Cleanup + instrumentation SHIPPED (#1163). PR-3 BUILT — rescoped by the
+measurement to one narrow change, pending dev verification.
 **Follow-up to:** `d2ee13e2` (emit agent_status and tool-batch summaries), `9bc9bc6b` / `5f0cd52a` / `67234329` (loading-indicator series)
 **Related:** `docs/specs/mid-turn-steering.md` (the other consumer of the drain), CLAUDE.md § SSE Event Types → `agent_status`
 
@@ -186,7 +186,7 @@ that was not yet running. Which is preferable is a product call, not a bug.
 
 A cold turn measured **6.7s** before the first status frame.
 
-## PR-3 — narrate the cold agent build (rescoped by measurement)
+## PR-3 — narrate the cold agent build (BUILT)
 
 The original plan — emit a phase per pre-stream stage from the chat route —
 could not be built as written, and the measurement that proved it also made it
@@ -233,10 +233,36 @@ they are. This sidesteps most of what made a handler restructure frightening:
 the quota check, the session-ownership 404 and every other HTTP-error-capable
 guard live in `preamble`, which stays ahead of the stream.
 
-**Feasibility check owed before building it:** confirm nothing on the NON-resume
-path raises `HTTPException` between `get_agent` and the `StreamingResponse`
-return. The resume path does (interrupt-id validation 400s) but takes a
-different `get_agent` call and can stay eager.
+**Feasibility check: PASSED.** The only `raise HTTPException` between
+`get_agent` and the `StreamingResponse` return is guarded by `if is_resume:`
+(interrupt-id validation). Resume keeps its eager build, so nothing on the
+deferred path can need an HTTP status after the first byte.
+
+**As built**, three things the plan did not anticipate:
+
+1. **The frame is emitted only when the build is actually slow.** A warm build
+   is 0-38ms, and "Getting ready" for 38ms is a flicker — landing, worse,
+   *after* the generic "Thinking" the client shows from the moment the user
+   hits send, which reads as going backwards. The generator races the build
+   against `_PREPARING_NOTICE_SECONDS` (250ms, comfortably between the measured
+   warm and cold builds) and emits the frame only if the build is still
+   running. Peeking `_agent_cache` instead would mean rebuilding its key out in
+   the route, and a key that drifts from the real one is a bug this repo has
+   paid for.
+2. **A failed build needs its own error path.** The handler has already
+   returned by then, so neither `except` arm can see it; without an in-generator
+   catch a build failure is a silent hung stream. It now surfaces as a
+   conversational error (the house rule) and the `finally` still releases the
+   lease.
+3. **The SPA validator had to be relaxed.** It required
+   `typeof cycle === 'number'`, and `preparing` precedes the event loop so it
+   carries no cycle — every frame would have been dropped silently. The
+   relaxation is scoped to `preparing`; the other phases still require a cycle,
+   because the SPA uses it to tell event-loop passes apart.
+
+**Kill switch:** `AGENT_PREPARING_PHASE_ENABLED` (default on). Off restores the
+eager build exactly. Its own flag rather than riding `AGENT_STATUS_ENABLED`,
+which gates narration — this changes when the agent is built.
 
 **Cost:** the label is one SSE frame. Nothing reaches the model.
 
