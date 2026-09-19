@@ -48,6 +48,18 @@ COPY backend/src/apis/shared/observability/ ${LAMBDA_TASK_ROOT}/apis/shared/obse
 COPY backend/src/lambdas/scheduled_runs_dispatcher/dispatcher.py ${LAMBDA_TASK_ROOT}/dispatcher.py
 COPY backend/src/lambdas/scheduled_runs_worker/worker.py ${LAMBDA_TASK_ROOT}/worker.py
 
+# Precompile the copied source to bytecode. /var/task is READ-ONLY at runtime,
+# so a Lambda cold start can never cache the .pyc it produces — every cold start
+# re-parses every module in the closure, and this dispatcher runs off a 5-minute
+# EventBridge tick, which is slow enough that many ticks land cold. The pip
+# install above already compiled site-packages (pip does that by default, unlike
+# uv), so this covers the gap: the code we COPY in, which arrives as raw source.
+# `-q` keeps the layer log quiet; a syntax error still fails the build, which is
+# the right time to learn about it. Safe to point at the whole task root here —
+# it holds only our own code, since pip put the dependencies in
+# /var/lang/lib/python3.12/site-packages.
+RUN python -m compileall -q ${LAMBDA_TASK_ROOT}
+
 # Default command: dispatcher. The worker function's CMD is overridden
 # to worker.lambda_handler by its ImageConfig.
 CMD ["dispatcher.lambda_handler"]
