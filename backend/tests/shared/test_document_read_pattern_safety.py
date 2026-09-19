@@ -121,6 +121,67 @@ class TestBudget:
         assert [m["line"] for m in out] == [1, 3]
 
 
+class TestBudgetCoversTheScanOnly:
+    """The budget bounds the *scan*, not the setup that precedes it.
+
+    ``_pdf_pattern`` used to start the clock before ``_open_pdf``, so lazily
+    importing the pypdfium2 native library and parsing the document were charged
+    to the scan. A cold container paying enough of the budget on the open
+    reported ``timed_out`` with ``pages_searched: 0`` — a timeout on a search
+    that never started, and an empty answer to an ordinary pattern.
+    """
+
+    def test_the_clock_starts_after_the_pdf_is_opened(self, monkeypatch):
+        """Structural, so it cannot flake: the open happens first."""
+        order: list[str] = []
+        real_open, real_budget = dr._open_pdf, dr._Budget
+
+        class RecordingBudget(real_budget):  # type: ignore[misc, valid-type]
+            def __init__(self, seconds: float = 0.0) -> None:
+                order.append("clock")
+                super().__init__(seconds)
+
+        monkeypatch.setattr(dr, "_open_pdf", lambda raw: (order.append("open"), real_open(raw))[1])
+        monkeypatch.setattr(dr, "_Budget", RecordingBudget)
+        dr._pdf_pattern(build_pdf(["alpha"]), "alpha", {"filename": "d.pdf", "format": "pdf"})
+        assert order == ["open", "clock"]
+
+    def test_a_slow_open_does_not_consume_the_scan_budget(self, monkeypatch):
+        """Behavioural: an open that outlasts the whole budget still leaves the
+        scan its full window. ``sleep`` only guarantees a lower bound, so the
+        pre-fix failure is certain while the margin the scan needs is ~600x."""
+        real_open = dr._open_pdf
+
+        def slow_open(raw: bytes):
+            time.sleep(0.5)
+            return real_open(raw)
+
+        monkeypatch.setattr(dr, "_open_pdf", slow_open)
+        monkeypatch.setattr(dr, "DOCUMENT_READ_PATTERN_BUDGET_SECONDS", 0.2)
+        raw = build_pdf([f"page {i} retention clause" for i in range(1, 4)])
+        res = dr._pdf_pattern(raw, "retention", {"filename": "d.pdf", "format": "pdf"})
+        assert "timed_out" not in res.payload
+        assert res.payload["match_count"] == 3
+
+    def test_text_pattern_splits_the_lines_before_starting_the_clock(self, monkeypatch):
+        order: list[str] = []
+        real_budget = dr._Budget
+
+        class RecordingBudget(real_budget):  # type: ignore[misc, valid-type]
+            def __init__(self, seconds: float = 0.0) -> None:
+                order.append("clock")
+                super().__init__(seconds)
+
+        class Text(str):
+            def splitlines(self, *a, **kw):  # type: ignore[override]
+                order.append("split")
+                return str.splitlines(self, *a, **kw)
+
+        monkeypatch.setattr(dr, "_Budget", RecordingBudget)
+        dr._text_pattern(Text("alpha\nbeta"), "alpha", {"filename": "d.txt", "format": "txt"}, "line")
+        assert order == ["split", "clock"]
+
+
 class TestEndToEnd:
     def test_pdf_pattern_carries_the_note_and_still_answers(self):
         raw = build_pdf(["the (a+)+$ literal lives here", "nothing on this page"])
