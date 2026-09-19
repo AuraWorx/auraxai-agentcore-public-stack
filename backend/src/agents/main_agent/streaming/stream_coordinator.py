@@ -2269,6 +2269,15 @@ class StreamCoordinator:
                 deadline_at=ref.deadline_at,
                 target_url=ref.target_url,
                 reason=prompt_reason,
+                # Same origin MCP Apps are framed from, and for the same
+                # reasons: its CloudFront function locks `frame-ancestors` to
+                # the SPA and composes `connect-src` from `?csp=`, which is how
+                # the viewer is allowed to open DCV's WebSocket. Empty when the
+                # sandbox origin is not deployed — the SPA then shows the
+                # prompt without a viewer rather than framing nothing.
+                sandbox_origin=os.environ.get(
+                    "AGENTCORE_MCP_APPS_SANDBOX_ORIGIN", ""
+                ).strip(),
             )
             assert_no_url(event.model_dump(by_alias=True, exclude_none=True))
             events.append(event.to_sse_format())

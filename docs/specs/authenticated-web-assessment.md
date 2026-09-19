@@ -1,6 +1,6 @@
 # Authenticated web assessment (browser takeover, profiles, axe)
 
-**Status:** IN PROGRESS — **PRs 1-2 built**, D6 rewritten (backend takeover: `request_user_login`, take/release control, the `browser_login_required` interrupt + SSE event, the D4 metadata projection, reaper pinning, the abandonment deadline, and the flag) and **PR 2's backend + SPA half** (the live-view route, its IAM, and the SPA's event/resume wiring). The viewer page itself is deliberately still open — see "Build notes (PR 2)". PRs 3-4 not started. Sized for four PRs.
+**Status:** IN PROGRESS — **PRs 1, 2, 3 merged; 2b (the viewer) built**. D3 and D6 rewritten (backend takeover: `request_user_login`, take/release control, the `browser_login_required` interrupt + SSE event, the D4 metadata projection, reaper pinning, the abandonment deadline, and the flag) and **PR 2's backend + SPA half** (the live-view route, its IAM, and the SPA's event/resume wiring). The viewer page itself is deliberately still open — see "Build notes (PR 2)". PRs 3-4 not started. Sized for four PRs.
 **Driver:** Two user requests, both blocked on the same missing capability:
 a Library agent that evaluates the accessibility of the databases they renew
 annually (subscription-gated), and a VPAT-evaluation agent that must test
@@ -106,7 +106,7 @@ breadcrumb, and the resume route in `inference_api/chat/routes.py`.
 | D1 | Takeover is a **separately grantable tool** (`request_user_login`), not an action on `browse_web` — RBAC granularity is per `tool_id`. **Kept as a rollout control, not a security boundary** — see D6 and Security 3 |
 | D1b | Takeover is an **interrupt**, not a new endpoint — reuse `ask_user_question`'s machinery |
 | D2 | The live-view URL is **never** model-visible; it is minted on demand by app-api |
-| D3 | DCV is embedded via a **static viewer page at the sandbox origin**, framed by the SPA — not a React island in the Angular app |
+| D3 | DCV is embedded via a **plain-JS viewer page at the sandbox origin**, framed by the SPA. No React and no npm: AWS's `BrowserLiveView` imports `dcv`/`dcv-ui`, which are undeclared and unavailable on npm. The SDK is fetched and signature-verified at build time, never committed — it is EULA-licensed and this repo is public |
 | D4 | Browser session identity moves to the **DynamoDB session-metadata row** so app-api can act on it |
 | D5 | Profiles are keyed `user + assessment target`, with an explicit user-facing "forget this login" |
 | D6 | **One** browser, with a MANAGED Chromium `URLBlocklist` applied on every `StartBrowserSession`. Supersedes the second-resource/`URLAllowlist` draft — the browser resource is immutable (no `UpdateBrowser`) and RBAC cannot express a per-site rule |
@@ -216,29 +216,77 @@ narrower than the Runtime's own grant — no Start/Stop and no
 `ConnectBrowserAutomationStream`, because app-api must never drive the
 browser.)
 
-### D3 — DCV embeds via a viewer page at the sandbox origin
+### D3 — A plain-JS viewer at the sandbox origin, SDK fetched at build time
 
-AWS ships React; we are Angular. Three options were considered:
+**This supersedes an earlier draft** that reached for AWS's React
+`<BrowserLiveView>` component from the `bedrock-agentcore` npm package. That
+package is official AWS and Apache-2.0, but the component **cannot be built
+from public npm**:
 
-| Option | Verdict |
-|---|---|
-| Drive the DCV Web Client SDK directly from Angular | Reimplements connection setup, SigV4 handling and frame rendering; carries the maintenance forever |
-| Mount a React island inside the Angular SPA | Adds React to the SPA bundle for one component; poor trade |
-| **Static viewer page at a separate origin, framed by the SPA** | **Chosen** |
+```
+import dcv from 'dcv';
+import { DCVViewer } from 'dcv-ui';
+```
 
-The third is what MCP Apps already do. A `live-view.html` asset built against
-`bedrock-agentcore`'s `BrowserLiveView`, deployed to the same CloudFront/S3
-origin pattern with `frame-ancestors <SPA origin only>`. React stays entirely
-outside the SPA bundle. The SPA frames it and passes the conversation id; the
-page calls the D2 route for its own URL and refreshes it on expiry.
+Neither is in its `dependencies`, `peerDependencies` or
+`optionalDependencies`. `dcv-ui` does not exist on the registry at all, and the
+only `dcv` package there is an unrelated third-party Vue component library. The
+component silently assumes you have already vendored the Amazon DCV Web Client
+SDK and made it resolvable under those names. So the React path is a strict
+*superset* of the vendoring work, not an alternative to it — and it would pull
+React plus ~189 packages into a surface where a user types a password.
 
-`remoteWidth`/`remoteHeight` **must** match the session viewport or the stream
-crops. `DEFAULT_VIEWPORT` is currently `1280x800` (`session_pool.py:45`); the
-viewport must be carried on the event rather than duplicated as a constant in
-the frontend, so the two cannot drift.
+**So: no React, no npm, no third-party code.** The viewer is
+`infrastructure/assets/mcp-sandbox/live-view.{html,js}` — plain ES2017 against
+the official Amazon DCV Web Client SDK, which is framework-agnostic.
 
-⚠️ `bedrock-agentcore` (npm) is a **new dependency** and needs explicit
-approval before anyone installs it. Exact-pin, no `^`.
+**The SDK is fetched at build time, never committed.** It is a EULA-licensed
+AWS download and **this repository is public**, so vendoring it would be
+redistribution. `scripts/build/fetch-dcv-sdk.sh` downloads it, verifies it, and
+extracts it to a gitignored directory; `platform.yml` runs it before the CDK
+deploy. This is also AWS's own instruction — "place the extracted directory on
+your web server" — and it means the signature is checked on every build rather
+than trusted once at commit time.
+
+What makes that safe is **not** "it comes from AWS". Three pins do: the exact
+version, the archive SHA256, and the signing-key fingerprint — the last two
+held in the script rather than read from the network, because whoever could
+swap the artifact could swap the published checksum and serve a different key.
+Importing whatever key the URL offers today and trusting it is
+trust-on-first-use on every build. ⚠️ The fingerprint was captured once and
+pinned at review time; AWS does not appear to publish it out-of-band.
+
+**Why a separate origin rather than an Angular component in the SPA.** The
+original reason — "AWS ships only React" — is gone. Two reasons remain, and the
+first is the real one:
+
+- This is the one surface where a user types a password, and `dcv.js` forwards
+  their keystrokes. Keeping it in an origin that holds **no session cookie**
+  means a compromised SDK cannot also reach their session.
+- The SDK must be *served* with its folder structure and license files intact,
+  which suits a static origin and fights a bundler.
+
+Note the isolation argument that justifies this origin for MCP Apps does **not**
+transfer: DCV streams pixels and forwards input, so the remote page's code runs
+in AWS's Chromium, never in our DOM. This is defence in depth, chosen
+deliberately rather than inherited.
+
+**The SPA mints; the viewer never calls app-api.** app-api's CORS is a
+credentialed allowlist, so letting the viewer call it would mean allowlisting an
+origin that also serves untrusted MCP App HTML. Instead the SPA mints the URL
+and `postMessage`s it in, targeted at the sandbox origin explicitly — never
+`'*'`, which would post a live credential to whatever happened to be framed. The
+viewer accepts messages only from the origin that framed it, and stores nothing.
+
+**CSP.** The sandbox origin's CloudFront function already composes `connect-src`
+from a `?csp=` query parameter, and is attached to the **default** behaviour, so
+it covers any path there. The SPA mints first and then names the minted URL's
+own origin in that parameter, so the grant is exactly the endpoint in use rather
+than a wildcard. This resolves risk 3 below.
+
+`remoteWidth`/`remoteHeight` come from the event's `viewport` and are applied
+via `requestDisplayLayout`; a mismatch crops or letterboxes the stream, which is
+why the viewport is carried rather than re-declared in the frontend.
 
 ### D4 — Browser session identity in the session-metadata row
 
@@ -603,7 +651,8 @@ currently allow (risk 3 below).
 | PR | Scope | Notes |
 |----|-------|-------|
 | **1** | Backend takeover: `request_user_login`, take/release control, interrupt + `browser_login_required` SSE event, D4 metadata row, reaper pinning, abandonment deadline, flag | Testable end to end with a curl-minted live-view URL — no frontend needed |
-| **2** | app-api live-view route + IAM; `live-view.html` viewer at the sandbox origin; SPA framing and resume | Needs the `bedrock-agentcore` npm dependency approved first |
+| **2** | app-api live-view route + IAM; SPA `browser_login_required` handling and resume | Shipped WITHOUT the viewer — see "Build notes (PR 2)" |
+| **2b** | The viewer itself: sign-in prompt component, plain-JS `live-view.{html,js}`, the DCV SDK fetch step, `sandboxOrigin` on the event | The PR that makes the feature usable at all. No npm dependency (D3) |
 | **3** | **MANAGED `URLBlocklist` applied per session (D6)** + the policy object and its IAM | Re-sequenced ahead of profiles. This is the control that lets the tool be granted at all, so it gates rollout rather than following it |
 | **4** | Profiles (D5) + the Customize-surface "saved logins" list with forget/expiry | The PR that makes the annual sweep actually repeatable |
 | **5** | axe extension and `accessibility_scan` (D7) | Turns the output into VPAT-grade evidence |
@@ -653,9 +702,13 @@ through.
    ever pairs MANAGED with `CreateBrowser`. **This is now the load-bearing
    assumption of the whole security posture** — verify on dev (apply, navigate
    to a blocked host, confirm the refusal) before granting the tool to anyone.
-3. **Does the DCV viewer work inside a cross-origin iframe with our CSP?**
-   MCP Apps proved the pattern for `srcdoc` content; DCV opens a WebSocket and
-   may need `connect-src` allowances the current policy does not grant.
+3. ~~**Does the DCV viewer work inside a cross-origin iframe with our CSP?**~~
+   **Resolved in principle.** The sandbox origin's CloudFront function composes
+   `connect-src` from a `?csp=` query parameter and is attached to the
+   *default* behaviour, so it covers `live-view.html` too. The SPA names the
+   minted URL's own origin there. Still to confirm against a live session:
+   that DCV needs nothing beyond `connect-src` (its workers and decoders are
+   same-origin, and `worker-src 'self' blob:` is already granted).
 4. **Mobile.** DCV interaction on a phone, for a login form in a 1280x800
    remote viewport, is likely poor. May need an explicit "open in a new tab"
    escape hatch rather than pretending the frame works everywhere.

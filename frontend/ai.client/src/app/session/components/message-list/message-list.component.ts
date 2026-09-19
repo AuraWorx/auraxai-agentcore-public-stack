@@ -11,6 +11,7 @@ import { PulsatingLoaderComponent } from '../../../components/pulsating-loader.c
 import { OAuthConsentPromptComponent } from './components/oauth-consent-prompt/oauth-consent-prompt.component';
 import { ToolApprovalPromptComponent } from './components/tool-approval-prompt/tool-approval-prompt.component';
 import { UserQuestionPromptComponent } from './components/user-question-prompt/user-question-prompt.component';
+import { BrowserLoginPromptComponent } from './components/browser-login-prompt/browser-login-prompt.component';
 import { CompactionSummaryComponent } from './components/compaction-summary/compaction-summary.component';
 import { ArtifactCardComponent } from './components/artifact/artifact-card.component';
 import { ArtifactPanelComponent } from './components/artifact/artifact-panel.component';
@@ -37,6 +38,10 @@ import {
   UserQuestionRequest,
   UserQuestionService,
 } from '../../../services/user-question/user-question.service';
+import {
+  BrowserLoginRequest,
+  BrowserLoginService,
+} from '../../../services/browser-login/browser-login.service';
 import { CompactionSummaryService } from '../../services/chat/compaction-summary.service';
 import { ChatStateService } from '../../services/chat/chat-state.service';
 import { ToolInsightService } from '../../services/chat/tool-insight.service';
@@ -123,6 +128,7 @@ function segmentTurn(messages: readonly Message[]): TurnSegment[] {
     OAuthConsentPromptComponent,
     ToolApprovalPromptComponent,
     UserQuestionPromptComponent,
+    BrowserLoginPromptComponent,
     CompactionSummaryComponent,
     ArtifactCardComponent,
     ArtifactPanelComponent,
@@ -223,6 +229,7 @@ export class MessageListComponent {
   private consentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
   private userQuestionService = inject(UserQuestionService);
+  private browserLoginService = inject(BrowserLoginService);
   private compactionSummary = inject(CompactionSummaryService);
   private artifactState = inject(ArtifactStateService);
   private mcpAppCardState = inject(McpAppCardStateService);
@@ -784,6 +791,16 @@ export class MessageListComponent {
     const sessionId = this.sessionId();
     if (!sessionId) return [];
     return this.userQuestionService.pending().filter((r) => r.sessionId === sessionId);
+  });
+
+  /** Browser sign-in prompts for THIS list's session, filtered for the same
+   *  reason as the two above: the service queue is global, and resuming a
+   *  paused turn from another pane's transcript would hand the browser back on
+   *  a conversation the reader isn't looking at. */
+  protected pendingBrowserLogins = computed<BrowserLoginRequest[]>(() => {
+    const sessionId = this.sessionId();
+    if (!sessionId) return [];
+    return this.browserLoginService.pending().filter((r) => r.sessionId === sessionId);
   });
 
   /** Messages grouped into turns: each user message starts a group and the

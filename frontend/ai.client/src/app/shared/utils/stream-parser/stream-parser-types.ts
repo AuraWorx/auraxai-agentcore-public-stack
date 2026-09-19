@@ -237,6 +237,12 @@ export interface BrowserLoginRequiredEvent {
   targetUrl?: string;
   /** The agent's one-line explanation of what it needs signed into. */
   reason?: string;
+  /**
+   * Origin to frame the live-view page from — the same mcp-sandbox origin
+   * MCP Apps use. Empty when it is not deployed, in which case the prompt
+   * renders without a viewer rather than framing nothing.
+   */
+  sandboxOrigin?: string;
 }
 
 /**

@@ -723,6 +723,7 @@ export class StreamParserService {
           deadlineAt: data.deadlineAt,
           targetUrl: data.targetUrl,
           reason: data.reason,
+          sandboxOrigin: data.sandboxOrigin,
           messageId: lastAssistantId,
         });
       },

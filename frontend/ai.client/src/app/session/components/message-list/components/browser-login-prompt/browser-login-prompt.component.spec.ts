@@ -1,0 +1,251 @@
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+
+import { BrowserLoginPromptComponent } from './browser-login-prompt.component';
+import {
+  BrowserLoginRequest,
+  BrowserLoginService,
+} from '../../../../../services/browser-login/browser-login.service';
+
+const SANDBOX = 'https://mcp-sandbox.example.test';
+const SIGNED =
+  'https://bedrock-agentcore.us-west-2.amazonaws.com/live?X-Amz-Signature=deadbeef';
+
+function request(overrides: Partial<BrowserLoginRequest> = {}): BrowserLoginRequest {
+  return {
+    interruptId: 'v1:tool_call:tu-1:abc',
+    toolUseId: 'tu-1',
+    sessionId: 'conv-1',
+    browserSessionId: 'bs-1',
+    browserId: 'browser-abc',
+    viewport: { width: 1280, height: 800 },
+    sandboxOrigin: SANDBOX,
+    reason: 'Sign in to JSTOR so I can check the results page.',
+    targetUrl: 'https://www.jstor.org/action/showLogin',
+    deadlineAt: new Date(Date.now() + 480_000).toISOString(),
+    receivedAt: Date.now(),
+    ...overrides,
+  };
+}
+
+describe('BrowserLoginPromptComponent', () => {
+  let fixture: ComponentFixture<BrowserLoginPromptComponent>;
+  let service: {
+    mintLiveView: ReturnType<typeof vi.fn>;
+    hasLapsed: ReturnType<typeof vi.fn>;
+    complete: ReturnType<typeof vi.fn>;
+    skip: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(async () => {
+    service = {
+      mintLiveView: vi.fn().mockResolvedValue({
+        url: SIGNED,
+        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        viewport: { width: 1280, height: 800 },
+        controlState: 'user',
+      }),
+      hasLapsed: vi.fn().mockReturnValue(false),
+      complete: vi.fn().mockResolvedValue(undefined),
+      skip: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [BrowserLoginPromptComponent],
+      // DI token over vi.mock, per the repo's testing convention.
+      providers: [{ provide: BrowserLoginService, useValue: service }],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(BrowserLoginPromptComponent);
+  });
+
+  afterEach(() => fixture.destroy());
+
+  function render(req: BrowserLoginRequest = request()) {
+    fixture.componentRef.setInput('request', req);
+    fixture.detectChanges();
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  describe('what the user is told', () => {
+    it("shows the agent's reason and the page being signed into", () => {
+      const el = render();
+
+      expect(el.textContent).toContain('Sign in to JSTOR');
+      expect(el.textContent).toContain('jstor.org/action/showLogin');
+    });
+
+    it('discloses that the browser is ours and the agent is locked out', () => {
+      // Non-negotiable: the user is about to type a password into a browser
+      // running in our AWS account.
+      const el = render();
+
+      expect(el.textContent).toContain('running in our cloud');
+      expect(el.textContent?.toLowerCase()).toContain('locked out');
+    });
+
+    it('offers no viewer when the sandbox origin is not deployed', () => {
+      const el = render(request({ sandboxOrigin: '' }));
+
+      expect(el.textContent).toContain("isn't available in this environment");
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+
+    it('stops offering the viewer once the window has closed', () => {
+      service.hasLapsed.mockReturnValue(true);
+      const el = render();
+
+      expect(el.textContent).toContain('sign-in window closed');
+      expect(el.textContent).toContain('Dismiss');
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+  });
+
+  describe('opening the viewer', () => {
+    it('mints before framing, so a failure is a message not a black box', async () => {
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(service.mintLiveView).toHaveBeenCalledWith('conv-1');
+      expect(el.querySelector('iframe')).not.toBeNull();
+    });
+
+    it('frames the sandbox origin and declares the stream host in the CSP', async () => {
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const src = el.querySelector('iframe')!.getAttribute('src')!;
+      expect(src.startsWith(`${SANDBOX}/live-view.html?csp=`)).toBe(true);
+
+      // connect-src must name the minted URL's own origin — without it DCV's
+      // WebSocket is blocked and the stream is silently black.
+      const csp = JSON.parse(decodeURIComponent(src.split('csp=')[1]));
+      expect(csp.connectDomains).toContain(
+        'https://bedrock-agentcore.us-west-2.amazonaws.com',
+      );
+      expect(csp.connectDomains).toContain(
+        'wss://bedrock-agentcore.us-west-2.amazonaws.com',
+      );
+    });
+
+    it('never puts the signed URL in the frame src', async () => {
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const src = el.querySelector('iframe')!.getAttribute('src')!;
+      expect(src).not.toContain('X-Amz-Signature');
+    });
+
+    it('surfaces a mint failure instead of framing an empty viewer', async () => {
+      service.mintLiveView.mockRejectedValue(new Error('gone'));
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(el.textContent).toContain('Could not open the sign-in viewer');
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+
+    it('sizes the frame to the session viewport, not a constant', async () => {
+      const el = render(request({ viewport: { width: 1600, height: 900 } }));
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const frame = el.querySelector('iframe')!.parentElement as HTMLElement;
+      expect(frame.style.aspectRatio.replace(/\s/g, '')).toBe('1600/900');
+    });
+  });
+
+  describe('the ready handshake', () => {
+    it('ignores a ready message from any other origin', async () => {
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const frame = el.querySelector('iframe')!;
+      const post = vi.fn();
+      Object.defineProperty(frame, 'contentWindow', {
+        value: { postMessage: post },
+        configurable: true,
+      });
+      post.mockClear();
+
+      // A hostile sibling frame must not be able to provoke us into posting a
+      // live signed URL to it.
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          origin: 'https://evil.example',
+          data: { type: 'browser-live-view/ready' },
+        }),
+      );
+
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it('posts the URL to the sandbox origin when the viewer says it is ready', async () => {
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const frame = el.querySelector('iframe')!;
+      const post = vi.fn();
+      Object.defineProperty(frame, 'contentWindow', {
+        value: { postMessage: post },
+        configurable: true,
+      });
+
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          origin: SANDBOX,
+          data: { type: 'browser-live-view/ready' },
+        }),
+      );
+
+      expect(post).toHaveBeenCalledOnce();
+      const [message, target] = post.mock.calls[0];
+      expect(message.url).toBe(SIGNED);
+      expect(message.viewport).toEqual({ width: 1280, height: 800 });
+      // Explicit target, never '*': that origin also serves untrusted MCP App
+      // HTML, and a wildcard would post a live credential to whatever is there.
+      expect(target).toBe(SANDBOX);
+    });
+  });
+
+  describe('resolving', () => {
+    it('reports completion for this interrupt', async () => {
+      const el = render();
+      (el.querySelector('button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const done = Array.from(el.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes("I've signed in"),
+      ) as HTMLButtonElement;
+      done.click();
+      await fixture.whenStable();
+
+      expect(service.complete).toHaveBeenCalledWith('v1:tool_call:tu-1:abc');
+    });
+
+    it('skips when the user declines', async () => {
+      const el = render();
+      const decline = Array.from(el.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes("Don't sign in"),
+      ) as HTMLButtonElement;
+      decline.click();
+      await fixture.whenStable();
+
+      expect(service.skip).toHaveBeenCalledWith('v1:tool_call:tu-1:abc');
+    });
+  });
+});
