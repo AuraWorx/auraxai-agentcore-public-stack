@@ -422,8 +422,11 @@ def _pdf_pages(raw: bytes, pages: Tuple[int, int], limit: int, base: Dict[str, A
 
 def _pdf_pattern(raw: bytes, pattern: str, base: Dict[str, Any]) -> DocumentReadResult:
     regex, note = _compile(pattern)
-    clock = _Budget(DOCUMENT_READ_PATTERN_BUDGET_SECONDS)
     pdf = _open_pdf(raw)
+    # The clock starts after the open: lazily importing the pypdfium2 native
+    # library and parsing the document are setup, not scanning, and charging
+    # them to the scan's budget can report a timeout on pages never examined.
+    clock = _Budget(DOCUMENT_READ_PATTERN_BUDGET_SECONDS)
     pages_searched = 0
     try:
         count = len(pdf)
@@ -695,8 +698,8 @@ def _grep_lines(
 
 def _text_pattern(text: str, pattern: str, base: Dict[str, Any], unit: str) -> DocumentReadResult:
     regex, note = _compile(pattern)
-    clock = _Budget(DOCUMENT_READ_PATTERN_BUDGET_SECONDS)
     lines = text.splitlines()
+    clock = _Budget(DOCUMENT_READ_PATTERN_BUDGET_SECONDS)
     matches = _grep_lines(lines, regex, DOCUMENT_READ_MAX_MATCHES, clock)
     payload = {
         **base,
