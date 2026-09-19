@@ -4,8 +4,8 @@
 run 2026-09-15 on a production-mirror environment, Claude Haiku 4.5, 5M-token/min quota.
 **Assessed against:** `develop` at `ca3e8d2c` (2026-09-18), strands-agents 1.55.0,
 bedrock-agentcore 1.21.0.
-**Status:** **COMPLETE — all five findings and one residual shipped.** Merged to
-`develop` and deployed to dev 2026-09-19: #1154 (bytecode + warm-up, bounded
+**Status:** **COMPLETE — all five findings and one residual shipped.** Merged to `develop` 2026-09-19
+(#1154/#1155 verified in dev; the rest deploy on the next rollout): #1154 (bytecode + warm-up, bounded
 CountTokens, session split memo, four cache families, CORS synth guard), #1155
 (`assistant_id` in the cache key → spreadsheet sessions cache their agent),
 #1156 (system prompt counted against a probe message — Bedrock rejects an empty

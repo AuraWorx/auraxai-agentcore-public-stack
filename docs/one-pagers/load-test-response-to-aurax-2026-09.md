@@ -14,8 +14,8 @@ Thank you for this. Four of your five findings describe real defects in our
 mainline, the fifth is a deployment-configuration gap we had left as a warning,
 and all three of your stated residuals are correctly identified. We validated
 each claim against `develop` before touching anything, then shipped. **All five
-findings now have code merged to `develop` and deployed to dev**, across five
-pull requests. Two of your items led us somewhere you did not claim: a
+findings now have code merged to `develop`**, across five pull requests — items
+1 through 4 are verified running in dev, the rest deploy on the next rollout. Two of your items led us somewhere you did not claim: a
 long-standing bug in our token-attribution telemetry, and a second layer of the
 per-turn rebuild that your fix would only have half-addressed.
 
@@ -34,18 +34,19 @@ subsystem your branch does not. We would not have trusted the deltas otherwise.
 
 | # | Your finding | Our verdict | Shipped as | State |
 |---|---|---|---|---|
-| 1 | Prompt counted 3× per turn; agent rebuilt each turn | **Confirmed**, plus a second cause you did not reach | #1154, #1155 | Merged, on dev |
-| 2 | Image ships no compiled bytecode | **Confirmed** | #1154 | Merged, on dev |
-| 3 | One CountTokens in front of every model stream | **Confirmed**; fixed differently, see below | #1154 | Merged, on dev |
-| 4 | Uploads bucket has no CORS rule | **Environment gap, not a mainline bug** | #1154 | Merged, on dev |
-| 5 | Assistant refuses an attached spreadsheet | **Confirmed**; narrower scope, see below | #1158 | Merged, on dev |
-| R1 | 6 conversation-memory lookups per message | **Confirmed mechanism, wrong count** | #1157, #1155 | Merged, on dev |
+| 1 | Prompt counted 3× per turn; agent rebuilt each turn | **Confirmed**, plus a second cause you did not reach | #1154, #1155 | Merged · verified in dev |
+| 2 | Image ships no compiled bytecode | **Confirmed** | #1154 | Merged · verified in dev |
+| 3 | One CountTokens in front of every model stream | **Confirmed**; fixed differently, see below | #1154 | Merged · verified in dev |
+| 4 | Uploads bucket has no CORS rule | **Environment gap, not a mainline bug** | #1154 | Merged · verified in dev |
+| 5 | Assistant refuses an attached spreadsheet | **Confirmed**; narrower scope, see below | #1158 | Merged · deploy pending |
+| R1 | 6 conversation-memory lookups per message | **Confirmed mechanism, wrong count** | #1157, #1155 | Merged · deploy pending |
 | R2 | Memory quota 30 lookups/s | **Right number, wrong API** | — | Quota request open |
 | R3 | Micro-VM cold start ~12 s | **Plausible, unverified by us** | — | AWS thread open |
-| — | *(not claimed)* System-prompt token count was never authoritative | Found while verifying your probe-message detail | #1156 | Merged, on dev |
+| — | *(not claimed)* System-prompt token count was never authoritative | Found while verifying your probe-message detail | #1156 | Merged · deploy pending |
 
-Everything above is on `develop` and running in our dev environment. Production
-ships on the next release; every change carries a kill switch (table at the
+Everything above is merged to `develop`. Items 1–4 are verified running in dev;
+5, R1 and the probe fix deploy on the next rollout. Production ships on the
+next release; every change carries a kill switch (table at the
 end).
 
 ---
@@ -424,7 +425,7 @@ conclusion without them.
 
 | Item | Owner | State |
 |---|---|---|
-| Merge and deploy all five findings | Us | **Done** — #1154, #1155, #1156, #1157, #1158 on `develop`, deployed to dev |
+| Merge all five findings | Us | **Done** — #1154, #1155, #1156, #1157, #1158 on `develop` |
 | Rerun the A/B on our harness: 10 and 17 msg/s, 8-minute holds, before/after | Us | Not started; needs the load-test provisioning gate (creates users in the shared pool and suspends cost limits, so it is a deliberate manual step) |
 | File `RetrieveMemoryRecords` quota increase, 30 → 300/s | Us | Not filed; sized after the code reduction |
 | Open the AWS support thread on micro-VM cold start | Us | Not opened; attach post-warm-up breakdown |
