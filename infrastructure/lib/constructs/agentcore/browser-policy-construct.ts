@@ -11,8 +11,23 @@ import {
   getResourceName,
 } from '../../config';
 
-/** Object key of the managed policy file inside the bucket. */
-export const BROWSER_MANAGED_POLICY_KEY = 'policies/managed-policies.json';
+/**
+ * The policy object's location, split so the deployment and the key the
+ * backend is told about are derived from ONE source.
+ *
+ * They were separate constants once, and the BucketDeployment's
+ * `destinationKeyPrefix` compounded with a source name that already carried
+ * the prefix — the object landed at `policies/policies/managed-policies.json`
+ * while `BROWSER_POLICY_S3` pointed at `policies/managed-policies.json`. The
+ * deploy looked clean and the policy silently resolved to a missing key, which
+ * is the worst shape for a security control to fail in. Keep these derived.
+ */
+const BROWSER_POLICY_PREFIX = 'policies';
+const BROWSER_POLICY_FILENAME = 'managed-policies.json';
+
+/** Full object key, as both the deployment and the backend see it. */
+export const BROWSER_MANAGED_POLICY_KEY =
+  `${BROWSER_POLICY_PREFIX}/${BROWSER_POLICY_FILENAME}`;
 
 /**
  * Render the Chromium managed-policy document.
@@ -112,14 +127,16 @@ export class AgentCoreBrowserPolicyConstruct extends Construct {
 
     new s3deploy.BucketDeployment(this, 'BrowserPolicyDeployment', {
       sources: [
+        // Just the filename: `destinationKeyPrefix` below supplies the
+        // prefix. Passing the full key here is what doubled it.
         s3deploy.Source.jsonData(
-          BROWSER_MANAGED_POLICY_KEY,
+          BROWSER_POLICY_FILENAME,
           buildBrowserManagedPolicy(config.browser.urlBlocklist),
         ),
       ],
       destinationBucket: this.bucket,
-      // Scoped prune: this deployment owns `policies/` and nothing else.
-      destinationKeyPrefix: 'policies',
+      // Scoped prune: this deployment owns this prefix and nothing else.
+      destinationKeyPrefix: BROWSER_POLICY_PREFIX,
       prune: true,
     });
 
