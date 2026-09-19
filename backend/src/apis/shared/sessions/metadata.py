@@ -3053,6 +3053,124 @@ async def clear_paused_turn(session_id: str, user_id: str) -> None:
         logger.error("Failed to clear paused_turn: %s", e, exc_info=True)
 
 
+async def set_browser_session(
+    session_id: str,
+    user_id: str,
+    ref: Dict[str, Any],
+) -> None:
+    """Project the conversation's browser session onto its metadata row.
+
+    Spec D4. The agent-side source of truth is ``agent.state``, which the
+    Strands session manager restores from AgentCore Memory — a store app-api
+    cannot read. app-api is where the live-view route has to live (the
+    AgentCore Runtime data plane proxies only ``/invocations`` and ``/ping``,
+    so a route on inference-api would 404 in cloud), and it needs the browser
+    session's identity to mint a URL. Hence this projection.
+
+    Idempotent overwrite. Per the "one session can be served by more than one
+    agent" rule, readers must re-read this row rather than caching it on an
+    agent instance.
+
+    **Identifiers only.** Anything URL-shaped is rejected before the write: a
+    live-view URL is SigV4 query-signed with a 300-second cap, so a persisted
+    one is stale by the time anything reads it back, and persisting one at all
+    is the mistake PR #1101 already paid for once.
+
+    No-op when the session metadata record is missing or the table env var is
+    unset (preview/anonymous flows).
+    """
+    sessions_metadata_table = os.environ.get("DYNAMODB_SESSIONS_METADATA_TABLE_NAME")
+    if not sessions_metadata_table:
+        logger.warning(
+            "DYNAMODB_SESSIONS_METADATA_TABLE_NAME not set; skipping browser_session persistence"
+        )
+        return
+
+    try:
+        from apis.shared.browser_takeover import assert_no_url
+
+        assert_no_url(ref)
+    except ValueError as e:
+        logger.error("Refusing to persist browser_session: %s", e)
+        return
+
+    try:
+        import boto3
+
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(sessions_metadata_table)
+
+        existing = await _get_session_by_gsi(session_id, user_id, table)
+        if not existing:
+            logger.info(
+                "Skipping browser_session write — session %s not found", session_id
+            )
+            return
+
+        sk = existing.get("SK")
+        if not sk:
+            logger.warning(
+                "Session %s has no SK; cannot update browser_session", session_id
+            )
+            return
+
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression="SET #bs = :bs",
+            ExpressionAttributeNames={"#bs": "browserSession"},
+            ExpressionAttributeValues={":bs": _convert_floats_to_decimal(ref)},
+        )
+        logger.info("Persisted browser_session for session %s", session_id)
+    except Exception as e:
+        # Best-effort: a write failure must not break the live SSE flow. The
+        # cost is that app-api cannot mint a live view for this takeover, so
+        # the user sees the prompt without a working viewer — degraded, not
+        # broken, and the turn still resumes on skip.
+        logger.error("Failed to persist browser_session: %s", e, exc_info=True)
+
+
+async def clear_browser_session(session_id: str, user_id: str) -> None:
+    """Drop the browser-session projection for a conversation.
+
+    Called when the browser session ends. Leaving a stale row behind would have
+    app-api mint live-view URLs for a session that no longer exists.
+    """
+    sessions_metadata_table = os.environ.get("DYNAMODB_SESSIONS_METADATA_TABLE_NAME")
+    if not sessions_metadata_table:
+        return
+
+    try:
+        import boto3
+
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(sessions_metadata_table)
+
+        existing = await _get_session_by_gsi(session_id, user_id, table)
+        if not existing or not existing.get("SK"):
+            return
+        if "browserSession" not in existing:
+            return  # Already clear
+
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": existing["SK"]},
+            UpdateExpression="REMOVE #bs",
+            ExpressionAttributeNames={"#bs": "browserSession"},
+        )
+        logger.info("Cleared browser_session for session %s", session_id)
+    except Exception as e:
+        logger.error("Failed to clear browser_session: %s", e, exc_info=True)
+
+
+async def get_browser_session(
+    session_id: str, user_id: str
+) -> Optional[Dict[str, Any]]:
+    """Return the persisted browser-session projection, if any."""
+    metadata = await get_session_metadata(session_id, user_id)
+    if not metadata:
+        return None
+    return metadata.browser_session
+
+
 async def set_truncated_turn(session_id: str, user_id: str) -> None:
     """Mark that the last turn ended in a recoverable max_tokens truncation.
 

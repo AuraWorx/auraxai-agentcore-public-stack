@@ -701,6 +701,12 @@ class StreamCoordinator:
                         user_id=user_id,
                     ):
                         yield sse
+                    for sse in await self._extract_browser_login_required_events(
+                        agent,
+                        session_id=session_id,
+                        user_id=user_id,
+                    ):
+                        yield sse
                     for sse in self._extract_preflight_consent_events(user_id):
                         yield sse
 
@@ -2132,6 +2138,119 @@ class StreamCoordinator:
                     questions=questions,
                 ).to_sse_format()
             )
+        return events
+
+    async def _extract_browser_login_required_events(
+        self,
+        agent: Any,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[str]:
+        """Yield one SSE-formatted `browser_login_required` event per pending
+        ``request_user_login`` interrupt, and project the browser session onto
+        the metadata row so app-api can mint a live view for it.
+
+        Structurally the same as
+        :meth:`_extract_user_question_required_events` — a tool-raised
+        interrupt Strands routes through ``_stop_for_interrupts``, so the
+        ``PausedTurnSnapshot`` written on this same ``done`` event covers it.
+
+        Two things are specific to this flavor:
+
+        * **The conversation id is added here, not in the tool.** The tool
+          knows only which *browser* session it handed over;
+          ``sessionId`` on the event means the conversation, as it does on
+          every other SSE event, and this is the layer that has it.
+        * **The D4 projection is written here too**, for the same reason: the
+          write is keyed by conversation and owner, which the tool does not
+          know. It is best-effort — without it the prompt still renders and
+          the turn still resumes on skip; the user just has no working viewer.
+
+        Nothing in either payload is a URL, and
+        :func:`apis.shared.browser_takeover.assert_no_url` enforces that rather
+        than trusting it.
+        """
+        from apis.shared.browser_takeover import (
+            BrowserLoginRequiredEvent,
+            BrowserSessionRef,
+            assert_no_url,
+            encode_ref,
+        )
+        from apis.shared.sessions.metadata import (
+            add_pending_interrupt,
+            set_browser_session,
+        )
+        from apis.shared.sessions.models import PendingInterrupt
+
+        interrupt_state = getattr(agent, "_interrupt_state", None)
+        if not interrupt_state or not getattr(interrupt_state, "activated", False):
+            return []
+
+        events: List[str] = []
+        for interrupt in interrupt_state.interrupts.values():
+            reason = interrupt.reason or {}
+            if not isinstance(reason, dict) or reason.get("type") != "browser_login_required":
+                continue
+
+            try:
+                ref = BrowserSessionRef.model_validate(reason)
+            except Exception as e:  # noqa: BLE001 - never break the stream
+                logger.warning(
+                    "Browser-login interrupt carries an unusable session ref "
+                    "(id=%s): %s",
+                    interrupt.id, e,
+                )
+                continue
+
+            tool_use_id = reason.get("toolUseId", "")
+            prompt_reason = reason.get("reason")
+
+            if session_id and user_id:
+                try:
+                    await set_browser_session(
+                        session_id=session_id,
+                        user_id=user_id,
+                        ref=ref.model_dump(by_alias=True, exclude_none=True),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to project browser_session for %s: %s",
+                        session_id, e, exc_info=True,
+                    )
+
+                try:
+                    await add_pending_interrupt(
+                        session_id=session_id,
+                        user_id=user_id,
+                        interrupt=PendingInterrupt(
+                            interrupt_id=interrupt.id,
+                            kind="browser_login",
+                            tool_use_id=tool_use_id,
+                            tool_name="request_user_login",
+                            browser_session=encode_ref(ref),
+                            reason=prompt_reason,
+                            created_at=datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to persist browser_login pending_interrupt %s: %s",
+                        interrupt.id, e, exc_info=True,
+                    )
+
+            event = BrowserLoginRequiredEvent(
+                interrupt_id=interrupt.id,
+                tool_use_id=tool_use_id,
+                session_id=session_id or "",
+                browser_session_id=ref.browser_session_id,
+                browser_id=ref.browser_id,
+                viewport=ref.viewport,
+                deadline_at=ref.deadline_at,
+                target_url=ref.target_url,
+                reason=prompt_reason,
+            )
+            assert_no_url(event.model_dump(by_alias=True, exclude_none=True))
+            events.append(event.to_sse_format())
         return events
 
     async def _extract_artifact_events(

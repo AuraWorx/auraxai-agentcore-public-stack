@@ -192,6 +192,7 @@ case "$SERVICE" in
             "backend/src/apis/shared/scheduled_prompts"
             "backend/src/apis/shared/sessions_bff"
             "backend/src/apis/shared/sessions"
+            "backend/src/apis/shared/browser_takeover"
             "backend/src/apis/shared/storage"
             "backend/src/apis/shared/observability"
         )

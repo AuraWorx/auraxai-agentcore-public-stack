@@ -1,6 +1,6 @@
 # Authenticated web assessment (browser takeover, profiles, axe)
 
-**Status:** PROPOSED — no code written. Sized for four PRs.
+**Status:** IN PROGRESS — **PR 1 built** (backend takeover: `request_user_login`, take/release control, the `browser_login_required` interrupt + SSE event, the D4 metadata projection, reaper pinning, the abandonment deadline, and the flag). PRs 2-4 not started. Sized for four PRs.
 **Driver:** Two user requests, both blocked on the same missing capability:
 a Library agent that evaluates the accessibility of the databases they renew
 annually (subscription-gated), and a VPAT-evaluation agent that must test
@@ -406,6 +406,47 @@ scanning of a vendor's non-public demo instance may breach that vendor's terms.
 For a Library procurement workflow this is fixable at the source — ask for
 scanning rights in the renewal terms, or request an evaluation tenant. Worth
 having in writing before forty scans run, not after.
+
+## Build notes (PR 1)
+
+Two deliberate deviations from the sketch above, both recorded here so PR 2
+does not have to rediscover them:
+
+1. **`sessionId` on the event is the conversation, not the browser session.**
+   D1b wrote a single ambiguous `sessionId`. Every other SSE event in this
+   codebase uses `sessionId` for the conversation, and D2's route is owner-
+   scoped by conversation, so the event carries both: `sessionId` (conversation)
+   and `browserSessionId`. Collapsing them would have collided the moment
+   app-api needed to check ownership.
+
+2. **The conversation id and the D4 projection are stamped on in the streaming
+   layer, not the tool.** The tool knows only which browser session it handed
+   over; `stream_coordinator` is the layer that holds `session_id` / `user_id`.
+   Keeping identity out of the tool also keeps it a *static* registry tool
+   rather than an `extra_tools` injection, so it does not touch the injected-
+   tool agent-cache bypass.
+
+Three things worth knowing before building PR 2:
+
+* **Strands re-executes an interrupted tool from the top on resume**
+  (`strands/types/interrupt.py`), so `request_user_login` runs twice per
+  takeover. `take_control` is idempotent and a marker on `agent.state` carries
+  the descriptor across the pause; without the marker a resume that lands in a
+  container which lost the session would call `acquire` and silently start a
+  *second, unauthenticated* browser, then report success.
+* **The abandonment deadline is enforced by the reaper, not by a timer.**
+  Nothing runs while a turn is paused. `_reap_idle` exempts a user-controlled
+  session only until `deadlineAt`, and it runs on any conversation's next
+  browser call in the same container, with the remote TTL as the backstop.
+  `BROWSER_TAKEOVER_DEADLINE_SECONDS` defaults to 480, with a 60s grace on the
+  resume side so a user who finished at 7:59 whose POST lands at 8:01 is not
+  told their sign-in expired.
+* **`live_view` is gone from `browse_web`.** It returned a presigned URL as
+  tool-result text — the exact failure PR #1101 diagnosed — and its 300-second
+  cap made it useless for a human anyway.
+
+⚠️ Still unverified, and still blocking PR 3: whether `profileConfiguration`
+survives a browser *resource* replacement (risk 2 below).
 
 ## PR breakdown
 

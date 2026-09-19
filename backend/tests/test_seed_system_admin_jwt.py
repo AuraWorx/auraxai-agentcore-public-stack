@@ -246,6 +246,25 @@ class TestSeedDefaultTools:
         assert item["GSI1PK"] == "CATEGORY#browser"
         assert item["GSI1SK"] == "TOOL#browse_web"
 
+        # Verify request_user_login. enabledByDefault MUST stay False, and
+        # this is the strictest default in the seed: while a takeover is live
+        # the user has a fully interactive Chromium inside our AWS account with
+        # our egress. It is a separate tool_id precisely so it can be granted
+        # to named roles — RBAC has no sub-tool gate, so an action on
+        # browse_web would have shipped it to every user who can browse.
+        resp = dynamodb_table.get_item(
+            Key={"PK": "TOOL#request_user_login", "SK": "METADATA"}
+        )
+        item = resp["Item"]
+        assert item["toolId"] == "request_user_login"
+        assert item["displayName"] == "Browser Sign-In"
+        assert item["category"] == "browser"
+        assert item["protocol"] == "local"
+        assert item["enabledByDefault"] is False
+        assert item["isPublic"] is False
+        assert item["GSI1PK"] == "CATEGORY#browser"
+        assert item["GSI1SK"] == "TOOL#request_user_login"
+
         # Verify create_excel_spreadsheet (single toggle for the whole Excel toolset)
         resp = dynamodb_table.get_item(
             Key={"PK": "TOOL#create_excel_spreadsheet", "SK": "METADATA"}

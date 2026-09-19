@@ -145,7 +145,6 @@ async def browse_web(
                               `[...document.querySelectorAll('h2')].map(e => e.innerText)`.
             `screenshot`    — capture the viewport as an image. Expensive in
                               tokens; only use it when you must SEE the layout.
-            `live_view`     — get a URL where the user can watch the session.
             `close`         — end the browser session.
         url: Target URL for `navigate` (http/https).
         selector: CSS selector for `click` and `type`.
@@ -281,13 +280,14 @@ async def _dispatch(
             [{"image": {"format": "png", "source": {"bytes": base64.b64decode(encoded)}}}],
         )
 
-    if action == "live_view":
-        view_url = await session_pool.live_view_url(agent)
-        if not view_url:
-            return _err("❌ No live view available for this session.")
-        return _ok(f"Watch the browser session here (expires shortly):\n{view_url}")
+    # `live_view` used to live here. It returned a presigned URL as tool-result
+    # text, which the model re-emits truncated at the `?` (PR #1101), and which
+    # expires in at most 300 seconds — dead before a human can react and dead
+    # again on every reload of the thread. Watching (and now driving) the
+    # session is `request_user_login` plus app-api's live-view route, where the
+    # URL is minted per request and never becomes model-visible.
 
     return _err(
         f"❌ Unknown action '{action}'. Valid actions: navigate, extract_text, "
-        "extract_links, click, type, evaluate, screenshot, live_view, close."
+        "extract_links, click, type, evaluate, screenshot, close."
     )

@@ -438,6 +438,26 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
         "forwardAuthToken": False,
     },
     {
+        "toolId": "request_user_login",
+        "displayName": "Browser Sign-In",
+        "description": (
+            "Hand the browser to the user so they can sign in to a site the "
+            "agent cannot reach, then continue browsing the authenticated "
+            "session."
+        ),
+        "category": "browser",
+        # Deliberately off by default, and the most restrictive default in this
+        # file. While a takeover is live the user has a fully interactive
+        # Chromium running inside our AWS account with our egress — that is a
+        # capability to grant to named staff/evaluator roles, never a default.
+        # RBAC granularity is one tool_id, which is exactly why this is its own
+        # entry rather than an action on browse_web.
+        "enabledByDefault": False,
+        "protocol": "local",
+        "isPublic": False,
+        "forwardAuthToken": False,
+    },
+    {
         "toolId": "generate_diagram_and_validate",
         "displayName": "Code Interpreter",
         "description": "Generate diagrams, charts, and visualizations using Python code in a sandboxed environment.",
