@@ -99,6 +99,21 @@ export interface ContentBlock {
   document?: Record<string, unknown> | null;
   /** Reasoning content (if type is reasoningContent) - extended thinking from Claude 3.7+, GPT, etc. */
   reasoningContent?: ReasoningContentData | null;
+  /**
+   * How long the model spent on this reasoning block, in ms — the "Thought for
+   * 17s" readout on its header.
+   *
+   * Sits here rather than inside `reasoningContent` on purpose: that nested
+   * object is Bedrock's Converse shape, and a display-only number belongs
+   * outside it (the same reason `tool_group_summary` is kept off the content
+   * blocks — see CLAUDE.md).
+   *
+   * Live-only by construction. Only the stream parser sets it; `GET /messages`
+   * never does, so a reloaded conversation falls back to the plain "Thinking"
+   * header rather than showing a duration nobody measured. Same posture as the
+   * tool rail's durations.
+   */
+  reasoningDurationMs?: number;
   /** File attachment metadata (if type is fileAttachment) - for displaying file badges in user messages */
   fileAttachment?: FileAttachmentData | null;
 }
