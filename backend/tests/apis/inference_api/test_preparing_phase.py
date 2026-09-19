@@ -1,34 +1,38 @@
 """The deferred, narrated agent build (docs/specs/agent-state-feedback.md PR-3).
 
-Measured on dev: a cold agent-cache miss spends 1478ms inside `get_agent`,
-and because FastAPI flushes response headers when the handler returns its
+Measured on dev: a cold agent-cache miss spends ~1500ms inside `get_agent`, and
+because FastAPI flushes response headers when the handler returns its
 `StreamingResponse`, every millisecond of that is dead air. PR-3 defers the
-build into the stream generator so the response opens first and the wait can
-be narrated.
+build into the stream generator so the response opens first and the wait can be
+narrated.
 
-What is worth pinning is the part that is easy to get wrong:
+**The timing decision is NOT made here.** It used to be: the generator raced the
+build against a 250ms timer and emitted the frame only if the build was still
+running, so a warm build never flashed a phase nobody can read. That cannot
+work — `create_agent` is synchronous, so a cold build occupies the event loop
+for its whole duration and `asyncio.wait` never fires its timeout. Verified on
+dev: a 1548ms build, six times the threshold, emitted nothing. The frame is now
+unconditional and the SPA holds it for 250ms before rendering.
 
-1. The frame is emitted **only when the build is actually slow**. A warm build
-   is 0-38ms, and announcing "Getting ready" for 38ms would flash a phase the
-   user cannot read — landing, worse, *after* the generic "Thinking" the client
-   already shows, which reads as going backwards.
-2. A build that RAISES inside the generator cannot reach the handler's `except`
-   arms any more, so it must surface as a conversational error rather than a
-   silent hang.
-3. The lease is released either way.
-
-Driven through the real coordinator-shaped pieces where practical; the build
-itself is a stub, because what matters here is timing and failure, not what
-`get_agent` returns.
+So what is pinned here is what the server still owns: the frame goes out BEFORE
+the build, a failed build surfaces instead of hanging, and the lease is released
+either way.
 """
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, AsyncGenerator, List, Optional
 
 import pytest
 
-from apis.inference_api.chat.routes import _PREPARING_NOTICE_SECONDS
+# Module level on purpose. `backend/tests/apis/__init__.py` makes `tests/apis`
+# a package ALSO named `apis`, and pytest puts `backend/tests` on sys.path, so
+# a file whose first `apis.` import happens later — inside a fixture, say —
+# can bind `apis` to the TEST package and fail on `apis.shared.caching`, which
+# only exists under `src`. Importing here binds it to the real one first, which
+# is why every other test file in this tree does the same.
+import apis.inference_api.chat.routes as routes_module
 
 
 def _frames_of(kind: str, frames: List[str]) -> List[dict]:
@@ -45,8 +49,8 @@ class _Harness:
 
     The real `_guarded_stream` is a closure over ~40 locals inside a
     1700-line handler; reproducing its *decision* here keeps the test on the
-    behaviour under change instead of on FastAPI wiring. The shape below is
-    kept in step with `routes.py` by `test_route_still_matches_this_shape`.
+    behaviour under change instead of on FastAPI wiring. Kept in step with
+    `routes.py` by `TestRouteContract`.
     """
 
     def __init__(self, build_seconds: float, fails: bool = False) -> None:
@@ -65,24 +69,19 @@ class _Harness:
     async def stream(self) -> AsyncGenerator[str, None]:
         agent: Optional[Any] = None
         try:
-            build = asyncio.ensure_future(self._build())
-            finished, _ = await asyncio.wait(
-                {build}, timeout=_PREPARING_NOTICE_SECONDS
-            )
-            if not finished:
-                yield (
-                    "event: agent_status\ndata: "
-                    + json.dumps(
-                        {
-                            "type": "agent_status",
-                            "sessionId": "sess-1",
-                            "phase": "preparing",
-                        }
-                    )
-                    + "\n\n"
+            yield (
+                "event: agent_status\ndata: "
+                + json.dumps(
+                    {
+                        "type": "agent_status",
+                        "sessionId": "sess-1",
+                        "phase": "preparing",
+                    }
                 )
+                + "\n\n"
+            )
             try:
-                agent = await build
+                agent = await self._build()
             except Exception:
                 yield 'event: stream_error\ndata: {"code": "AGENT_ERROR"}\n\n'
                 yield "event: done\ndata: {}\n\n"
@@ -94,49 +93,40 @@ class _Harness:
             self.released = True
 
 
-class TestWhenTheFrameIsEmitted:
+class TestTheFrame:
     @pytest.mark.asyncio
-    async def test_a_slow_build_is_narrated(self):
-        harness = _Harness(build_seconds=_PREPARING_NOTICE_SECONDS + 0.2)
-
-        frames = [f async for f in harness.stream()]
-
-        statuses = _frames_of("agent_status", frames)
-        assert [s["phase"] for s in statuses] == ["preparing"]
-        assert harness.built
-
-    @pytest.mark.asyncio
-    async def test_a_fast_build_is_not(self):
-        """The warm path. 38ms of "Getting ready" is a flicker, not a status."""
+    async def test_is_emitted_for_every_deferred_build(self):
+        """Unconditional by design — the server cannot time its own build."""
         harness = _Harness(build_seconds=0.01)
 
         frames = [f async for f in harness.stream()]
 
-        assert _frames_of("agent_status", frames) == []
+        assert [s["phase"] for s in _frames_of("agent_status", frames)] == [
+            "preparing"
+        ]
         assert harness.built
 
     @pytest.mark.asyncio
-    async def test_the_frame_precedes_the_turn_it_explains(self):
-        harness = _Harness(build_seconds=_PREPARING_NOTICE_SECONDS + 0.2)
+    async def test_precedes_the_build_it_explains(self):
+        """After the build it would describe a wait that had already ended."""
+        harness = _Harness(build_seconds=0.3)
 
         frames = [f async for f in harness.stream()]
 
-        preparing = next(
-            i for i, f in enumerate(frames) if "preparing" in f
-        )
+        preparing = next(i for i, f in enumerate(frames) if "preparing" in f)
         message_start = next(
             i for i, f in enumerate(frames) if f.startswith("event: message_start")
         )
         assert preparing < message_start
 
     @pytest.mark.asyncio
-    async def test_the_frame_carries_no_cycle(self):
+    async def test_carries_no_cycle(self):
         """`preparing` precedes the event loop, so there is no cycle to number.
 
-        The SPA validator accepts it on that basis; sending a fabricated cycle
-        would make the two disagree about what the phase means.
+        The SPA validator accepts it on that basis; a fabricated cycle would
+        make the two disagree about what the phase means.
         """
-        harness = _Harness(build_seconds=_PREPARING_NOTICE_SECONDS + 0.2)
+        harness = _Harness(build_seconds=0.01)
 
         frames = [f async for f in harness.stream()]
 
@@ -164,41 +154,22 @@ class TestFailure:
 
         assert harness.released
 
-    @pytest.mark.asyncio
-    async def test_a_slow_failing_build_narrates_then_errors(self):
-        harness = _Harness(build_seconds=_PREPARING_NOTICE_SECONDS + 0.2, fails=True)
-
-        frames = [f async for f in harness.stream()]
-
-        assert [s["phase"] for s in _frames_of("agent_status", frames)] == [
-            "preparing"
-        ]
-        assert any(f.startswith("event: stream_error") for f in frames)
-        assert harness.released
-
 
 class TestRouteContract:
     def test_route_still_matches_this_shape(self):
-        """Guards the harness above against the route drifting away from it.
-
-        A copy of a decision is only useful while it is still a copy.
-        """
-        from pathlib import Path
-
-        import apis.inference_api.chat.routes as routes_module
-
+        """Guards the harness above against the route drifting away from it."""
         source = Path(routes_module.__file__).read_text()
 
-        # The build is raced against the threshold, not awaited outright.
-        assert "asyncio.wait(" in source
-        assert "_PREPARING_NOTICE_SECONDS" in source
-        # The frame is emitted only in the not-finished arm.
-        assert "if not finished:" in source
         assert '"phase": "preparing"' in source
-        # A build failure is caught inside the generator.
         assert "Deferred agent build failed" in source
 
-    def test_the_threshold_sits_between_the_measured_warm_and_cold_builds(self):
-        """0-38ms warm, 1478ms cold (dev, 2026-09-19). A threshold inside that
-        gap classifies both correctly with room to spare."""
-        assert 0.038 < _PREPARING_NOTICE_SECONDS < 1.478
+    def test_the_route_no_longer_races_its_own_build(self):
+        """The regression this file exists to prevent a second time.
+
+        A server-side timer around a synchronous build cannot fire, so any
+        reappearance of one here means the frame has silently stopped being
+        sent again.
+        """
+        source = Path(routes_module.__file__).read_text()
+
+        assert "_PREPARING_NOTICE_SECONDS" not in source
