@@ -3468,6 +3468,33 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                         return
                     prelude.mark("agent_build")
 
+                    # Tell the client the build is OVER.
+                    #
+                    # Without this the SPA can only infer it from the next
+                    # status, which is `thinking` — and that does not arrive
+                    # until the head-of-turn context work and the event loop's
+                    # startup have also run, well over the 250ms the SPA waits
+                    # before rendering "Getting ready…". So a 1ms cache-hit
+                    # build still showed the label: `preparing` was not a state
+                    # with an end, it was just the latest event. Measured on
+                    # dev, builds of 0ms, 1ms and 40ms all rendered it.
+                    #
+                    # `durationMs` is the build's own measured time, which is
+                    # what makes this frame worth more than a bare marker: it
+                    # says how long the thing the user was told about took.
+                    yield (
+                        "event: agent_status\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "agent_status",
+                                "sessionId": input_data.session_id,
+                                "phase": "prepared",
+                                "durationMs": prelude.last_stage_ms,
+                            }
+                        )
+                        + "\n\n"
+                    )
+
                 # Emitted here rather than before the return: with the build
                 # deferred, "the window before the client can hear anything"
                 # ends at the agent, not at the response.

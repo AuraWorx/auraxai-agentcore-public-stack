@@ -391,6 +391,13 @@ export interface ModelRetryEvent {
  *                 before `message_start`) exists. Measured at 1478ms on a cold
  *                 agent-cache miss and 0-38ms warm, so in practice it appears
  *                 only when it is worth appearing. Carries no `cycle`.
+ * - `prepared`    that build FINISHED, carrying its measured `durationMs`.
+ *                 Its whole job is to end `preparing`. Without it the SPA
+ *                 could only infer the end from `thinking`, which does not
+ *                 arrive until the head-of-turn work and the event loop's
+ *                 startup have run too — so a 1ms cache-hit build still
+ *                 rendered "Getting ready…". A phase that is only ever the
+ *                 "latest event" cannot express a wait that ended.
  * - `thinking`    the model is generating (one per event-loop cycle, so a
  *                 three-tool turn reports it four times — that IS the turn's
  *                 shape, and `cycle` distinguishes them)
@@ -411,7 +418,7 @@ export interface ModelRetryEvent {
 export interface AgentStatusEvent {
   type: 'agent_status';
   sessionId: string;
-  phase: 'preparing' | 'thinking' | 'tool_start' | 'tool_end';
+  phase: 'preparing' | 'prepared' | 'thinking' | 'tool_start' | 'tool_end';
   /**
    * 1-based event-loop cycle this transition belongs to.
    *

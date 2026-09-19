@@ -387,6 +387,13 @@ export class MessageListComponent {
     if (phase === 'preparing') {
       // Not yet settled means the build is still plausibly a fast one, and a
       // label that appears for 38ms is a flicker rather than a status.
+      //
+      // `prepared` deliberately does NOT land here: it means the build is
+      // over, so it falls through to the generic label below. That frame is
+      // what makes the settle timer work at all — the build's END used to be
+      // inferred from `thinking`, which arrives only after the head-of-turn
+      // work, so a 1ms build still sat in `preparing` past the delay and
+      // rendered "Getting ready…".
       return this.preparingSettled() ? 'Getting ready' : 'Thinking';
     }
 

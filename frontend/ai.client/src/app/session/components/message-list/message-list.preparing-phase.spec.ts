@@ -85,20 +85,60 @@ describe('MessageListComponent — preparing phase', () => {
   });
 
   it('does not show a build that finishes quickly', () => {
-    // The warm path: 0-38ms measured. A label nobody can read, arriving
-    // after the generic "Thinking", reads as going backwards.
+    // The warm path: 0-40ms measured on dev.
+    //
+    // The sequence matters more than the timings. An earlier version of this
+    // test sent `thinking` 40ms after `preparing` and passed — while
+    // production rendered "Getting ready…" on a 1ms build. Production does
+    // NOT send `thinking` next: it sends `prepared` when the build ends, and
+    // `thinking` only after the head-of-turn work, hundreds of ms later. A
+    // test that skips `prepared` is testing a stream the backend never emits.
     render();
     insights.recordStatus(SESSION, status('preparing'));
     fixture.detectChanges();
 
-    vi.advanceTimersByTime(40);
+    vi.advanceTimersByTime(1);
+    insights.recordStatus(SESSION, status('prepared'));
+    fixture.detectChanges();
+
+    // The real gap before the model call — far past the settle delay.
+    vi.advanceTimersByTime(1000);
     insights.recordStatus(SESSION, status('thinking', 1));
     fixture.detectChanges();
 
-    vi.advanceTimersByTime(1000);
+    expect(label()).not.toBe('Getting ready');
+  });
+
+  it('stops showing a slow build the moment it finishes', () => {
+    // Cold build: the label earns its place, then must give it up when the
+    // wait it describes is over — not when the next unrelated phase happens
+    // to arrive.
+    render();
+    insights.recordStatus(SESSION, status('preparing'));
+    fixture.detectChanges();
+    vi.advanceTimersByTime(300);
+    fixture.detectChanges();
+    expect(label()).toBe('Getting ready');
+
+    insights.recordStatus(SESSION, status('prepared'));
     fixture.detectChanges();
 
-    expect(label()).not.toBe('Getting ready');
+    expect(label()).toBe('Thinking');
+  });
+
+  it('keeps the label off while prepared waits for the model', () => {
+    // The window this bug lived in: build over, model call not yet started.
+    render();
+    insights.recordStatus(SESSION, status('preparing'));
+    fixture.detectChanges();
+    vi.advanceTimersByTime(1);
+    insights.recordStatus(SESSION, status('prepared'));
+    fixture.detectChanges();
+
+    vi.advanceTimersByTime(5000);
+    fixture.detectChanges();
+
+    expect(label()).toBe('Thinking');
   });
 
   it('shows a build that is still running after the delay', () => {

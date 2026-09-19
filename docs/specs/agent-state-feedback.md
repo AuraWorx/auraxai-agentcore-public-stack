@@ -264,6 +264,29 @@ deferred path can need an HTTP status after the first byte.
    times: it means rebuilding its key out in the route, and a key that drifts
    from the real one is a bug this repo has paid for.)
 
+   **The suppression did not work in production, and a third fix was needed
+   (2026-09-19).** A controlled four-turn session on one container:
+
+   | Turn | `agent_build` | Cache | "Getting ready…" |
+   |------|--------------:|-------|------------------|
+   | 1 | 1631ms | miss | correct |
+   | 2 | **1ms** | hit | **wrongly shown** |
+   | 3 | **40ms** | hit | **wrongly shown** |
+   | 4 | **0ms** | hit | **wrongly shown** |
+
+   `preparing` was never a state with an end — it was just the latest event.
+   The build finished in 1ms, but `thinking` does not arrive until the
+   head-of-turn work and the event loop's startup have also run, hundreds of
+   ms later, so the client's settle timer fired on a build that was long over.
+   The unit tests passed because they fed `thinking` 40ms after `preparing`,
+   a sequence the backend never emits.
+
+   The backend now emits an explicit **`prepared`** frame when the build ends,
+   carrying its measured duration. The SPA treats it as the end of the wait.
+   The lesson generalises past this feature: a phase that only ever means
+   "most recent event" cannot express a wait that has finished, and a test
+   that invents the next event will agree with whatever the code does.
+
    **Verified on dev (2026-09-19), and it found one more bug.** Five turns,
    builds of 1504ms / 549ms / ~650ms×3, all narrated correctly — turn 1 showed
    "Getting ready…" for 2.1s of a 2.3s wait. But the label stepped *backwards*

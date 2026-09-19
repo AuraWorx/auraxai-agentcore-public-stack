@@ -100,6 +100,17 @@ class TurnPrelude:
         return self._wall_t0
 
     @property
+    def last_stage_ms(self) -> Optional[int]:
+        """Duration of the stage most recently closed by ``mark``, in ms.
+
+        Lets a caller report the stage it just finished without timing it a
+        second time in a different clock.
+        """
+        if not self._marks:
+            return None
+        return int(self._marks[-1][1])
+
+    @property
     def total_ms(self) -> int:
         return max(0, int((time.perf_counter() - self._t0) * 1000))
 
