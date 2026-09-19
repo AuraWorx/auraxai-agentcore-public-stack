@@ -114,7 +114,17 @@
        and the agent build between. Absent while streaming and on turns from
        before the field existed. -->
   @if (turnRecapFor(turn); as recap) {
-    <div class="mt-1 flex justify-start">
+    <div class="mt-1 flex items-center justify-start gap-2">
+      <!-- The loading line's orb, at rest — same size, same hue, muted, and
+           with the halo gone. The turn is over, so the thing that said
+           "still going" stops saying it without vanishing.
+
+           The bullet is the loader's own separator, kept so the finished
+           line keeps the shape the user was just reading: the orb punctuates
+           the response, and the numbers stay a separate clause rather than
+           reading as a caption hanging off the dot. -->
+      <span class="turn-recap-dot" aria-hidden="true"></span>
+      <span class="turn-recap-sep" aria-hidden="true">&bull;</span>
       <span class="text-xs tabular-nums text-gray-400 dark:text-gray-500">{{ recap }}</span>
     </div>
   }
