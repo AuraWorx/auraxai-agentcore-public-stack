@@ -449,6 +449,31 @@ def ask_user_question_enabled() -> bool:
     return os.environ.get("ASK_USER_QUESTION_ENABLED", "").strip().lower() != "false"
 
 
+def browser_takeover_enabled() -> bool:
+    """Whether a turn can hand the browser to the user so they can sign in.
+
+    Covers the ``request_user_login`` built-in tool, its Strands interrupt, the
+    ``browser_login_required`` SSE event and the ``browser_login``
+    ``PendingInterrupt`` breadcrumb. **Default ON with a kill switch** (house
+    style, mirroring ``ask_user_question_enabled``): unset or empty resolves to
+    enabled; only the literal ``"false"`` (case-insensitive) disables.
+
+    While off the tool is never registered, so it never reaches ``toolConfig``
+    and the model cannot pause a turn behind a prompt no client is listening
+    for. The tool re-checks the flag at call time as well, so a registry built
+    before a flip cannot strand a turn. Note this flag is a second gate, not
+    the first: ``request_user_login`` is its own catalog entry, so a role that
+    was never granted it never sees the tool regardless of the flag
+    (``docs/specs/authenticated-web-assessment.md`` D1).
+
+    Cost note (CLAUDE.md token-effectiveness tenet): flipping this changes
+    ``toolConfig`` for granted users and therefore re-writes the cacheable
+    prefix once per in-flight session — the ordinary cost of a deploy-time tool
+    change. Do not derive it from conversation state.
+    """
+    return os.environ.get("BROWSER_TAKEOVER_ENABLED", "").strip().lower() != "false"
+
+
 def response_feedback_enabled() -> bool:
     """Whether users can thumb an assistant message up or down.
 

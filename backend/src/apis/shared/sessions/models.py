@@ -27,7 +27,7 @@ class PendingInterrupt(BaseModel):
     reload — without it, a browser refresh leaves the prompt stuck and the
     tool call orphaned in ``pending`` forever.
 
-    Three variants share this shape (discriminated by ``kind``):
+    Four variants share this shape (discriminated by ``kind``):
 
     - ``oauth`` — written by ``OAuthConsentHook``. Carries ``provider_id``;
       the frontend re-fetches a fresh consent URL via ``initiate-consent``
@@ -44,6 +44,13 @@ class PendingInterrupt(BaseModel):
       already looking at. Unlike the other two this interrupt is raised by the
       tool itself via ``ToolContext``, not by a hook — the persisted shape and
       the resume path are identical either way.
+    - ``browser_login`` — written for ``request_user_login``. Carries
+      ``browser_session`` (JSON-encoded :class:`BrowserSessionRef`) so the live
+      view can be re-offered after a refresh. Deliberately holds **no URL**:
+      live-view URLs are SigV4 query-signed and expire within 300 seconds, so
+      a stored one is always stale by the time it is read — app-api mints a
+      fresh one per request instead (``docs/specs/authenticated-web-
+      assessment.md`` D2).
 
     Default ``kind`` is ``oauth`` for backward compatibility with rows
     written before per-tool approval shipped.
@@ -51,7 +58,7 @@ class PendingInterrupt(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
     interrupt_id: str = Field(..., alias="interruptId", description="Strands interrupt id used to resume the paused turn")
-    kind: Literal["oauth", "tool_approval", "user_question"] = Field(
+    kind: Literal["oauth", "tool_approval", "user_question", "browser_login"] = Field(
         default="oauth",
         description="Discriminator: which variant this interrupt represents",
     )
@@ -94,6 +101,20 @@ class PendingInterrupt(BaseModel):
     questions: Optional[str] = Field(
         default=None,
         description="(user_question) JSON-encoded list of questions to re-render",
+    )
+
+    # browser_login-only fields
+    browser_session: Optional[str] = Field(
+        default=None,
+        alias="browserSession",
+        description=(
+            "(browser_login) JSON-encoded BrowserSessionRef — identifiers and "
+            "viewport only, never a live-view URL"
+        ),
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="(browser_login) The agent's one-line explanation of what needs signing into",
     )
 
 
@@ -295,6 +316,21 @@ class SessionMetadata(BaseModel):
         default=None,
         alias="pendingAttachmentsAt",
         description="ISO 8601 timestamp the pending-attachment marker was written; recovery is TTL-bounded against it",
+    )
+    browser_session: Optional[Dict[str, Any]] = Field(
+        default=None,
+        alias="browserSession",
+        description=(
+            "Identity of the AgentCore browser session this conversation is "
+            "driving, projected here so app-api can mint a live-view URL for a "
+            "takeover (docs/specs/authenticated-web-assessment.md D4). The "
+            "agent-side source of truth stays on `agent.state`; this is the "
+            "copy app-api can read, and per the 'one session, more than one "
+            "agent' rule it is re-read per turn rather than cached on an agent "
+            "instance. Identifiers, viewport and control state only — never a "
+            "live-view URL, which is SigV4 query-signed and dead within 300 "
+            "seconds of being minted"
+        ),
     )
 
     # Denormalized cost + context aggregates for the session-cost badge.

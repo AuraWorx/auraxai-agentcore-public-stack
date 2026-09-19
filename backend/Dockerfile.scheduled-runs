@@ -40,6 +40,11 @@ COPY backend/src/apis/shared/harness/ ${LAMBDA_TASK_ROOT}/apis/shared/harness/
 COPY backend/src/apis/shared/scheduled_prompts/ ${LAMBDA_TASK_ROOT}/apis/shared/scheduled_prompts/
 COPY backend/src/apis/shared/sessions_bff/ ${LAMBDA_TASK_ROOT}/apis/shared/sessions_bff/
 COPY backend/src/apis/shared/sessions/ ${LAMBDA_TASK_ROOT}/apis/shared/sessions/
+# Pure-python wire contract; sessions/metadata.py imports its `assert_no_url`
+# guard on the browser-takeover write path. Nothing here schedules a
+# takeover, but the guard is a function-local import that would still run
+# on invocation if that path were ever reached.
+COPY backend/src/apis/shared/browser_takeover/ ${LAMBDA_TASK_ROOT}/apis/shared/browser_takeover/
 # sessions/metadata.py lazily reaches these on its storage + EMF paths.
 COPY backend/src/apis/shared/storage/ ${LAMBDA_TASK_ROOT}/apis/shared/storage/
 COPY backend/src/apis/shared/observability/ ${LAMBDA_TASK_ROOT}/apis/shared/observability/
