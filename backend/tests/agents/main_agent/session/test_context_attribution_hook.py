@@ -11,6 +11,7 @@ from strands.hooks import BeforeModelCallEvent
 
 from agents.main_agent.session.hooks.context_attribution import (
     ContextAttributionHook,
+    clear_probe_baselines,
     clear_split_memo,
     get_context_breakdown,
 )
@@ -81,15 +82,18 @@ class TestColdStart:
         assert sum(parts.values()) == bd["total"]
 
     @pytest.mark.asyncio
-    async def test_makes_exactly_two_count_calls_neither_with_tools(self):
+    async def test_makes_exactly_three_count_calls_none_with_tools_and_none_empty(self):
         model = FakeModel()
         agent = FakeAgent(model, messages=[{"role": "user", "content": [{"text": "hi"}]}])
         await ContextAttributionHook()._on_before_model_call(_event(agent, projected=650))
 
         assert model.calls == [
-            {"n_messages": 0, "has_tools": False},  # system only
+            {"n_messages": 1, "has_tools": False},  # probe only (per-model baseline)
+            {"n_messages": 1, "has_tools": False},  # probe + system
             {"n_messages": 1, "has_tools": False},  # system + messages, no tools
         ]
+        # Bedrock rejects an empty conversation; the hook must never send one.
+        assert all(c["n_messages"] >= 1 for c in model.calls)
 
     @pytest.mark.asyncio
     async def test_tool_partition_absorbs_scaffolding(self):
@@ -137,9 +141,9 @@ class TestProjectedUnavailable:
         # full counted with tools = 100 + 10 + 500 = 610; tools = 610-110 = 500
         assert bd["total"] == 610
         assert parts == {"system": 100, "tools": 500, "messages": 10}
-        # 3 calls: system only, no-tools, then full WITH tools
-        assert len(model.calls) == 3
-        assert model.calls[2]["has_tools"] is True
+        # 4 calls: probe baseline, probe+system, no-tools, then full WITH tools
+        assert len(model.calls) == 4
+        assert model.calls[3]["has_tools"] is True
 
     @pytest.mark.asyncio
     async def test_warm_turn_without_projected_leaves_breakdown_untouched(self):
@@ -269,7 +273,7 @@ class TestSessionSplitMemo:
         first_model = FakeModel(system=100, per_msg=10, tool_overhead=500)
         first = FakeAgent(first_model, messages=list(msgs))
         await ContextAttributionHook(session_id="s1")._on_before_model_call(_event(first, projected=650))
-        assert len(first_model.calls) == 2
+        assert len(first_model.calls) == 3
 
         second_model = FakeModel(system=100, per_msg=10, tool_overhead=500)
         second = FakeAgent(second_model, messages=list(msgs) + [{"role": "assistant", "content": [{"text": "yo"}]}])
@@ -288,7 +292,7 @@ class TestSessionSplitMemo:
         await ContextAttributionHook(session_id="s2")._on_before_model_call(
             _event(FakeAgent(other_model, messages=list(msgs)), projected=650)
         )
-        assert len(other_model.calls) == 2
+        assert len(other_model.calls) == 3
 
     @pytest.mark.asyncio
     async def test_changed_tools_or_prompt_recounts(self):
@@ -301,13 +305,13 @@ class TestSessionSplitMemo:
         await ContextAttributionHook(session_id="s1")._on_before_model_call(
             _event(FakeAgent(tools_changed, messages=list(msgs), tool_specs=[{"name": "t"}, {"name": "u"}]), projected=700)
         )
-        assert len(tools_changed.calls) == 2
+        assert len(tools_changed.calls) == 3
 
         prompt_changed = FakeModel()
         await ContextAttributionHook(session_id="s1")._on_before_model_call(
             _event(FakeAgent(prompt_changed, messages=list(msgs), system_prompt="OTHER"), projected=650)
         )
-        assert len(prompt_changed.calls) == 2
+        assert len(prompt_changed.calls) == 3
 
     @pytest.mark.asyncio
     async def test_no_session_id_means_instance_only(self):
@@ -319,7 +323,7 @@ class TestSessionSplitMemo:
         await ContextAttributionHook()._on_before_model_call(
             _event(FakeAgent(again, messages=list(msgs)), projected=650)
         )
-        assert len(again.calls) == 2
+        assert len(again.calls) == 3
 
     @pytest.mark.asyncio
     async def test_a_deferred_split_is_not_memoised(self):
@@ -336,7 +340,7 @@ class TestSessionSplitMemo:
         await ContextAttributionHook(session_id="s1")._on_before_model_call(
             _event(FakeAgent(clean, messages=[{"role": "user", "content": [{"text": "hi"}]}]), projected=650)
         )
-        assert len(clean.calls) == 2
+        assert len(clean.calls) == 3
 
     def test_memo_is_bounded(self):
         from agents.main_agent.session.hooks import context_attribution as ca
@@ -346,3 +350,54 @@ class TestSessionSplitMemo:
         assert len(ca._split_memo) == ca._SPLIT_MEMO_MAX
         assert ca._memo_get(("s0", "p", "t")) is None
         assert ca._memo_get((f"s{ca._SPLIT_MEMO_MAX + 49}", "p", "t")) is not None
+
+
+class TestProbeBaseline:
+    """The system prompt is counted against a fixed probe user message because
+    Bedrock refuses an empty conversation. The probe's own weight is a
+    per-model constant, measured once per model id per process."""
+
+    def setup_method(self):
+        clear_probe_baselines()
+
+    def teardown_method(self):
+        clear_probe_baselines()
+
+    class ConfiguredModel(FakeModel):
+        def __init__(self, model_id, **kw):
+            super().__init__(**kw)
+            self.config = {"model_id": model_id}
+
+    @pytest.mark.asyncio
+    async def test_probe_weight_is_measured_once_per_model_id(self):
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        first = self.ConfiguredModel("us.anthropic.x", system=100, per_msg=10)
+        await ContextAttributionHook()._on_before_model_call(_event(FakeAgent(first, messages=list(msgs)), projected=650))
+        assert len(first.calls) == 3
+
+        second = self.ConfiguredModel("us.anthropic.x", system=100, per_msg=10)
+        second_agent = FakeAgent(second, messages=list(msgs))
+        await ContextAttributionHook()._on_before_model_call(_event(second_agent, projected=650))
+        # Baseline reused: probe+system and no-tools only.
+        assert len(second.calls) == 2
+        assert _parts(get_context_breakdown(second_agent))["system"] == 100
+
+        other = self.ConfiguredModel("us.anthropic.y", system=100, per_msg=10)
+        await ContextAttributionHook()._on_before_model_call(_event(FakeAgent(other, messages=list(msgs)), projected=650))
+        assert len(other.calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_system_partition_is_the_difference_not_the_probe(self):
+        # A probe that weighs 24 tokens on its own must not leak into system.
+        model = self.ConfiguredModel("m", system=7, per_msg=24)
+        agent = FakeAgent(model, messages=[{"role": "user", "content": [{"text": "hi"}]}])
+        await ContextAttributionHook()._on_before_model_call(_event(agent, projected=600))
+        assert _parts(get_context_breakdown(agent))["system"] == 7
+
+    @pytest.mark.asyncio
+    async def test_a_model_without_a_config_counts_the_probe_each_time(self):
+        msgs = [{"role": "user", "content": [{"text": "hi"}]}]
+        a, b = FakeModel(), FakeModel()
+        await ContextAttributionHook()._on_before_model_call(_event(FakeAgent(a, messages=list(msgs)), projected=650))
+        await ContextAttributionHook()._on_before_model_call(_event(FakeAgent(b, messages=list(msgs)), projected=650))
+        assert len(a.calls) == len(b.calls) == 3

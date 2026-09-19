@@ -21,9 +21,12 @@ Decomposition (convention validated live against Bedrock CountTokens):
 
 ``systemTokens`` / ``toolTokens`` are stable across a session (the tool
 overhead is constant as the conversation grows — verified), so they are
-computed once per agent at cold start (two extra CountTokens calls) and cached;
-every turn afterward is pure arithmetic against the free, authoritative
-``projected_input_tokens``.
+computed once per agent at cold start (two extra CountTokens calls, plus a
+once-per-model probe baseline — see ``_probe_baseline``) and cached; every
+turn afterward is pure arithmetic against the free, authoritative
+``projected_input_tokens``. ``count(system only)`` is really
+``count(probe + system) - count(probe)``: Bedrock refuses an empty message
+list, so a bare system count silently degraded to the chars/4 heuristic.
 
 **Why the split is not computed while an attachment is in context.**
 ``toolTokens`` is a *residual* between two independently sourced numbers —
@@ -115,6 +118,49 @@ def _memo_put(key: Tuple[str, str, str], split: Dict[str, int]) -> None:
         _split_memo.move_to_end(key)
         while len(_split_memo) > _SPLIT_MEMO_MAX:
             _split_memo.popitem(last=False)
+
+
+# The fixed user message the system prompt is counted against. Its own weight
+# (message scaffolding + the two-letter text) is a per-model constant, so it is
+# measured once per model id per process and subtracted. Keep it short and
+# never change it casually: a different probe changes every systemTokens
+# figure that follows, so the ledger's shares stop being comparable across the
+# deploy.
+_PROBE_MESSAGES = [{"role": "user", "content": [{"text": "hi"}]}]
+_probe_baselines: Dict[str, int] = {}
+_probe_lock = threading.Lock()
+
+
+def clear_probe_baselines() -> None:
+    """Drop the per-model probe weights (tests)."""
+    with _probe_lock:
+        _probe_baselines.clear()
+
+
+def _probe_model_key(model: Any) -> Optional[str]:
+    """Memo key for the probe baseline: the model id when the model exposes
+    one, else None (count every time — a test double, not a Bedrock model)."""
+    config = getattr(model, "config", None)
+    if isinstance(config, dict):
+        model_id = config.get("model_id")
+        if isinstance(model_id, str) and model_id:
+            return model_id
+    return None
+
+
+async def _probe_baseline(model: Any) -> int:
+    """Token weight of ``_PROBE_MESSAGES`` alone on ``model``, memoised per model id."""
+    key = _probe_model_key(model)
+    if key is not None:
+        with _probe_lock:
+            cached = _probe_baselines.get(key)
+        if cached is not None:
+            return cached
+    baseline = int(await model.count_tokens(messages=list(_PROBE_MESSAGES)))
+    if key is not None:
+        with _probe_lock:
+            _probe_baselines[key] = baseline
+    return baseline
 
 
 def _has_inline_attachment(messages: Any) -> bool:
@@ -213,11 +259,21 @@ class ContextAttributionHook(HookProvider):
             logger.debug("Context attribution deferred: inline attachment in context")
             return
         if split is None:
-            system_tokens = await model.count_tokens(
-                messages=[],
+            # Bedrock CountTokens rejects an empty message list ("A
+            # conversation must start with a user message" — verified live
+            # against dev 2026-09-18), and Strands swallows that into the
+            # chars/4 heuristic, so `count(messages=[])` was never the
+            # authoritative system count it looked like. Count the system
+            # prompt against a fixed probe user message and subtract the
+            # probe's own weight, which is a per-model constant measured once
+            # per process.
+            probe_only = await _probe_baseline(model)
+            system_with_probe = await model.count_tokens(
+                messages=list(_PROBE_MESSAGES),
                 system_prompt=system_prompt,
                 system_prompt_content=system_prompt_content,
             )
+            system_tokens = max(0, system_with_probe - probe_only)
             # system + the current conversation, WITHOUT tools — so the
             # difference from `full` captures tool schemas + the tool-use
             # scaffolding (present only when tools and messages coexist).
