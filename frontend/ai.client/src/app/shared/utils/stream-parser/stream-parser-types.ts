@@ -379,6 +379,12 @@ export interface ModelRetryEvent {
  * either way. Each transition here names something that actually happened.
  *
  * PHASES
+ * - `preparing`   the agent is being BUILT — tool registry, MCP pre-flight,
+ *                 session restore. Emitted by the chat route rather than the
+ *                 status hook, because it happens before the event loop (and
+ *                 before `message_start`) exists. Measured at 1478ms on a cold
+ *                 agent-cache miss and 0-38ms warm, so in practice it appears
+ *                 only when it is worth appearing. Carries no `cycle`.
  * - `thinking`    the model is generating (one per event-loop cycle, so a
  *                 three-tool turn reports it four times — that IS the turn's
  *                 shape, and `cycle` distinguishes them)
@@ -390,16 +396,23 @@ export interface ModelRetryEvent {
  * streaming because the deltas are arriving. A backend-derived duplicate of a
  * fact the client holds first-hand would only disagree at the edges.
  *
- * Gated by `AGENT_STATUS_ENABLED` (default on with a kill switch). Absence is
- * the pre-feature behaviour — cycling phrases and no durations — never an
- * error.
+ * Gated by `AGENT_STATUS_ENABLED` (default on with a kill switch); `preparing`
+ * rides its own `AGENT_PREPARING_PHASE_ENABLED`, since deferring the build
+ * into the stream is a change to the turn path rather than to narration.
+ * Absence is the pre-feature behaviour — cycling phrases and no durations —
+ * never an error.
  */
 export interface AgentStatusEvent {
   type: 'agent_status';
   sessionId: string;
-  phase: 'thinking' | 'tool_start' | 'tool_end';
-  /** 1-based event-loop cycle this transition belongs to. */
-  cycle: number;
+  phase: 'preparing' | 'thinking' | 'tool_start' | 'tool_end';
+  /**
+   * 1-based event-loop cycle this transition belongs to.
+   *
+   * Absent on `preparing`, which precedes the event loop — there is no cycle
+   * to number yet.
+   */
+  cycle?: number;
   toolName?: string;
   toolUseId?: string;
   /** Present on `tool_end`: measured by the event loop, not the client. */

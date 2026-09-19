@@ -83,16 +83,22 @@ export class ToolInsightService {
    * Tools the runtime has started and not yet reported finishing, per
    * conversation, in the order they started.
    *
-   * This is what makes a parallel batch legible. The content stream can say
-   * *that* tools are in flight, but the loader was reading the first
-   * unresolved `toolUse` block off the streaming message, so three tools
-   * running at once named one of them arbitrarily. `tool_start`/`tool_end`
-   * are a matched pair, so the count here is the real one.
+   * Why this rather than the content stream: a `toolUse` block starts
+   * streaming when the model begins writing the tool's ARGUMENTS, while
+   * `tool_start` fires when the tool begins EXECUTING. Measured on dev, the
+   * gap was ~640ms in which the content stream already claimed a tool was
+   * running and nothing was. This set is the truthful source.
    *
    * Only trustworthy because the drain now runs concurrently with the agent
    * stream (docs/specs/agent-state-feedback.md PR-2). Before that a
    * `tool_start` arrived bundled with its own `tool_end` and this set would
    * have been empty for the entire time the tools were running.
+   *
+   * It is a LIST, not a single value, although the agent pins
+   * `SequentialToolExecutor` today and so never runs two tools at once. The
+   * shape costs nothing and is what a concurrent executor would need; the
+   * "and N more" readout built on it was removed as dead code, see
+   * `message-list.component.ts`.
    */
   private readonly runningBySession = signal<
     ReadonlyMap<string, readonly RunningTool[]>

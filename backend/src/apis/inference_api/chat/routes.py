@@ -27,6 +27,7 @@ from apis.shared.errors import (
 )
 from apis.inference_api.runtime_health import ping_payload
 from apis.shared.feature_flags import (
+    agent_preparing_phase_enabled,
     agents_enabled,
     attachment_turn_guard_enabled,
     mid_turn_steering_enabled,
@@ -80,6 +81,7 @@ from .app_tool_dispatch import AppToolCallError, dispatch_app_tool_call
 from .agent_binding_policy import binds_conversation
 from .models import FileContent, InvocationRequest
 from .service import generate_conversation_title, get_agent
+from .turn_timing import TurnPrelude
 from .system_prompt_resolver import (
     append_active_prompt,
     resolve_active_prompt_text,
@@ -1657,6 +1659,17 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
     user_id = current_user.user_id
     auth_token = current_user.raw_token
 
+    # Where the pre-stream time goes. Everything between here and the
+    # `StreamingResponse` return happens with NO channel open to the client —
+    # measured at 3.75s on a warm turn — so this is the only way to see which
+    # stage owns it. Pure timing: nothing reaches the model.
+    # See `turn_timing.py` and docs/specs/agent-state-feedback.md.
+    prelude = TurnPrelude()
+    # Whether this turn's agent is built inside the stream (PR-3). Recorded on
+    # the `turn_prelude` line so the two shapes stay distinguishable in the
+    # logs once the flag has been on for a while.
+    deferred_build = False
+
     # Refuse a turn against a session id another user already owns.
     #
     # Session ids travel in shareable URLs (`/s/{sessionId}`). Opening someone
@@ -2157,6 +2170,10 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
         except Exception as e:
             # Log error but don't block request - fail open for quota errors
             logger.error("Error checking quota for user", exc_info=True)
+
+    # Covers request validation, model/settings resolution, file handling and
+    # the quota round trip — everything before RAG.
+    prelude.mark("preamble")
 
     # If quota exceeded, stream the quota exceeded message instead of agent response
     if quota_exceeded_event:
@@ -2699,6 +2716,10 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 % is_agent_mention
             )
 
+    # Assistant resolution, the knowledge-base search and its metadata writes.
+    # Zero on a plain chat turn, which is what makes it worth separating.
+    prelude.mark("rag")
+
     # Append active custom system prompt (if any). Gating rules + lookup live
     # in `system_prompt_resolver.py` so they can be unit-tested independently
     # of the route.
@@ -3046,26 +3067,57 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 has_memory_binding=bool(memory_tools),
             )
 
-            agent = await get_agent(
-                session_id=input_data.session_id,
-                user_id=user_id,
-                auth_token=auth_token,
-                enabled_tools=effective_enabled_tools,
-                model_id=effective_model_id,
-                system_prompt=system_prompt,  # Use assistant's instructions if available
-                caching_enabled=caching_enabled,
-                provider=effective_provider,
-                inference_params=inference_params,
-                mantle_api_mode=mantle_api_mode,
-                mantle_region=mantle_region,
-                agent_type=effective_agent_type,
-                extra_tools=extra_tools,
-                is_resume=False,
-                accessible_skill_ids=effective_skill_ids,
-                extra_tools_key_described=extra_tools_key_described,
-                has_document_tools=bool(document_tools),
-                assistant_id=input_data.rag_assistant_id,
-            )
+            # System-prompt assembly, the single-flight lease, skill
+            # resolution and every tool builder (documents, attachments,
+            # memory, agent binding).
+            prelude.mark("tools")
+
+            async def _build_main_agent():
+                """The turn's agent. Called eagerly here, or from the stream.
+
+                A closure rather than an inline call because it now has two
+                call sites — see `defer_agent_build` below — and eighteen
+                keyword arguments that must not drift between them.
+                """
+                return await get_agent(
+                    session_id=input_data.session_id,
+                    user_id=user_id,
+                    auth_token=auth_token,
+                    enabled_tools=effective_enabled_tools,
+                    model_id=effective_model_id,
+                    system_prompt=system_prompt,  # Use assistant's instructions if available
+                    caching_enabled=caching_enabled,
+                    provider=effective_provider,
+                    inference_params=inference_params,
+                    mantle_api_mode=mantle_api_mode,
+                    mantle_region=mantle_region,
+                    agent_type=effective_agent_type,
+                    extra_tools=extra_tools,
+                    is_resume=False,
+                    accessible_skill_ids=effective_skill_ids,
+                    extra_tools_key_described=extra_tools_key_described,
+                    has_document_tools=bool(document_tools),
+                    assistant_id=input_data.rag_assistant_id,
+                )
+
+            # Defer the build into the stream so it can be narrated.
+            #
+            # Measured on dev: a cold agent-cache miss spends 1478ms here
+            # against a 2542ms pre-stream window, and every millisecond of it
+            # is dead air — FastAPI flushes headers when this handler returns,
+            # so until then there is no channel to say anything on. Deferring
+            # opens the response first and emits a `preparing` frame, turning
+            # the longest silence in the product into a sentence.
+            #
+            # A warm turn spends 0-38ms here, so this changes nothing for the
+            # common case; it exists for the cold one.
+            # See docs/specs/agent-state-feedback.md PR-3.
+            if agent_preparing_phase_enabled():
+                agent = None
+                deferred_build = True
+            else:
+                agent = await _build_main_agent()
+                prelude.mark("agent_build")
 
         # Resume requests must target interrupts that the cached agent
         # actually has paused. Cache eviction, a process restart, or a
@@ -3342,16 +3394,107 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
         # generator's finally is the release site for the happy path (the two
         # except handlers below cover pre-stream failures).
         async def _guarded_stream() -> AsyncGenerator[str, None]:
-            heartbeat_task = (
-                asyncio.create_task(_lease_heartbeat_loop(session_lease, agent))
-                if session_lease is not None
-                else None
-            )
+            nonlocal agent
+
+            heartbeat_task = None
             try:
+                # The deferred agent build (PR-3). Narrated, because this is
+                # where a cold turn spends over a second with nothing on the
+                # wire. The frame goes out FIRST so the client hears something
+                # the moment the response opens; the build follows.
+                if agent is None:
+                    # Announce the build unconditionally; the SPA decides
+                    # whether it is worth SHOWING.
+                    #
+                    # This used to race the build against a 250ms timer here
+                    # and emit only if it was still running, so a warm build
+                    # (0-38ms) never flashed a phase nobody can read. That
+                    # cannot work: `create_agent` is synchronous
+                    # (`agent_factory.py`), so a cold build occupies the event
+                    # loop for its whole duration and `asyncio.wait` cannot
+                    # fire its timeout — it returned only once the build was
+                    # already done, `finished` was non-empty, and the frame was
+                    # never sent. Verified on dev: a 1548ms build, six times
+                    # the threshold, emitted nothing.
+                    #
+                    # A timer only works where the clock actually runs, which
+                    # is the client. The SPA holds this phase for 250ms before
+                    # rendering it, so a warm build still never shows — see
+                    # `message-list.component.ts`.
+                    yield (
+                        "event: agent_status\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "agent_status",
+                                "sessionId": input_data.session_id,
+                                "phase": "preparing",
+                            }
+                        )
+                        + "\n\n"
+                    )
+                    try:
+                        agent = await _build_main_agent()
+                    except Exception as build_error:
+                        # The handler has already returned, so the two `except`
+                        # arms below cannot see this — a build that fails here
+                        # would otherwise be a silent, hung stream. Surface it
+                        # the way every other mid-stream failure is surfaced
+                        # (CLAUDE.md: errors stream as assistant messages), and
+                        # let the `finally` release the lease.
+                        logger.error(
+                            "Deferred agent build failed", exc_info=True
+                        )
+                        error_event = build_conversational_error_event(
+                            code=ErrorCode.AGENT_ERROR,
+                            error=build_error,
+                            session_id=input_data.session_id,
+                            recoverable=True,
+                        )
+                        async for frame in stream_conversational_message(
+                            message=error_event.message,
+                            stop_reason="error",
+                            metadata_event=error_event,
+                            session_id=input_data.session_id,
+                            user_id=user_id,
+                            user_input=input_data.message,
+                        ):
+                            yield frame
+                        return
+                    prelude.mark("agent_build")
+
+                # Emitted here rather than before the return: with the build
+                # deferred, "the window before the client can hear anything"
+                # ends at the agent, not at the response.
+                prelude.emit(
+                    session_id=input_data.session_id,
+                    stream_kind="agent",
+                    extra={
+                        "isResume": is_resume,
+                        "hasAssistant": bool(input_data.rag_assistant_id),
+                        "deferredBuild": deferred_build,
+                    },
+                )
+
+                # Started only once the agent exists — it is the heartbeat's
+                # first argument.
+                heartbeat_task = (
+                    asyncio.create_task(_lease_heartbeat_loop(session_lease, agent))
+                    if session_lease is not None
+                    else None
+                )
+
                 async for chunk in stream_with_quota_warning():
                     yield chunk
             finally:
                 await _release_turn_lease(heartbeat_task, session_lease)
+
+        # Everything after the agent build: citation assembly, the title task,
+        # the lease acquire and the generator wiring. The `turn_prelude` line
+        # itself is emitted from inside `_guarded_stream`, once the agent is
+        # actually ready — with the build deferred, that is the true end of
+        # the window this measures. The early-return paths above (quota
+        # exceeded, app tool calls) are not agent turns and never emit.
+        prelude.mark("stream_setup")
 
         # Stream response from agent as SSE (with optional files)
         # Note: Compression is handled by GZipMiddleware if configured in main.py
