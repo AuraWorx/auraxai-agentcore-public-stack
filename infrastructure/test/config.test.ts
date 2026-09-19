@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { loadConfig, AppConfig,
+import { loadConfig, buildCorsOrigins, AppConfig,
   OBSERVABILITY_DEFAULT_AGENTCORE_ACTIVE_SESSION_THRESHOLD,
   OBSERVABILITY_DEFAULT_AGENTCORE_ERROR_THRESHOLD,
   OBSERVABILITY_DEFAULT_ALB_TARGET_5XX_THRESHOLD,
@@ -1255,6 +1255,8 @@ describe('RAG Ingestion Configuration', () => {
 
     afterEach(() => {
       delete process.env.CDK_ALLOW_NO_CORS_ORIGINS;
+      delete process.env.CDK_CORS_ORIGINS;
+      delete process.env.CDK_DOMAIN_NAME;
     });
 
     test('fails synth when neither a domain nor CORS origins is configured', () => {
@@ -1285,6 +1287,34 @@ describe('RAG Ingestion Configuration', () => {
       process.env.CDK_ALLOW_NO_CORS_ORIGINS = 'false';
 
       expect(() => loadConfig(app)).toThrow(/CDK_ALLOW_NO_CORS_ORIGINS=true/);
+    });
+
+    /**
+     * The guard must gate on the same value the uploads bucket consumes:
+     * FileUploadConstruct attaches CORS only when buildCorsOrigins(config)
+     * is non-empty, and that filters out blank entries. A raw string that is
+     * truthy but filters to nothing (a trailing comma from a templated list,
+     * a YAML value that quotes to a single space, an unset CI variable) would
+     * otherwise pass the guard and still ship a bucket with no CORS rule --
+     * the exact bug the guard exists to prevent.
+     */
+    test.each([
+      ['a lone separator', ','],
+      ['whitespace only', ' '],
+      ['separators only', ',,'],
+      ['padded separators', '  ,  '],
+    ])('fails synth when CDK_CORS_ORIGINS is %s and filters to no origins', (_label, value) => {
+      process.env.CDK_CORS_ORIGINS = value;
+
+      expect(() => loadConfig(app)).toThrow(/uploads bucket would be created without a CORS rule/);
+    });
+
+    test('a blank entry alongside a real origin still passes and yields the real origin', () => {
+      process.env.CDK_CORS_ORIGINS = ' , https://ok.edu';
+
+      const config = loadConfig(app);
+
+      expect(buildCorsOrigins(config)).toEqual(['https://ok.edu']);
     });
   });
 
