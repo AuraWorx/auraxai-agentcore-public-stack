@@ -68,6 +68,18 @@ COPY backend/src/apis/app_api/kb_sync/ ${LAMBDA_TASK_ROOT}/apis/app_api/kb_sync/
 # pull FastAPI, which this image deliberately lacks. The worker uses the
 # oauth primitives, document/crawl services, and the crawler directly.
 
+# Precompile the copied source to bytecode. /var/task is READ-ONLY at runtime,
+# so a Lambda cold start can never cache the .pyc it produces — every cold start
+# re-parses every module in the closure, and the dispatcher runs off a
+# 15-minute EventBridge tick, far enough apart that most ticks land cold. The
+# pip install above already compiled site-packages (pip does that by default,
+# unlike uv), so this covers the gap: the code we COPY in, which arrives as raw
+# source. `-q` keeps the layer log quiet; a syntax error still fails the build,
+# which is the right time to learn about it. Safe to point at the whole task
+# root here — it holds only our own code, since pip put the dependencies in
+# /var/lang/lib/python3.12/site-packages.
+RUN python -m compileall -q ${LAMBDA_TASK_ROOT}
+
 # Default command: dispatcher. The worker function's CMD is overridden
 # to apis.app_api.kb_sync.worker.lambda_handler by its ImageConfig.
 CMD ["apis.app_api.kb_sync.dispatcher.lambda_handler"]

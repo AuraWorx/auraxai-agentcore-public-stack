@@ -1521,7 +1521,14 @@ function validateConfig(config: AppConfig): void {
   // §1 fix 4) because this used to be a console.warn lost in synth output.
   // Fail synth instead; a deployment that genuinely has no browser front-end
   // opts out explicitly.
-  if (!config.corsOrigins && parseBooleanEnv(process.env.CDK_ALLOW_NO_CORS_ORIGINS) !== true) {
+  //
+  // Gate on `buildCorsOrigins` -- the same filtered list FileUploadConstruct
+  // consumes -- not on the raw string. A value that is truthy but filters to
+  // nothing (`","` from a templated list's trailing comma, `" "` from a YAML
+  // value that quotes to a space, `"${UNSET_VAR},"` in CI) would otherwise
+  // pass the guard and still produce a bucket with no CORS rule. Pass no
+  // `additionalOrigins` here, for the same reason: the construct does not.
+  if (buildCorsOrigins(config).length === 0 && parseBooleanEnv(process.env.CDK_ALLOW_NO_CORS_ORIGINS) !== true) {
     throw new Error(
       'No CORS origins configured: the uploads bucket would be created without a CORS rule ' +
       'and every browser upload would fail. Set CDK_DOMAIN_NAME (or CDK_CORS_ORIGINS), ' +
