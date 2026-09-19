@@ -335,20 +335,15 @@ export class MessageListComponent {
     return false;
   });
 
-  /**
-   * How many tools beyond the named one are running, or null.
-   *
-   * A parallel batch used to be invisible: the loader named whichever
-   * unresolved `toolUse` block came first and said nothing about the other
-   * two. `tool_start`/`tool_end` are a matched pair, so this count is real —
-   * see `ToolInsightService.runningTools`.
-   */
-  protected readonly loaderStatusToolExtra = computed<number | null>(() => {
-    const sessionId = this.chatStateService.viewedSessionId();
-    if (!sessionId) return null;
-    const extra = this.toolInsight.runningTools(sessionId).length - 1;
-    return extra > 0 ? extra : null;
-  });
+  // A count of the OTHER tools in a batch used to live here, rendering
+  // "Running list_assignments and 2 more". It was removed as dead code: the
+  // agent pins `tool_executor=SequentialToolExecutor()`
+  // (`agents/main_agent/core/agent_factory.py`) so that concurrent browser
+  // tools cannot start two Playwright sessions, which means a batch emits
+  // strictly interleaved start/end pairs and more than one tool is NEVER in
+  // flight. Verified on dev against a real three-tool batch. If that executor
+  // ever becomes concurrent, `ToolInsightService.runningTools` already tracks
+  // the whole set and the count is a few lines to restore.
 
   /**
    * The tool currently executing, or null.
