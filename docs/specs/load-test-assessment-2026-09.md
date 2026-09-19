@@ -4,17 +4,19 @@
 run 2026-09-15 on a production-mirror environment, Claude Haiku 4.5, 5M-token/min quota.
 **Assessed against:** `develop` at `ca3e8d2c` (2026-09-18), strands-agents 1.55.0,
 bedrock-agentcore 1.21.0.
-**Status:** assessment complete. **Phase 1 built 2026-09-18** on
-`claude/load-testing-assessment-c794d7` (P1-A bytecode + warm-up, P1-B bounded
-CountTokens, P1-C session split memo + four families promoted, P1-D CORS synth
-guard). Spreadsheet-analysis cache promotion followed on
-`feature/spreadsheet-tools-agent-cache` (PR #1154 is its base): `assistant_id`
-is now a `_create_cache_key` element, stamped on the construction snapshot,
-carried by `PausedTurnSnapshot.assistantId`, and replayed by the resume path;
-every `enabled_tools`-gated injected family is cache-eligible. The
-Dockerfile change is verified by review and `compileall` semantics only — the
-Docker daemon was not available for a local build; the `backend.yml` build is
-the proof. Phase 0 asks and the Phase 3 A/B rerun are still open.
+**Status:** **COMPLETE — all five findings and one residual shipped.** Merged to
+`develop` and deployed to dev 2026-09-19: #1154 (bytecode + warm-up, bounded
+CountTokens, session split memo, four cache families, CORS synth guard), #1155
+(`assistant_id` in the cache key → spreadsheet sessions cache their agent),
+#1156 (system prompt counted against a probe message — Bedrock rejects an empty
+conversation, verified live, so `systemTokens` had been chars/4 since it
+shipped), #1157 (bounded memory retrieval, summary namespace off the per-message
+path: 3 → 2 lookups), #1158 (Spreadsheet Analysis auto-enabled on attachment,
+RBAC-gated). The response to AuraX is at
+[`docs/one-pagers/load-test-response-to-aurax-2026-09.md`](../one-pagers/load-test-response-to-aurax-2026-09.md).
+Still open: the Phase 3 A/B rerun (needs the provisioning gate), the
+`RetrieveMemoryRecords` 30 → 300/s quota request, the AWS cold-start thread, and
+the Phase 0 asks to AuraX.
 
 ---
 
