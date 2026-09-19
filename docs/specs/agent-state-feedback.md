@@ -264,6 +264,20 @@ deferred path can need an HTTP status after the first byte.
    times: it means rebuilding its key out in the route, and a key that drifts
    from the real one is a bug this repo has paid for.)
 
+      **Re-verified end to end (2026-09-19, session `9786b58b`)** on a cold
+   container, after the turn-duration fix:
+
+   | Measure | Value |
+   |---------|------:|
+   | Client stopwatch (click → `done`) | 7821ms |
+   | Footer / `turnDurationMs` | 6291ms |
+   | `metrics.latencyMs` (model only) | 2364ms |
+   | `turn_prelude` handler total | 3862ms — preamble 883 · tools 250 · **agent_build 2728** |
+
+   The label sequence was `Thinking… → Getting ready… → Waiting for the model…`
+   with no step backwards, and `turnDurationMs` is plainly distinct from
+   `latencyMs`, which is what proves it is no longer the post-build remainder.
+
    **The suppression did not work in production, and a third fix was needed
    (2026-09-19).** A controlled four-turn session on one container:
 
@@ -375,9 +389,17 @@ turn's last message. One field, one meaning, identical live and reloaded.
 
 **Known limits, both deliberate:**
 
-- It starts when the invocation reaches inference-api, so it **excludes the
-  app-api hop** (~478ms measured). The recap therefore reads slightly lower
-  than the user's own stopwatch.
+- It starts when the invocation reaches inference-api, so it **excludes
+  everything before the container**: the app-api hop, auth, and Runtime
+  routing. That shortfall is **~1.5s on a cold path**, not the ~478ms first
+  recorded here — that earlier figure came from a warm turn, and routing to a
+  cold container costs substantially more. Measured end to end on dev
+  2026-09-19: a turn whose client stopwatch read 7821ms reported **6291ms**,
+  short by 1530ms, or 20% of the turn.
+
+  So the recap is honest about the server's turn and reads visibly under the
+  wait the user feels. Matching the stopwatch means measuring on the client,
+  which cannot survive a reload — the trade "always on" already decided.
 - **It must be measured from the handler, not from `stream_response`.** Those
   were the same thing until PR-3 deferred the agent build into the stream
   generator, which runs BEFORE that generator is iterated — so the
