@@ -1,8 +1,8 @@
 # Agent state feedback
 
-**Status:** PR-1 SHIPPED (#1159, 2026-09-19). PR-2 in review. PR-3 designed, not started.
-**Not yet validated against a live backend** — every claim below about wall-clock
-timing is pinned by tests against fake streams, not by a turn on dev.
+**Status:** PR-1 SHIPPED (#1159). PR-2 SHIPPED (#1160), VERIFIED on dev.
+Cleanup + instrumentation SHIPPED (#1163). PR-3 SHIPPED (#1165) and VERIFIED on dev, which exposed a starved-timer
+bug in it; the fix is the follow-up described in its section.
 **Follow-up to:** `d2ee13e2` (emit agent_status and tool-batch summaries), `9bc9bc6b` / `5f0cd52a` / `67234329` (loading-indicator series)
 **Related:** `docs/specs/mid-turn-steering.md` (the other consumer of the drain), CLAUDE.md § SSE Event Types → `agent_status`
 
@@ -114,7 +114,7 @@ CLAUDE.md calls out for `tool_group_summary`.
 **Formatting.** `<1s`, `3s`, `17s`, `1m 12s`. Never rounds a sub-second block up
 to `1s`.
 
-## PR-2 — decouple the drain, then trust `agent_status` (in review)
+## PR-2 — decouple the drain, then trust `agent_status` (SHIPPED, #1160)
 
 **Backend.** `AgentStatusHook` pushes to an `asyncio.Queue` instead of a list,
 and the coordinator merges that queue with the agent stream rather than polling
@@ -150,7 +150,148 @@ than widen this PR. Worth revisiting on its own: the right fix is probably that
 the loader should stop being mounted under a streaming answer at all, which is
 a change to when it renders, not to what it says.
 
-## PR-3 — the phases ahead of the event loop
+## Verified on dev (2026-09-19)
+
+Measured by teeing the SSE body in the browser and timestamping frames from the
+click. Recipe: patch `window.fetch`, `res.body.tee()`, split on `\n\n`.
+
+**The drain works.** `tool_start` landed at 4396ms against `tool_result` at
+4769ms — the status frame beat the event it describes by 373ms, which the old
+between-yields drain could not do by construction. The 100ms poll cadence is
+visible as quantization in the frame timestamps.
+
+**The batch count was dead code and has been removed.**
+`agent_factory.py` pins `tool_executor=SequentialToolExecutor()` so concurrent
+browser tools cannot start two Playwright sessions. A three-tool batch therefore
+emits strictly interleaved `start,end,start,end,start,end` and more than one
+tool is never in flight. PR-2's description claimed "a parallel batch is finally
+legible"; that was wrong as shipped. `ToolInsightService.runningTools` keeps the
+list shape, which costs nothing and is what a concurrent executor would need.
+
+**The content-stream fallback still drives the visible label**, because it fires
+when the model starts streaming a tool's ARGUMENTS while `tool_start` fires when
+the tool starts EXECUTING — a measured ~640ms gap in which the UI named a tool
+that was not yet running. Which is preferable is a product call, not a bug.
+
+**Where the time actually goes** (warm container, artifact turn, from click):
+
+| From click | Event |
+|-----------:|-------|
+| 2ms | request dispatched |
+| **3750ms** | **first SSE byte** |
+| 4757ms | `agent_status thinking` |
+| 5483ms | `message_start` |
+| 6111→6311ms | `tool_start` → `tool_end` (225ms of actual execution) |
+| 7506ms | `done` |
+
+A cold turn measured **6.7s** before the first status frame.
+
+## PR-3 — narrate the cold agent build (BUILT)
+
+The original plan — emit a phase per pre-stream stage from the chat route —
+could not be built as written, and the measurement that proved it also made it
+unnecessary. What is left is much smaller.
+
+### Why the original plan was impossible
+
+FastAPI flushes response headers when the handler returns its
+`StreamingResponse`, and `inference_api/chat/routes.py` awaits `get_agent(...)`
+— along with model resolution, RAG retrieval and tool building — *before* that
+return. During the whole window the plan wanted to narrate, **no SSE channel is
+open**. app-api cannot cover it either: `chat/proxy_routes.py` awaits the
+upstream response before constructing its own `StreamingResponse`.
+
+### What the measurement says
+
+`turn_prelude` on dev, four turns (2026-09-19):
+
+| Turn | total | preamble | rag | tools | agent_build |
+|------|------:|---------:|----:|------:|------------:|
+| cold agent cache | 2542 | 802 | 0 | 261 | **1478** |
+| warm | 641 | 494 | 0 | 146 | 0 |
+| warm | 644 | 460 | 0 | 149 | 34 |
+| warm | 678 | 484 | 0 | 154 | 38 |
+
+Against a client-side click→first-byte of **1156ms** on that last turn, the warm
+budget is ~478ms outside the handler (app-api hop, auth, Runtime routing), 484ms
+`preamble`, 154ms `tools`, 38ms `agent_build`.
+
+Two conclusions:
+
+1. **A warm turn does not need narrating.** ~1.2s to first byte with no stage
+   dominating, and 41% of it not even in the handler. There is no honest phase
+   label that helps, and the loading indicator already covers it.
+2. **A cold agent build is the whole problem.** 1478ms in one stage, and the
+   6.7s cold turn measured earlier is worse. It is the only place in the
+   prelude where a phase label earns its keep.
+
+### The plan
+
+**Wrap `get_agent` only.** Move that one call inside the stream generator and
+emit `Getting ready…` before it. Leave `preamble`, `rag` and `tools` eager where
+they are. This sidesteps most of what made a handler restructure frightening:
+the quota check, the session-ownership 404 and every other HTTP-error-capable
+guard live in `preamble`, which stays ahead of the stream.
+
+**Feasibility check: PASSED.** The only `raise HTTPException` between
+`get_agent` and the `StreamingResponse` return is guarded by `if is_resume:`
+(interrupt-id validation). Resume keeps its eager build, so nothing on the
+deferred path can need an HTTP status after the first byte.
+
+**As built**, three things the plan did not anticipate:
+
+1. **The frame is emitted unconditionally; the SPA decides whether to show it.**
+   A warm build is 0-38ms, and "Getting ready" for 38ms is a flicker — landing,
+   worse, *after* the generic "Thinking" the client shows from the moment the
+   user hits send, which reads as going backwards.
+
+   The first attempt raced the build against a 250ms timer **in the
+   generator** and emitted only if it was still running. **That cannot work,
+   and dev proved it:** `create_agent` is synchronous
+   (`agent_factory.py`), so a cold build occupies the runtime's event loop for
+   its whole duration and `asyncio.wait` never gets to fire its timeout — it
+   returned only once the build was already finished, `finished` was non-empty,
+   and the frame was never sent. A 1548ms build, six times the threshold,
+   emitted nothing.
+
+   A timer only works where the clock actually runs, which is the client. The
+   backend now always announces the build; `message-list.component.ts` holds
+   the phase for 250ms before rendering it, so a warm build is superseded by
+   `thinking` and never reaches the screen. Cost of the change: one extra SSE
+   frame per non-resume turn.
+
+   (Peeking `_agent_cache` to predict a miss was considered and rejected both
+   times: it means rebuilding its key out in the route, and a key that drifts
+   from the real one is a bug this repo has paid for.)
+2. **A failed build needs its own error path.** The handler has already
+   returned by then, so neither `except` arm can see it; without an in-generator
+   catch a build failure is a silent hung stream. It now surfaces as a
+   conversational error (the house rule) and the `finally` still releases the
+   lease.
+3. **The SPA validator had to be relaxed.** It required
+   `typeof cycle === 'number'`, and `preparing` precedes the event loop so it
+   carries no cycle — every frame would have been dropped silently. The
+   relaxation is scoped to `preparing`; the other phases still require a cycle,
+   because the SPA uses it to tell event-loop passes apart.
+
+**Kill switch:** `AGENT_PREPARING_PHASE_ENABLED` (default on). Off restores the
+eager build exactly. Its own flag rather than riding `AGENT_STATUS_ENABLED`,
+which gates narration — this changes when the agent is built.
+
+**Cost:** the label is one SSE frame. Nothing reaches the model.
+
+### Declined
+
+- **A client-side label for the pre-first-byte window.** Unnecessary once the
+  narrow fix lands, and it could only name a window, not a phase.
+- **Restructuring app-api's relay.** It would cover the ~478ms outside the
+  handler, which is not where the pain is, and it would force upstream HTTP
+  errors to become SSE `stream_error` frames.
+- **Restructuring the whole inference-api handler.** The measurement says three
+  of its four stages are not worth narrating, so the risk buys nothing.
+
+### Original target (superseded, kept for the record)
+
 
 These are not Strands hook events; they happen before the loop exists, so they
 need emit points in the invocation path.

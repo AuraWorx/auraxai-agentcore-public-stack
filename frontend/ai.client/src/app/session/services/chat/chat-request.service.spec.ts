@@ -45,12 +45,15 @@ describe('ChatRequestService', () => {
 
     mockToolService = {
       getEnabledToolIds: vi.fn().mockReturnValue(['tool1', 'tool2']),
+      // Already loaded, which is the steady state from turn 2 onwards.
+      ensureLoaded: vi.fn().mockResolvedValue(undefined),
     };
 
     // Default: nothing selected in the skills picker (D6 opt-in), which is the
     // state for a user who never opens it.
     mockSkillService = {
       getEnabledSkillIds: vi.fn().mockReturnValue([]),
+      ensureLoaded: vi.fn().mockResolvedValue(undefined),
     };
 
     TestBed.configureTestingModule({
@@ -158,6 +161,123 @@ describe('ChatRequestService', () => {
     expect(sent['enabled_skills']).toEqual(['web_research']);
     // Assistants forward the user's tool selection, so it rides along.
     expect(sent['enabled_tools']).toEqual(['tool1', 'tool2']);
+  });
+
+  // ── The first-turn race (#1160) ────────────────────────────────────────────────
+  //
+  // A message sent seconds after page load used to be assembled from tool and
+  // skill lists that had not arrived yet: turn 1 disclosed no skills and no
+  // tools, turn 2 disclosed the real ones, and the whole cacheable prefix
+  // (system prompt + toolConfig) was re-written on turn 2 at the cache-write
+  // premium. The send now waits for both lists to settle.
+  describe('selection sources not yet loaded', () => {
+    /** A load that only completes when the test says so. */
+    function deferred() {
+      let release!: () => void;
+      const promise = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      return { promise, release };
+    }
+
+    it('a message submitted before the skills load completes still carries the skills', async () => {
+      const load = deferred();
+      // Until the load lands the picker answers "nothing enabled", which is
+      // indistinguishable from a user who turned everything off.
+      mockSkillService.getEnabledSkillIds.mockReturnValue([]);
+      mockSkillService.ensureLoaded.mockReturnValue(
+        load.promise.then(() => {
+          mockSkillService.getEnabledSkillIds.mockReturnValue([
+            'pdf_workflows',
+            'web_research',
+          ]);
+        }),
+      );
+
+      const submitted = service.submitChatRequest('Hello', null);
+
+      // The request must not have gone out on the empty list.
+      await Promise.resolve();
+      expect(mockChatHttpService.sendChatRequest).not.toHaveBeenCalled();
+
+      load.release();
+      await submitted;
+
+      const sent = mockChatHttpService.sendChatRequest.mock.calls[0][0];
+      expect(sent['enabled_skills']).toEqual(['pdf_workflows', 'web_research']);
+    });
+
+    it('a message submitted before the tools load completes still carries the tools', async () => {
+      const load = deferred();
+      mockToolService.getEnabledToolIds.mockReturnValue([]);
+      mockToolService.ensureLoaded.mockReturnValue(
+        load.promise.then(() => {
+          mockToolService.getEnabledToolIds.mockReturnValue(['tool1', 'tool2']);
+        }),
+      );
+
+      const submitted = service.submitChatRequest('Hello', null);
+      await Promise.resolve();
+      expect(mockChatHttpService.sendChatRequest).not.toHaveBeenCalled();
+
+      load.release();
+      await submitted;
+
+      const sent = mockChatHttpService.sendChatRequest.mock.calls[0][0];
+      expect(sent['enabled_tools']).toEqual(['tool1', 'tool2']);
+    });
+
+    it('shows the user message immediately — the wait is behind the optimistic UI', async () => {
+      const load = deferred();
+      mockSkillService.ensureLoaded.mockReturnValue(load.promise);
+
+      const submitted = service.submitChatRequest('Hello', null);
+      await Promise.resolve();
+
+      const messageMap = TestBed.inject(MessageMapService) as any;
+      expect(messageMap.addUserMessage).toHaveBeenCalled();
+      expect(messageMap.startStreaming).toHaveBeenCalled();
+
+      load.release();
+      await submitted;
+    });
+
+    it('sends anyway when a load never returns, rather than swallowing the message', async () => {
+      vi.useFakeTimers();
+      try {
+        // Never resolves: a hung /skills/ request must not hold the turn.
+        mockSkillService.ensureLoaded.mockReturnValue(new Promise<void>(() => undefined));
+
+        const submitted = service.submitChatRequest('Hello', null);
+        await vi.advanceTimersByTimeAsync(5000);
+        await submitted;
+
+        expect(mockChatHttpService.sendChatRequest).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('waits for the selections on a Continue too, so it rebuilds the same shape', async () => {
+      const load = deferred();
+      mockSkillService.getEnabledSkillIds.mockReturnValue([]);
+      mockSkillService.ensureLoaded.mockReturnValue(
+        load.promise.then(() => {
+          mockSkillService.getEnabledSkillIds.mockReturnValue(['pdf_workflows']);
+        }),
+      );
+
+      const submitted = service.continueTruncatedTurn('session1');
+      await Promise.resolve();
+      expect(mockChatHttpService.sendChatRequest).not.toHaveBeenCalled();
+
+      load.release();
+      await submitted;
+
+      const sent = mockChatHttpService.sendChatRequest.mock.calls[0][0];
+      expect(sent['continue_truncated']).toBe(true);
+      expect(sent['enabled_skills']).toEqual(['pdf_workflows']);
+    });
   });
 
   it('should include assistant ID in request', async () => {

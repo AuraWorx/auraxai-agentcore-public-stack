@@ -110,6 +110,16 @@ export class ToolService {
   private _appRolesApplied = signal<string[]>([]);
   private _initialized = signal(false);
 
+  /**
+   * The load currently in flight, so a second caller *joins* it instead of
+   * being told "already loading" and continuing with an empty list. The
+   * constructor starts this load at bootstrap, which means a message sent a
+   * second or two after page load could otherwise be assembled from an empty
+   * tool list — and the next turn, with the real list, would rewrite the
+   * `toolConfig` half of the cacheable prefix.
+   */
+  private _inflight: Promise<void> | null = null;
+
   // Agent Designer: when the active conversation is bound to an Agent that binds
   // tools, the picker is locked to exactly that set — the backend governs the
   // toolset at invocation regardless of the client, so a free-select picker would
@@ -246,8 +256,20 @@ export class ToolService {
    * Should be called on app init or after login.
    */
   async loadTools(): Promise<void> {
-    if (this._loading()) return;
+    // Join an in-flight load rather than returning early: callers await this to
+    // know the list is settled.
+    if (this._inflight) return this._inflight;
 
+    const inflight = this.fetchTools();
+    this._inflight = inflight;
+    try {
+      await inflight;
+    } finally {
+      this._inflight = null;
+    }
+  }
+
+  private async fetchTools(): Promise<void> {
     this._loading.set(true);
     this._error.set(null);
 
@@ -460,6 +482,23 @@ export class ToolService {
    */
   getEnabledToolIds(): string[] {
     return this.enabledToolIds();
+  }
+
+  /**
+   * Resolve once the tool list has settled, starting the load if nothing has.
+   *
+   * The chat send path awaits this so a turn sent before the constructor's
+   * `/tools/` fetch returns still carries the same tools a later turn would.
+   * Identical `enabled_tools` on turn 1 and turn 2 is what keeps the cacheable
+   * `toolConfig` prefix stable across a session.
+   *
+   * Never rejects: a failed load leaves the list empty, which is the state the
+   * send path already tolerates. It is a no-op once loaded, and joins the
+   * in-flight request when one is already running.
+   */
+  async ensureLoaded(): Promise<void> {
+    if (this._initialized()) return;
+    await this.loadTools().catch(() => undefined);
   }
 
   /**
