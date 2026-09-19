@@ -500,6 +500,69 @@ export class MessageListComponent {
     return m.length ? m[m.length - 1].id : null;
   });
 
+  /**
+   * The one-line recap shown at the foot of a finished turn — "9.6s · 4 tools".
+   *
+   * Everything else about a turn disappears when it ends: the loading line
+   * goes, and with it the elapsed timer the user was watching. The tool rail
+   * keeps per-tool durations, but nothing said how long the turn took.
+   *
+   * `turnDurationMs` rather than `latency.endToEndLatency`, which is not the
+   * same number: the persisted form of that field prefers the provider's own
+   * API-call time, so summing it across a turn drops tool execution and the
+   * pre-stream agent build — a turn the user watched for 9s reads as 3s. The
+   * backend sends `turnDurationMs` on the live stream AND persists it on the
+   * turn's last message, so this reads the same either way.
+   *
+   * Null while the turn is still streaming (the duration only exists once it
+   * has ended) and null for a turn that predates the field, which is why the
+   * footer is absent on old conversations rather than showing a zero.
+   */
+  protected turnRecapFor(turn: Turn): string | null {
+    const assistant = turn.segments.filter((s) => s.kind === 'assistant');
+    if (!assistant.length) return null;
+
+    const last = assistant[assistant.length - 1].last;
+    if (last.id === this.streamingMessageId()) return null;
+
+    const durationMs = last.metadata?.['turnDurationMs'];
+    if (typeof durationMs !== 'number' || durationMs <= 0) return null;
+
+    const parts = [this.formatDuration(durationMs)];
+
+    const tools = assistant.reduce(
+      (count, segment) =>
+        count +
+        segment.messages.reduce(
+          (n, message) =>
+            n +
+            message.content.filter(
+              (block) => block.type === 'toolUse' || block.type === 'tool_use',
+            ).length,
+          0,
+        ),
+      0,
+    );
+    if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
+
+    return parts.join(' \u00b7 ');
+  }
+
+  /** Seconds under a minute, then minutes — matching the loader's readout. */
+  private formatDuration(ms: number): string {
+    if (ms < 1000) return '<1s';
+    const seconds = ms / 1000;
+    if (seconds < 10) {
+      // One decimal, but only when it says something: "4.0s" is noise where
+      // "4s" is the same fact.
+      const tenths = seconds.toFixed(1);
+      return tenths.endsWith('.0') ? `${tenths.slice(0, -2)}s` : `${tenths}s`;
+    }
+    const whole = Math.round(seconds);
+    if (whole < 60) return `${whole}s`;
+    return `${Math.floor(whole / 60)}m ${whole % 60}s`;
+  }
+
   protected canContinueFor(messageId: string): boolean {
     return (
       this.chatStateService.lastTurnContinuable() &&

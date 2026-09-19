@@ -1332,6 +1332,13 @@ export class StreamParserService {
       };
     }
 
+    // Turn-level: how long the whole turn took, server-measured. Kept
+    // separate from `latency.endToEndLatency` because the persisted form of
+    // that field is the provider's API-call time, so the two disagree.
+    if (metadataEvent.turnDurationMs !== undefined) {
+      result['turnDurationMs'] = metadataEvent.turnDurationMs;
+    }
+
     if (metadataEvent.cost !== undefined) {
       result['cost'] = metadataEvent.cost;
     }

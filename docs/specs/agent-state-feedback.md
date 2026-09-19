@@ -313,9 +313,34 @@ currently starts on the request's falling edge. Whether they arrive as
 not yet decided; `agent_status` is preferred if the drain refactor in PR-2 makes
 a pre-loop emitter practical.
 
-## Turn recap (deferred)
+## Turn recap (BUILT)
 
-`Thought for 17s · 4 tools · 2.1s` as a turn-level footer. The rail already
-computes `totalDurationMs`; only the turn-level line is missing. Deferred
-because it is the one item here that would be materially better persisted, and
-that is a separate argument from the rest of this spec.
+When a turn ends, everything describing it disappears: the loading line goes
+and takes the elapsed timer with it. The rail keeps per-tool durations, but
+nothing said how long the turn took. A finished turn now carries a one-line
+footer — `9.6s · 4 tools` — anchored to the END of the turn, because that is
+what it describes: a turn spans several assistant messages and the number
+covers all of them plus the tools and the agent build between.
+
+**It needed a new field, and that is the interesting part.** The obvious
+source, `latency.endToEndLatency`, is not the number it appears to be: on the
+persist path it prefers the provider's own API-call time
+(`stream_coordinator._store_message_metadata`), so summing it across a turn
+drops tool execution and the pre-stream agent build — a turn the user watched
+for 9s reads as 3s. It also disagrees with itself: the LIVE `metadata` event's
+`metrics.latencyMs` IS the whole turn, so the same field would show one number
+during the turn and a smaller one after a refresh.
+
+So `turnDurationMs` is explicit: measured server-side from the invocation
+arriving to the stream ending, emitted on the live event AND persisted on the
+turn's last message. One field, one meaning, identical live and reloaded.
+
+**Known limits, both deliberate:**
+
+- It starts when the invocation reaches inference-api, so it **excludes the
+  app-api hop** (~478ms measured). The recap therefore reads slightly lower
+  than the user's own stopwatch. The alternative — a client-measured
+  click-to-`done` — is truer to the felt wait but cannot survive a reload,
+  which "always on" requires.
+- Turns written before the field show **nothing** rather than a zero. Same
+  rule as the tool-rail durations: no number beats a number nobody measured.

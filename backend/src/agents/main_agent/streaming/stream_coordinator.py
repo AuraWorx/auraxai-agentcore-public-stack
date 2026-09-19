@@ -732,6 +732,16 @@ class StreamCoordinator:
                         # Add end-to-end latency to metrics for consistency
                         final_metadata["metrics"]["latencyMs"] = int((stream_end_time - stream_start_time) * 1000)
 
+                        # The same number, named for what it means, so the live
+                        # stream and a reloaded conversation agree. `latencyMs`
+                        # here is the whole turn, but the PERSISTED
+                        # `endToEndLatency` prefers the provider's API-call
+                        # time — so a client reading that field would show one
+                        # number live and a smaller one after refresh.
+                        final_metadata["turnDurationMs"] = int(
+                            (stream_end_time - stream_start_time) * 1000
+                        )
+
                         # Cost: sum the FINAL usage of each assistant message in
                         # this turn and price it. We deliberately price each
                         # message independently and sum, instead of pricing
@@ -1336,6 +1346,17 @@ class StreamCoordinator:
                             agent=main_agent_wrapper,  # Use wrapper instead of internal agent
                             citations=citations_for_message,  # Pass citations for persistence
                             call_index=idx,  # Nth model call of this turn (prefix fingerprint lookup)
+                            # Turn-level, so only the LAST message carries it.
+                            # The per-message `endToEndLatency` cannot stand in:
+                            # it prefers the provider's own API-call time, so
+                            # summing it across a turn silently drops tool
+                            # execution and the pre-stream agent build — a turn
+                            # the user watched for 9s would read as 3s.
+                            turn_duration_ms=(
+                                int((stream_end_time - stream_start_time) * 1000)
+                                if idx == len(message_ids_to_store) - 1
+                                else None
+                            ),
                             turn_agent_id=turn_agent_id,  # Which Agent ran this turn (#756)
                             tool_calls=(
                                 tool_census_hook.tally_for_call(idx)
@@ -3057,6 +3078,7 @@ class StreamCoordinator:
         turn_agent_id: Optional[str] = None,
         tool_calls: Optional[Dict[str, Dict[str, int]]] = None,
         context_ledger: Optional[Dict[str, Any]] = None,
+        turn_duration_ms: Optional[int] = None,
     ) -> None:
         """
         Store message-level metadata (token usage, latency, model info, citations)
@@ -3289,6 +3311,11 @@ class StreamCoordinator:
                             metadata_kwargs.update(footprint)
                     except Exception as doc_err:  # noqa: BLE001 - never block the cost row
                         logger.debug(f"Skipping document context summary: {doc_err}")
+
+                # Turn-level: present only on the turn's last message, which
+                # is where the SPA anchors the end-of-turn recap.
+                if turn_duration_ms is not None:
+                    metadata_kwargs["turn_duration_ms"] = turn_duration_ms
 
                 message_metadata = MessageMetadata(**metadata_kwargs)
 

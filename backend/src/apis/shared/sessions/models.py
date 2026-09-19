@@ -725,6 +725,19 @@ class MessageMetadata(BaseModel):
     # (see ``apis.shared.sessions.metadata``). Content-free: a ±1, a timestamp
     # and an optional reason code.
     feedback: Optional[MessageFeedback] = Field(None, description="User thumbs up/down on this assistant message")
+    # Set on the LAST assistant message of a turn only — it describes the turn,
+    # not the message. See `turn_duration_ms` on the write path.
+    turn_duration_ms: Optional[int] = Field(
+        None,
+        alias="turnDurationMs",
+        description=(
+            "How long the whole turn took, in ms, measured server-side from "
+            "the invocation arriving to the stream ending. Deliberately NOT "
+            "derivable from `latency.endToEndLatency`, which prefers the "
+            "provider's own API-call time and so excludes tool execution and "
+            "the pre-stream agent build."
+        ),
+    )
 
 
 class Message(BaseModel):
