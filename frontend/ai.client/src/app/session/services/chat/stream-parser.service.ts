@@ -19,6 +19,7 @@ import {
 import { OAuthConsentService } from '../../../services/oauth-consent/oauth-consent.service';
 import { ToolApprovalService } from '../../../services/tool-approval/tool-approval.service';
 import { UserQuestionService } from '../../../services/user-question/user-question.service';
+import { BrowserLoginService } from '../../../services/browser-login/browser-login.service';
 import { CompactionSummaryService } from './compaction-summary.service';
 import { SteeringService } from './steering.service';
 import { buildSteeringMessage } from './steering';
@@ -32,6 +33,7 @@ import type {
   OAuthRequiredEvent,
   ToolApprovalRequiredEvent,
   UserQuestionRequiredEvent,
+  BrowserLoginRequiredEvent,
   CompactionEvent,
   ArtifactEvent,
   UiResourceEvent,
@@ -167,6 +169,7 @@ export class StreamParserService {
   private oauthConsentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
   private userQuestionService = inject(UserQuestionService);
+  private browserLoginService = inject(BrowserLoginService);
   private compactionSummary = inject(CompactionSummaryService);
   private steering = inject(SteeringService);
   private artifactState = inject(ArtifactStateService);
@@ -702,6 +705,25 @@ export class StreamParserService {
           questions: data.questions,
           messageId: lastAssistantId,
           sessionId: state.sessionId,
+        });
+      },
+
+      onBrowserLoginRequired: (data: BrowserLoginRequiredEvent) => {
+        const lastAssistantId = this.findLastAssistantId(state);
+        // `data.sessionId` is the conversation the backend named; prefer the
+        // parser's own state so a late event from a previous conversation
+        // cannot point the viewer at the wrong thread.
+        this.browserLoginService.requestLogin({
+          interruptId: data.interruptId,
+          toolUseId: data.toolUseId,
+          sessionId: state.sessionId || data.sessionId,
+          browserSessionId: data.browserSessionId,
+          browserId: data.browserId,
+          viewport: data.viewport,
+          deadlineAt: data.deadlineAt,
+          targetUrl: data.targetUrl,
+          reason: data.reason,
+          messageId: lastAssistantId,
         });
       },
 

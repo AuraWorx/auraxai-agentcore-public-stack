@@ -1,6 +1,6 @@
 # Authenticated web assessment (browser takeover, profiles, axe)
 
-**Status:** IN PROGRESS — **PR 1 built** (backend takeover: `request_user_login`, take/release control, the `browser_login_required` interrupt + SSE event, the D4 metadata projection, reaper pinning, the abandonment deadline, and the flag). PRs 2-4 not started. Sized for four PRs.
+**Status:** IN PROGRESS — **PRs 1-2 built** (backend takeover: `request_user_login`, take/release control, the `browser_login_required` interrupt + SSE event, the D4 metadata projection, reaper pinning, the abandonment deadline, and the flag) and **PR 2's backend + SPA half** (the live-view route, its IAM, and the SPA's event/resume wiring). The viewer page itself is deliberately still open — see "Build notes (PR 2)". PRs 3-4 not started. Sized for four PRs.
 **Driver:** Two user requests, both blocked on the same missing capability:
 a Library agent that evaluates the accessibility of the databases they renew
 annually (subscription-gated), and a VPAT-evaluation agent that must test
@@ -447,6 +447,68 @@ Three things worth knowing before building PR 2:
 
 ⚠️ Still unverified, and still blocking PR 3: whether `profileConfiguration`
 survives a browser *resource* replacement (risk 2 below).
+
+## Build notes (PR 2)
+
+The route, its IAM and the SPA's handling of `browser_login_required` are
+built. The **viewer page is not**, and two findings from building the rest
+change its design — which is why it was left open rather than stubbed.
+
+### D3 correction — the viewer must NOT call app-api itself
+
+D3 says "the page calls the D2 route for its own URL and refreshes it on
+expiry." It must not. app-api's CORS is an allowlist with
+`allow_credentials=True`, so for the viewer to call the route from the sandbox
+origin, **that origin would have to be added to `CORS_ORIGINS`** — and the
+mcp-sandbox origin is where we frame *untrusted MCP App HTML*. Granting it
+credentialed access to app-api would hand every App a same-origin-ish path to
+the user's session.
+
+The viewer should instead receive its URL by `postMessage` from the SPA, which
+already holds the cookie and is already the trusted origin:
+
+- the SPA calls `POST /sessions/{id}/browser/live-view` (built, and the SPA
+  client for it is in `BrowserLoginService.mintLiveView`),
+- posts `{url, viewport}` into the frame,
+- re-mints before `expiresAt` and posts again.
+
+The viewer then needs no credentials, no CORS entry, and no knowledge of
+app-api at all. This is strictly less surface than D3 as drafted.
+
+### D3 correction — no new distribution, no new certificate
+
+D3 implies a viewer origin built like the mcp-sandbox one. A *second*
+CloudFront distribution means a second subdomain, a second us-east-1 ACM cert
+and a second `CDK_*_CERTIFICATE_ARN` deploy var — and per the scar tissue in
+`mcp-sandbox-distribution-construct.ts` (#396) a configured domain with a
+missing cert **throws at synth**, so adding one ahead of the cert would break
+every deploy until ops caught up.
+
+The mcp-sandbox origin already is what D3 describes: a static, non-SPA origin
+with `frame-ancestors` locked to the SPA. The viewer should be one more static
+file served from it. Note its `BucketDeployment` is `prune: true` with no key
+prefix, so the page belongs in `infrastructure/assets/mcp-sandbox/` — a second
+prefixed deployment to the same bucket would be pruned by the first.
+
+### What PR 2 ships
+
+`POST /sessions/{session_id}/browser/live-view` on app-api (404 for a
+conversation that is not the caller's or has no browser session, 409 for one
+whose session has ended, 404 while the flag is off), a **narrower** IAM
+statement than the Runtime's — `ConnectBrowserLiveViewStream`,
+`UpdateBrowserStream`, `GetBrowserSession` only, no Start/Stop and no
+`ConnectBrowserAutomationStream`, because app-api must never drive the browser
+— plus the SPA's validator, `BrowserLoginService`, and the resume path.
+
+The SPA validator rejects any event carrying a `url`, mirroring the backend's
+`assert_no_url`: nothing upstream should ever put one there, so its presence
+means a contract regression shipped and refusing to render beats framing a URL
+of unknown provenance.
+
+⚠️ Still unverified, and now the *first* thing the viewer PR must answer: does
+DCV work inside a cross-origin iframe under this CSP? It opens a WebSocket to
+the AgentCore data plane, which the sandbox origin's `connect-src` does not
+currently allow (risk 3 below).
 
 ## PR breakdown
 

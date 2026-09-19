@@ -472,6 +472,46 @@ class SessionSteerResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class BrowserLiveViewResponse(BaseModel):
+    """A short-lived Live View URL for the conversation's browser session.
+
+    The URL is SigV4 *query*-signed and lives at most 300 seconds, so this is
+    minted per request rather than stored or streamed
+    (``docs/specs/authenticated-web-assessment.md`` D2). The viewer re-requests
+    against ``expiresAt``, which is why a twenty-minute sign-in works.
+
+    ``viewport`` rides the response because DCV's ``remoteWidth``/
+    ``remoteHeight`` must match the browser session's real viewport or the
+    stream crops — the viewer must not carry its own copy of 1280x800.
+
+    ⚠️ This is the one place a presigned browser URL is allowed to travel, and
+    only because it goes to an authenticated browser over the SPA's own
+    session. It must never reach a tool result, an SSE event, a persisted row
+    or a log line.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    url: str = Field(..., description="Presigned Live View URL, valid until expiresAt")
+    expires_at: str = Field(
+        ...,
+        alias="expiresAt",
+        description="ISO 8601 instant the signature expires; the viewer refreshes before this",
+    )
+    viewport: Dict[str, int] = Field(
+        ...,
+        description="The browser session's real viewport, for DCV remoteWidth/remoteHeight",
+    )
+    control_state: str = Field(
+        default="agent",
+        alias="controlState",
+        description=(
+            "'user' while the automation stream is DISABLED and the human can "
+            "drive; 'agent' when the view is read-only because the agent holds it"
+        ),
+    )
+
+
 class SessionMetadataResponse(BaseModel):
     """Response containing session metadata"""
 

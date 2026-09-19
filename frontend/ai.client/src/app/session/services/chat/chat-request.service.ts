@@ -22,6 +22,10 @@ import {
   UserQuestionResponse,
   UserQuestionService,
 } from '../../../services/user-question/user-question.service';
+import {
+  BrowserLoginResponse,
+  BrowserLoginService,
+} from '../../../services/browser-login/browser-login.service';
 import { ErrorService } from '../../../services/error/error.service';
 import { SystemPromptsService } from '../../../services/system-prompts/system-prompts.service';
 import { isPreviewSession } from '../../../shared/constants/session.constants';
@@ -52,6 +56,7 @@ export class ChatRequestService implements OnDestroy {
   private oauthConsentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
   private userQuestionService = inject(UserQuestionService);
+  private browserLoginService = inject(BrowserLoginService);
   private steering = inject(SteeringService);
   private errorService = inject(ErrorService);
   private systemPromptsService = inject(SystemPromptsService);
@@ -68,12 +73,16 @@ export class ChatRequestService implements OnDestroy {
     this.userQuestionService.setResumeHandler((interruptId, response, context) =>
       this.resumeFromUserQuestion(interruptId, response, context?.sessionId),
     );
+    this.browserLoginService.setResumeHandler((interruptId, response, context) =>
+      this.resumeFromBrowserLogin(interruptId, response, context?.sessionId),
+    );
   }
 
   ngOnDestroy(): void {
     this.oauthConsentService.setResumeHandler(null);
     this.toolApprovalService.setResumeHandler(null);
     this.userQuestionService.setResumeHandler(null);
+    this.browserLoginService.setResumeHandler(null);
   }
 
   async submitChatRequest(
@@ -590,6 +599,59 @@ export class ChatRequestService implements OnDestroy {
         this.errorService.addError(
           'Question expired',
           'The agent paused too long ago to resume this turn automatically. Please send your message again.',
+        );
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Resume a turn the user paused to sign in to a site the agent could not
+   * reach (`docs/specs/authenticated-web-assessment.md`).
+   *
+   * Identical in shape to {@link resumeFromUserQuestion} — same
+   * `interrupt_responses` envelope, same non-null-response requirement, since
+   * both are tool-raised Strands interrupts. The response is
+   * `{ completed: true }` or `{ skipped: true }`; `BrowserLoginService`
+   * guarantees an object, because a null would re-raise the interrupt forever.
+   *
+   * The expired case is worth its own message: unlike a stale question, a
+   * lapsed sign-in means the backend already released the browser and let the
+   * session become reapable, so "send it again" is genuinely the only way
+   * forward — there is no authenticated session left to hand back.
+   */
+  private async resumeFromBrowserLogin(
+    interruptId: string,
+    response: BrowserLoginResponse,
+    sessionId?: string,
+  ): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    this.messageMapService.beginContinuationStreaming(sessionId);
+    this.chatStateService.setChatLoading(sessionId, true);
+
+    const resumeRequest: Record<string, unknown> = {
+      session_id: sessionId,
+      message: '',
+      interrupt_responses: [{ interruptId, response }],
+    };
+
+    this.attachCarriedSteering(resumeRequest, sessionId);
+
+    try {
+      await this.chatHttpService.sendChatRequest(resumeRequest);
+      await this.reconcileAfterResume(sessionId);
+    } catch (error) {
+      this.chatStateService.setChatLoading(sessionId, false);
+      this.messageMapService.endStreaming(sessionId);
+
+      if (this.isExpiredInterruptError(error)) {
+        this.errorService.addError(
+          'Sign-in expired',
+          'The browser session ended before the sign-in finished. Please send your message again to start a new one.',
         );
         return;
       }
