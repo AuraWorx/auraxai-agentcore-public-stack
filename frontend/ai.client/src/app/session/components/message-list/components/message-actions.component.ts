@@ -34,83 +34,98 @@ import { TooltipDirective } from '../../../../components/tooltip';
   ],
   template: `
     <div class="flex items-center gap-1">
-      <button
-        type="button"
-        class="inline-flex items-center justify-center rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-        [appTooltip]="copied() ? 'Copied' : 'Copy'"
-        appTooltipPosition="top"
-        [attr.aria-label]="copied() ? 'Copied to clipboard' : 'Copy message'"
-        [disabled]="!hasCopyableText()"
-        (click)="copy()"
+      <!-- Copy + thumbs are revealed on hover of the response (the .group
+           wrapper in message-list), like the metadata row below them. Opacity
+           only — never visibility or display, which would drop these buttons
+           out of the tab order and make group-focus-within unreachable, so a
+           keyboard user could never get to them. Once a thumb is pressed (or
+           a copy just landed) the row stays up, so the state the user set
+           doesn't vanish when the pointer leaves. -->
+      <div
+        class="flex items-center gap-1 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+        [class.opacity-0]="!actionsPinned()"
       >
-        @if (copied()) {
-          <ng-icon name="heroCheck" class="size-4" aria-hidden="true" />
-        } @else {
-          <ng-icon name="heroSquare2Stack" class="size-4" aria-hidden="true" />
-        }
-      </button>
-
-      @if (showFeedback()) {
-        <!-- Thumbs: the outcome signal joined to the cost rows. A second click
-             on the pressed thumb withdraws it; the other thumb replaces it. -->
         <button
           type="button"
-          class="inline-flex items-center justify-center rounded-md p-1.5 transition-colors hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:hover:bg-gray-800"
-          [class]="thumbClass(1)"
-          [appTooltip]="feedbackValue() === 1 ? 'Remove thumbs up' : 'Good response'"
+          class="inline-flex items-center justify-center rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          [appTooltip]="copied() ? 'Copied' : 'Copy'"
           appTooltipPosition="top"
-          [attr.aria-label]="feedbackValue() === 1 ? 'Remove thumbs up' : 'Good response'"
-          [attr.aria-pressed]="feedbackValue() === 1"
-          [disabled]="feedbackPending()"
-          (click)="thumb(1)"
+          [attr.aria-label]="copied() ? 'Copied to clipboard' : 'Copy message'"
+          [disabled]="!hasCopyableText()"
+          (click)="copy()"
         >
-          <ng-icon [name]="feedbackValue() === 1 ? 'heroHandThumbUpSolid' : 'heroHandThumbUp'" class="size-4" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="inline-flex items-center justify-center rounded-md p-1.5 transition-colors hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:hover:bg-gray-800"
-          [class]="thumbClass(-1)"
-          [appTooltip]="feedbackValue() === -1 ? 'Remove thumbs down' : 'Bad response'"
-          appTooltipPosition="top"
-          [attr.aria-label]="feedbackValue() === -1 ? 'Remove thumbs down' : 'Bad response'"
-          [attr.aria-pressed]="feedbackValue() === -1"
-          [disabled]="feedbackPending()"
-          (click)="thumb(-1)"
-        >
-          <ng-icon [name]="feedbackValue() === -1 ? 'heroHandThumbDownSolid' : 'heroHandThumbDown'" class="size-4" aria-hidden="true" />
+          @if (copied()) {
+            <ng-icon name="heroCheck" class="size-4" aria-hidden="true" />
+          } @else {
+            <ng-icon name="heroSquare2Stack" class="size-4" aria-hidden="true" />
+          }
         </button>
 
-        @if (feedbackValue() === -1) {
-          <!-- Reason codes only — a closed set, no text field, by design. -->
-          <div class="flex flex-wrap items-center gap-1 pl-1" role="group" aria-label="Why was this response bad?">
-            @for (reason of reasons; track reason) {
+        @if (showFeedback()) {
+          <!-- Thumbs: the outcome signal joined to the cost rows. A second click
+               on the pressed thumb withdraws it; the other thumb replaces it. -->
+          <button
+            type="button"
+            class="inline-flex items-center justify-center rounded-md p-1.5 transition-colors hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:hover:bg-gray-800"
+            [class]="thumbClass(1)"
+            [appTooltip]="feedbackValue() === 1 ? 'Remove thumbs up' : 'Good response'"
+            appTooltipPosition="top"
+            [attr.aria-label]="feedbackValue() === 1 ? 'Remove thumbs up' : 'Good response'"
+            [attr.aria-pressed]="feedbackValue() === 1"
+            [disabled]="feedbackPending()"
+            (click)="thumb(1)"
+          >
+            <ng-icon [name]="feedbackValue() === 1 ? 'heroHandThumbUpSolid' : 'heroHandThumbUp'" class="size-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center justify-center rounded-md p-1.5 transition-colors hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:hover:bg-gray-800"
+            [class]="thumbClass(-1)"
+            [appTooltip]="feedbackValue() === -1 ? 'Remove thumbs down' : 'Bad response'"
+            appTooltipPosition="top"
+            [attr.aria-label]="feedbackValue() === -1 ? 'Remove thumbs down' : 'Bad response'"
+            [attr.aria-pressed]="feedbackValue() === -1"
+            [disabled]="feedbackPending()"
+            (click)="thumb(-1)"
+          >
+            <ng-icon [name]="feedbackValue() === -1 ? 'heroHandThumbDownSolid' : 'heroHandThumbDown'" class="size-4" aria-hidden="true" />
+          </button>
+
+          @if (feedbackValue() === -1) {
+            <!-- Reason codes only — a closed set, no text field, by design. -->
+            <div class="flex flex-wrap items-center gap-1 pl-1" role="group" aria-label="Why was this response bad?">
+              @for (reason of reasons; track reason) {
+                <button
+                  type="button"
+                  class="rounded-2xl border px-2 py-0.5 text-xs/5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+                  [class]="reasonClass(reason)"
+                  [attr.aria-pressed]="feedbackReason() === reason"
+                  [disabled]="feedbackPending()"
+                  (click)="pickReason(reason)"
+                >
+                  {{ reasonLabels[reason] }}
+                </button>
+              }
               <button
                 type="button"
-                class="rounded-2xl border px-2 py-0.5 text-xs/5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
-                [class]="reasonClass(reason)"
-                [attr.aria-pressed]="feedbackReason() === reason"
+                class="ml-1 inline-flex items-center gap-1 rounded-2xl px-2 py-0.5 text-xs/5 font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700"
+                appTooltip="Prefill a correction you can edit, then send"
+                appTooltipPosition="top"
+                aria-label="Retry with that in mind"
                 [disabled]="feedbackPending()"
-                (click)="pickReason(reason)"
+                (click)="retry()"
               >
-                {{ reasonLabels[reason] }}
+                <ng-icon name="heroArrowPath" class="size-3.5" aria-hidden="true" />
+                <span>Retry with that in mind</span>
               </button>
-            }
-            <button
-              type="button"
-              class="ml-1 inline-flex items-center gap-1 rounded-2xl px-2 py-0.5 text-xs/5 font-medium text-primary-accessible transition-colors hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 dark:text-primary-accessible-dark dark:hover:bg-gray-700"
-              appTooltip="Prefill a correction you can edit, then send"
-              appTooltipPosition="top"
-              aria-label="Retry with that in mind"
-              [disabled]="feedbackPending()"
-              (click)="retry()"
-            >
-              <ng-icon name="heroArrowPath" class="size-3.5" aria-hidden="true" />
-              <span>Retry with that in mind</span>
-            </button>
-          </div>
+            </div>
+          }
         }
-      }
+      </div>
 
+      <!-- Continue / interrupted chips are NOT hover-gated: they report that
+           the answer is incomplete and offer the only way to finish it, which
+           a user has to be able to see without knowing to hover. -->
       @if (canContinue()) {
         <span class="pl-1 text-xs text-gray-500 dark:text-gray-400">
           Response length limit reached
@@ -209,6 +224,11 @@ export class MessageActionsComponent {
   );
 
   protected hasCopyableText = computed(() => this.copyableText().length > 0);
+
+  /** Keep the copy/thumbs row visible without a hover when it carries state
+   *  the user set: a cast thumb (and its reason chips) or a just-copied
+   *  confirmation. Otherwise it fades in on hover/focus of the response. */
+  protected actionsPinned = computed(() => this.copied() || this.feedbackValue() !== null);
 
   // ── feedback ──
   // The thumb keys on the run's LAST message (the one whose cost row
