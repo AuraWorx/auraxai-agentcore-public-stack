@@ -1,7 +1,8 @@
 # Agent state feedback
 
-**Status:** PR-1 SHIPPED (#1159). PR-2 SHIPPED (#1160), VERIFIED on dev 2026-09-19.
-PR-3 blocked on a design decision — see its section.
+**Status:** PR-1 SHIPPED (#1159). PR-2 SHIPPED (#1160), VERIFIED on dev.
+Cleanup + instrumentation SHIPPED (#1163). PR-3 RESCOPED by measurement
+(2026-09-19) to one narrow change — see its section.
 **Follow-up to:** `d2ee13e2` (emit agent_status and tool-batch summaries), `9bc9bc6b` / `5f0cd52a` / `67234329` (loading-indicator series)
 **Related:** `docs/specs/mid-turn-steering.md` (the other consumer of the drain), CLAUDE.md § SSE Event Types → `agent_status`
 
@@ -185,64 +186,71 @@ that was not yet running. Which is preferable is a product call, not a bug.
 
 A cold turn measured **6.7s** before the first status frame.
 
-## PR-3 — the phases ahead of the event loop
+## PR-3 — narrate the cold agent build (rescoped by measurement)
 
-**BLOCKED on a decision. The plan below cannot be built as written.**
+The original plan — emit a phase per pre-stream stage from the chat route —
+could not be built as written, and the measurement that proved it also made it
+unnecessary. What is left is much smaller.
 
-The measurement above says the dominant invisible gap is the **3.75s before the
-first SSE byte**, not anything inside the stream. FastAPI flushes response
-headers when the handler returns its `StreamingResponse`, and
-`inference_api/chat/routes.py` awaits `get_agent(...)` — along with model
-resolution, RAG retrieval and tool building — *before* that return. So during the
-whole window this PR wants to narrate, **no SSE channel is open**. There is
-nowhere to emit from.
+### Why the original plan was impossible
 
-app-api cannot cover it either as written: `chat/proxy_routes.py` awaits the
-upstream response before constructing its own `StreamingResponse`, so its stream
-starts no earlier than inference-api's.
+FastAPI flushes response headers when the handler returns its
+`StreamingResponse`, and `inference_api/chat/routes.py` awaits `get_agent(...)`
+— along with model resolution, RAG retrieval and tool building — *before* that
+return. During the whole window the plan wanted to narrate, **no SSE channel is
+open**. app-api cannot cover it either: `chat/proxy_routes.py` awaits the
+upstream response before constructing its own `StreamingResponse`.
 
-Three ways forward, in increasing order of both risk and value:
+### What the measurement says
 
-1. **Client-side label for the pre-first-byte window.** The SPA knows it sent
-   the request and has received no bytes; naming that window costs nothing and
-   touches no backend. It is the same category as the existing stall ladder,
-   which is already client-side and already accepted. But it names a window,
-   not a phase — it cannot say *which* of agent build / RAG / tool build is
-   slow.
-2. **Restructure app-api's relay** to open its stream immediately and perform
-   the upstream call inside the generator. Covers the full gap with one true,
-   server-sourced label. Cost: once a byte is sent the response is committed to
-   200, so upstream HTTP errors must become SSE `stream_error` frames. That is
-   the house rule already (CLAUDE.md: "Errors stream as assistant messages via
-   SSE"), but it is a real change to the chat path's error semantics.
-3. **Restructure inference-api's handler** so the response opens first and the
-   heavy work runs inside the generator, emitting a phase per stage. This is
-   the only option that delivers the original table. It is also surgery on a
-   ~1700-line handler that owns quota, resume-validation 400s, RAG and tool
-   autoenable, several of which must still be able to fail *before* streaming.
+`turn_prelude` on dev, four turns (2026-09-19):
 
-**The measurement is now instrumented.** `inference_api/chat/turn_timing.py`
-records a delta per pre-stream stage — `preamble` (validation, model settings,
-files, quota), `rag`, `tools` (system prompt, lease, skills, every tool
-builder), `agent_build`, `stream_setup` — and logs one `turn_prelude` line per
-agent turn, just before the `StreamingResponse` is returned. Read it on the
-inference-api runtime log group with `filter-log-events --filter-pattern
-turn_prelude` (Logs Insights is unusable through the account guard).
+| Turn | total | preamble | rag | tools | agent_build |
+|------|------:|---------:|----:|------:|------------:|
+| cold agent cache | 2542 | 802 | 0 | 261 | **1478** |
+| warm | 641 | 494 | 0 | 146 | 0 |
+| warm | 644 | 460 | 0 | 149 | 34 |
+| warm | 678 | 484 | 0 | 154 | 38 |
 
-`totalMs` starts at handler entry, so it excludes the app-api hop and any
-Runtime cold start. Subtracting it from the client-side click→first-byte gap
-(3750ms on the warm turn measured above) sizes what is left outside the
-handler — which decides whether the fix belongs in inference-api at all, or in
-app-api / the Runtime configuration.
+Against a client-side click→first-byte of **1156ms** on that last turn, the warm
+budget is ~478ms outside the handler (app-api hop, auth, Runtime routing), 484ms
+`preamble`, 154ms `tools`, 38ms `agent_build`.
 
-**Then pick.**  Before any of them, instrument the pre-generator
-stages (agent build, RAG retrieval, tool building, the app-api→Runtime hop) and
-read the split in CloudWatch. On a warm turn the agent cache hits, so `get_agent`
-is probably NOT the bulk of the 3.75s — and narrating the wrong stage is exactly
-the waste the cost-effectiveness tenet exists to catch. The original table below
-is kept as the target, not as a plan.
+Two conclusions:
 
-### Original target (unchanged, pending the above)
+1. **A warm turn does not need narrating.** ~1.2s to first byte with no stage
+   dominating, and 41% of it not even in the handler. There is no honest phase
+   label that helps, and the loading indicator already covers it.
+2. **A cold agent build is the whole problem.** 1478ms in one stage, and the
+   6.7s cold turn measured earlier is worse. It is the only place in the
+   prelude where a phase label earns its keep.
+
+### The plan
+
+**Wrap `get_agent` only.** Move that one call inside the stream generator and
+emit `Getting ready…` before it. Leave `preamble`, `rag` and `tools` eager where
+they are. This sidesteps most of what made a handler restructure frightening:
+the quota check, the session-ownership 404 and every other HTTP-error-capable
+guard live in `preamble`, which stays ahead of the stream.
+
+**Feasibility check owed before building it:** confirm nothing on the NON-resume
+path raises `HTTPException` between `get_agent` and the `StreamingResponse`
+return. The resume path does (interrupt-id validation 400s) but takes a
+different `get_agent` call and can stay eager.
+
+**Cost:** the label is one SSE frame. Nothing reaches the model.
+
+### Declined
+
+- **A client-side label for the pre-first-byte window.** Unnecessary once the
+  narrow fix lands, and it could only name a window, not a phase.
+- **Restructuring app-api's relay.** It would cover the ~478ms outside the
+  handler, which is not where the pain is, and it would force upstream HTTP
+  errors to become SSE `stream_error` frames.
+- **Restructuring the whole inference-api handler.** The measurement says three
+  of its four stages are not worth narrating, so the risk buys nothing.
+
+### Original target (superseded, kept for the record)
 
 
 These are not Strands hook events; they happen before the loop exists, so they
