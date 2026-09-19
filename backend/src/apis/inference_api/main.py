@@ -27,7 +27,6 @@ else:
     _startup_logger.warning(".env file not found at %s", env_path)
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -69,12 +68,6 @@ async def lifespan(app: FastAPI):
     if code_interpreter_id:
         logger.info(f"AgentCore Code Interpreter ID: {code_interpreter_id}")
     
-    # Log storage directories
-    upload_dir = os.getenv('UPLOAD_DIR', 'uploads')
-    output_dir_name = os.getenv('OUTPUT_DIR', 'output')
-    generated_images_dir_name = os.getenv('GENERATED_IMAGES_DIR', 'generated_images')
-    logger.info(f"Storage directories - Upload: {upload_dir}, Output: {output_dir_name}, Images: {generated_images_dir_name}")
-    
     # Log API URLs (if configured)
     frontend_url = os.getenv('FRONTEND_URL')
     if frontend_url:
@@ -85,17 +78,6 @@ async def lifespan(app: FastAPI):
     if cors_origins:
         logger.info(f"CORS Origins: {cors_origins}")
     
-    # Create output directories if they don't exist
-    base_dir = Path(__file__).parent.parent
-    output_dir = os.path.join(base_dir, "output")
-    uploads_dir = os.path.join(base_dir, "uploads")
-    generated_images_dir = os.path.join(base_dir, "generated_images")
-
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(uploads_dir, exist_ok=True)
-    os.makedirs(generated_images_dir, exist_ok=True)
-    logger.info("Output directories ready")
-
     # Pull the first turn's lazy imports and boto service-model loads forward
     # to container start, off the request path. Daemon thread: /ping answers
     # immediately and a request that arrives mid-warm-up waits on the import
@@ -186,26 +168,6 @@ app.include_router(voice_router)  # WebSocket voice streaming endpoint
 # Connector consent flows live on app-api now: the AgentCore Runtime data plane
 # only proxies /invocations and /ping, so user-facing /connectors/* paths can't
 # be reached through this service. See apis/app_api/connectors/routes.py.
-
-# Mount static file directories for serving generated content
-# These are created by tools (visualization, code interpreter, etc.)
-# Use parent directory (src/) as base
-base_dir = Path(__file__).parent.parent
-output_dir = os.path.join(base_dir, "output")
-uploads_dir = os.path.join(base_dir, "uploads")
-generated_images_dir = os.path.join(base_dir, "generated_images")
-
-if os.path.exists(output_dir):
-    app.mount("/output", StaticFiles(directory=output_dir), name="output")
-    logger.info(f"Mounted static files: /output -> {output_dir}")
-
-if os.path.exists(uploads_dir):
-    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
-    logger.info(f"Mounted static files: /uploads -> {uploads_dir}")
-
-if os.path.exists(generated_images_dir):
-    app.mount("/generated_images", StaticFiles(directory=generated_images_dir), name="generated_images")
-    logger.info(f"Mounted static files: /generated_images -> {generated_images_dir}")
 
 if __name__ == "__main__":
     import uvicorn
