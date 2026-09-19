@@ -1,8 +1,8 @@
 # Agent state feedback
 
-**Status:** PR-1 SHIPPED (#1159). PR-2 SHIPPED (#1160), VERIFIED on dev.
-Cleanup + instrumentation SHIPPED (#1163). PR-3 SHIPPED (#1165) and VERIFIED on dev, which exposed a starved-timer
-bug in it; the fix is the follow-up described in its section.
+**Status: CLOSED 2026-09-19.** Every state shipped and observed working on
+dev. PRs #1159, #1160, #1163, #1165, #1167, #1170, #1173, #1176, #1178, #1180.
+See "Closing summary" at the foot of this document.
 **Follow-up to:** `d2ee13e2` (emit agent_status and tool-batch summaries), `9bc9bc6b` / `5f0cd52a` / `67234329` (loading-indicator series)
 **Related:** `docs/specs/mid-turn-steering.md` (the other consumer of the drain), CLAUDE.md § SSE Event Types → `agent_status`
 
@@ -414,3 +414,84 @@ turn's last message. One field, one meaning, identical live and reloaded.
   which "always on" requires.
 - Turns written before the field show **nothing** rather than a zero. Same
   rule as the tool-rail durations: no number beats a number nobody measured.
+
+---
+
+## Closing summary
+
+### What a turn says now
+
+| When | What the user sees | Source |
+|------|--------------------|--------|
+| Model call being retried | `The model is busy. Retrying…` (amber) | `model_retry` |
+| 30s / 90s of silence | `Still working…` → `…longer than usual.` (amber) | client timer |
+| Tool executing | `Running <tool_name>…` | `agent_status` `tool_start`, content stream as fallback |
+| Agent being built (>250ms) | `Getting ready…` | `agent_status` `preparing` / `prepared` |
+| Model call in flight | `Waiting for the model…` | `agent_status` `thinking` |
+| Anything else | `Thinking…` | fallback |
+| Throughout | elapsed timer | client |
+| After a reasoning block | `Thought for 17s` | client-measured span |
+| After a tool batch | per-tool durations + a model-written summary | `tool_end`, `tool_group_summary` |
+| After the turn | `9.6s · 4 tools` | `turnDurationMs` |
+
+### Declined, with the measurement that settled it
+
+- **`Connecting tools…`** — `tools` measured 250ms. Nothing to explain.
+- **`Reorganizing context…`** — `rag` measured 0ms on a plain turn.
+- **A full inference-api handler restructure** — three of its four pre-stream
+  stages do not need narrating, so the risk bought nothing.
+- **Restructuring app-api's relay** — would cover the ~1.5s outside the
+  container, which is real but is a latency problem, not a narration one.
+- **`Almost done thinking…`** and a **`responding`** phase — see Non-goals.
+
+### What this cost, and what it taught
+
+Four defects shipped to dev and were caught there. **All four passed CI**, and
+all four were about timing or interaction, which the unit tests could not see:
+
+1. **A server-side timer that could not fire** (#1167). `create_agent` is
+   synchronous, so a cold build owns the event loop and `asyncio.wait` never
+   reaches its timeout. The feature was inert in production from the moment it
+   shipped — silently. The test faked the build with `asyncio.sleep`, which
+   yields; the real one does not.
+2. **A label that stepped backwards** (#1170). A flag cleared before the phase
+   did, so `Getting ready…` → `Thinking…` → `Waiting for the model…` on every
+   turn, ~40ms of it.
+3. **A turn duration that excluded the wait it described** (#1176). Deferring
+   the agent build moved it outside the window `stream_response` measures. A
+   7.8s turn reported 2.1s.
+4. **A label that overstayed** (#1180). `preparing` had no end, so the client
+   inferred one from `thinking` — which arrives hundreds of ms later. Builds of
+   0ms, 1ms and 40ms all rendered it. The test sent `thinking` 40ms after
+   `preparing`, **a sequence the backend never emits**.
+
+Three of the four share one root cause: **treating "most recent event" as if it
+were "current state"**. An event stream says what just happened, not what is
+still true, and a phase with no explicit end cannot express a wait that is over.
+
+The practical lesson for anyone extending this: a test that invents the next
+event agrees with whatever the code does. Model the real frame order, including
+the gaps — and for anything whose correctness IS its timing, treat green CI as
+weak evidence and go watch a turn.
+
+### One thing measurement killed
+
+`#1171` was filed claiming the agent cache missed on most consecutive turns.
+It does not. That data was gathered while repeatedly testing immediately after
+deploys, when containers were cycling. A session sticks to its container and
+the cache hits from the second turn on (measured: 1631ms, then 1ms / 40ms /
+0ms). Closed as not reproducible.
+
+The one real residual is that the **first** turn of every session pays a full
+build, because `session_id` is part of the cache key. That is by design and is
+a different, narrower question than the one that issue asked.
+
+### Left on the table, deliberately
+
+- **`preamble` costs 450-900ms on every turn** and nobody has looked inside it.
+  It is the largest remaining avoidable wait. Not a status gap — narrating it
+  would explain nothing — but worth its own investigation.
+- **The recap reads ~1.5s under the user's stopwatch**, excluding everything
+  before the container. Fixing that means client-side measurement, which
+  cannot survive a reload.
+- **Conversations from before the recap** show no footer until their next turn.
