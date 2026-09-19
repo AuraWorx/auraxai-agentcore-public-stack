@@ -16,7 +16,10 @@ from agents.main_agent.session.hooks.prefix_fingerprint import (
     reset_prefix_fingerprints,
 )
 from agents.main_agent.session.hooks.context_attribution import get_prefix_token_split
-from apis.shared.feature_flags import cost_diagnostics_enabled
+from apis.shared.feature_flags import (
+    agent_status_live_drain_enabled,
+    cost_diagnostics_enabled,
+)
 from apis.shared.errors import (
     ConversationalErrorEvent,
     ErrorCode,
@@ -27,6 +30,28 @@ from apis.shared.errors import (
 from .stream_processor import process_agent_stream
 
 logger = logging.getLogger(__name__)
+
+# How long the status merge waits on the agent stream before looking at the
+# hook again. Small enough that "Running list_assignments" lands while that
+# tool is actually running; large enough that a silent stretch costs a handful
+# of wakeups a second and nothing else.
+_STATUS_POLL_SECONDS = 0.1
+
+
+class _StatusFrame:
+    """A ready-to-emit ``agent_status`` SSE travelling with the agent's events.
+
+    The merge yields these alongside the processed agent events so the
+    coordinator keeps ONE loop over ONE stream. A class rather than a tagged
+    dict because the loop body reads `event.get("type")` on everything else —
+    a dict would have to be excluded by a value check, and a frame whose text
+    happened to look like an event type would be a very unpleasant bug.
+    """
+
+    __slots__ = ("sse",)
+
+    def __init__(self, sse: str) -> None:
+        self.sse = sse
 
 
 class _CooperativeStopSignal(Exception):
@@ -425,8 +450,30 @@ class StreamCoordinator:
             # Get raw agent stream
             agent_stream = agent.stream_async(prompt)
 
-            # Process through new stream processor and format as SSE
-            async for event in process_agent_stream(agent_stream):
+            # Process through new stream processor and format as SSE.
+            #
+            # The status merge sits between the two so a transition recorded
+            # while the agent stream is SILENT still reaches the client — see
+            # `_merge_agent_status`. With its kill switch off this is the bare
+            # `process_agent_stream(...)` the loop has always consumed, and no
+            # `_StatusFrame` is ever produced.
+            processed_stream: AsyncGenerator[Any, None] = process_agent_stream(
+                agent_stream
+            )
+            if agent_status_live_drain_enabled():
+                processed_stream = self._merge_agent_status(
+                    processed_stream, main_agent_wrapper, session_id
+                )
+
+            async for event in processed_stream:
+                # A status transition the merge picked up mid-silence. It is
+                # already a formatted SSE frame and describes nothing the rest
+                # of this body reasons about (no message index, no metadata, no
+                # persistence), so it passes straight through.
+                if isinstance(event, _StatusFrame):
+                    yield event.sse
+                    continue
+
                 # Cooperative stop. A user Stop arms a cancel on the session's
                 # single-flight lease; the inference-api heartbeat observes it
                 # and flips ``session_manager.cancelled``. Because a client
@@ -1051,9 +1098,13 @@ class StreamCoordinator:
                 # Live narration: the status hook records model-call and
                 # tool-call boundaries from inside Strands' event loop, which
                 # has no route to the SSE stream. Drained here, before the
-                # event it precedes is yielded, so "Using list_assignments"
-                # reaches the client while that tool is actually running
-                # rather than after its result.
+                # event it precedes is yielded.
+                #
+                # With the live drain on, `_merge_agent_status` has usually
+                # taken these already and this finds nothing — it is kept
+                # because it is the ONLY drain when that kill switch is off,
+                # and because a transition recorded in the gap between the
+                # merge's last poll and this event still lands in order.
                 for status_sse in self._drain_agent_status_events(
                     main_agent_wrapper, session_id
                 ):
@@ -2437,6 +2488,96 @@ class StreamCoordinator:
                 f"event: steering_applied\ndata: {json.dumps(payload)}\n\n"
             )
         return events
+
+    async def _merge_agent_status(
+        self,
+        events: AsyncGenerator[Dict[str, Any], None],
+        main_agent_wrapper: Any,
+        session_id: str,
+    ) -> AsyncGenerator[Any, None]:
+        """Yield the agent's events, interleaved with status transitions as they happen.
+
+        WHAT THIS FIXES
+        ---------------
+        ``_drain_agent_status_events`` is called from the coordinator's emit
+        loop, which only regains control when the agent stream yields. During
+        tool execution the agent stream yields NOTHING, so a ``tool_start`` sat
+        in the hook's queue for exactly the silence it existed to explain and
+        arrived bundled with its own ``tool_end``. Measured on a three-tool
+        browse turn: the indicator read "Thinking" for all 4.5s and never named
+        a tool. The SPA worked around it by deriving the running tool from the
+        content stream instead — correct, but it leaves every OTHER phase
+        (model call, batch shape) unreachable.
+
+        HOW
+        ---
+        Race the agent stream's next event against a short timer. On a timeout,
+        drain the hook and yield whatever it recorded; on an event, drain first
+        (so a status still precedes the event it describes, exactly as before)
+        and then yield the event.
+
+        The in-flight ``__anext__`` is deliberately kept across timeouts rather
+        than re-requested: an async generator cannot have two ``__anext__``
+        calls outstanding, and re-creating it would drop events.
+
+        ON EARLY EXIT
+        -------------
+        The coordinator abandons this stream on several paths (cooperative
+        stop, max_tokens, a conversational error). Closing an async generator
+        runs the ``finally`` below, which cancels the in-flight ``__anext__``.
+        That throws ``CancelledError`` into ``process_agent_stream`` at its
+        yield point and unwinds it — the cleanup-on-cancellation path that
+        generator already documents and already took when the coordinator
+        consumed it directly.
+
+        Best-effort in both directions: with no hook (voice, tests) or a failing
+        drain this degrades to a plain pass-through of the agent stream.
+        """
+        iterator = events.__aiter__()
+        pending: Optional[asyncio.Future] = None
+        try:
+            while True:
+                if pending is None:
+                    pending = asyncio.ensure_future(iterator.__anext__())
+
+                done, _ = await asyncio.wait({pending}, timeout=_STATUS_POLL_SECONDS)
+
+                # On EVERY pass, including the ones where the agent stream
+                # produced nothing — which is the entire point of this merge.
+                for sse in self._drain_agent_status_events(
+                    main_agent_wrapper, session_id
+                ):
+                    yield _StatusFrame(sse)
+
+                if not done:
+                    continue
+
+                completed, pending = pending, None
+                try:
+                    event = completed.result()
+                except StopAsyncIteration:
+                    # A transition recorded in the same instant the stream
+                    # ended still belongs to this turn — most often the final
+                    # `tool_end` of the last batch.
+                    for sse in self._drain_agent_status_events(
+                        main_agent_wrapper, session_id
+                    ):
+                        yield _StatusFrame(sse)
+                    return
+
+                yield event
+        finally:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+                except Exception:  # noqa: BLE001 - the turn is already ending
+                    logger.debug(
+                        "Agent stream raised while cancelling the status merge",
+                        exc_info=True,
+                    )
 
     def _drain_agent_status_events(
         self, main_agent_wrapper: Any, session_id: str

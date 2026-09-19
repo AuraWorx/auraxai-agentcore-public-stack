@@ -37,6 +37,109 @@ describe('ToolInsightService', () => {
     service = TestBed.inject(ToolInsightService);
   });
 
+  describe('running tools', () => {
+    /**
+     * What makes a parallel batch legible. The loader used to name whichever
+     * unresolved `toolUse` block came first and say nothing about the rest,
+     * so a three-tool batch looked like a one-tool batch that hung.
+     */
+    it('opens on tool_start and closes on tool_end', () => {
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_start', toolUseId: 't1', toolName: 'list_courses' }),
+      );
+      expect(service.runningTools('s1').map(t => t.toolName)).toEqual([
+        'list_courses',
+      ]);
+
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_end', toolUseId: 't1', toolName: 'list_courses' }),
+      );
+      expect(service.runningTools('s1')).toEqual([]);
+    });
+
+    it('holds a whole parallel batch, in start order', () => {
+      for (const [id, name] of [
+        ['t1', 'list_courses'],
+        ['t2', 'list_assignments'],
+        ['t3', 'get_grades'],
+      ]) {
+        service.recordStatus(
+          's1',
+          status({ phase: 'tool_start', toolUseId: id, toolName: name }),
+        );
+      }
+
+      expect(service.runningTools('s1').map(t => t.toolName)).toEqual([
+        'list_courses',
+        'list_assignments',
+        'get_grades',
+      ]);
+    });
+
+    it('closes only the tool that finished', () => {
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_start', toolUseId: 't1', toolName: 'a' }),
+      );
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_start', toolUseId: 't2', toolName: 'b' }),
+      );
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_end', toolUseId: 't1', toolName: 'a' }),
+      );
+
+      expect(service.runningTools('s1').map(t => t.toolName)).toEqual(['b']);
+    });
+
+    it('ignores a re-delivered start rather than double-counting it', () => {
+      const start = status({
+        phase: 'tool_start',
+        toolUseId: 't1',
+        toolName: 'a',
+      });
+      service.recordStatus('s1', start);
+      service.recordStatus('s1', start);
+
+      expect(service.runningTools('s1')).toHaveLength(1);
+    });
+
+    it('clears the set when the model starts generating', () => {
+      // The backstop for a tool_end that never arrives — a tool that raised
+      // past the hook, or a batch cut short by an interrupt. Without it the
+      // loader would name a tool that stopped running minutes ago.
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_start', toolUseId: 't1', toolName: 'a' }),
+      );
+      service.recordStatus('s1', status({ phase: 'thinking', cycle: 2 }));
+
+      expect(service.runningTools('s1')).toEqual([]);
+    });
+
+    it('clears the set at the end of the turn', () => {
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_start', toolUseId: 't1', toolName: 'a' }),
+      );
+      service.clearStatus('s1');
+
+      expect(service.runningTools('s1')).toEqual([]);
+    });
+
+    it('keeps conversations apart', () => {
+      service.recordStatus(
+        's1',
+        status({ phase: 'tool_start', toolUseId: 't1', toolName: 'a' }),
+      );
+
+      expect(service.runningTools('s2')).toEqual([]);
+    });
+  });
+
   describe('live status', () => {
     it('holds the latest transition for a conversation', () => {
       service.recordStatus('s1', status({ phase: 'tool_start', toolName: 'x' }));
