@@ -6,7 +6,6 @@ interface LoaderInputs {
   notice: string | null;
   status: string | null;
   statusTool: string | null;
-  statusToolExtra: number | null;
   startedAt: number | null;
 }
 
@@ -24,7 +23,6 @@ function render(
     notice: null,
     status: null,
     statusTool: null,
-    statusToolExtra: null,
     startedAt: null,
     ...props,
   });
@@ -64,38 +62,6 @@ describe('PulsatingLoaderComponent', () => {
       // and is the same one the tool rail and admin catalog use.
       const fixture = render({ status: 'Running', statusTool: 'list_assignments' });
       expect(stateOf(fixture)).toBe('Running list_assignments\u2026');
-    });
-
-    it('counts the rest of a parallel batch', () => {
-      // Naming one tool and staying silent about the other two makes a
-      // 3-second wait look like a 1-second one that hung.
-      const fixture = render({
-        status: 'Running',
-        statusTool: 'list_assignments',
-        statusToolExtra: 2,
-      });
-      expect(stateOf(fixture)).toBe('Running list_assignments and 2 more\u2026');
-    });
-
-    it('says nothing extra for a lone tool', () => {
-      const fixture = render({
-        status: 'Running',
-        statusTool: 'list_assignments',
-        statusToolExtra: 0,
-      });
-      expect(stateOf(fixture)).toBe('Running list_assignments\u2026');
-    });
-
-    it('keeps the batch count out of a notice', () => {
-      // A notice states a fact that is NOT the healthy path; appending a
-      // routine batch count to it muddles the one thing it is there to say.
-      const fixture = render({
-        notice: 'The model is busy. Retrying\u2026',
-        status: 'Running',
-        statusTool: 'list_assignments',
-        statusToolExtra: 2,
-      });
-      expect(stateOf(fixture)).toBe('The model is busy. Retrying\u2026 list_assignments');
     });
 
     it('renders the tool name as an identifier, not prose', () => {
