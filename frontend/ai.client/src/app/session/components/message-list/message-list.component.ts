@@ -547,8 +547,30 @@ export class MessageListComponent {
    * has ended) and null for a turn that predates the field, which is why the
    * footer is absent on old conversations rather than showing a zero.
    */
-  protected turnRecapFor(turn: Turn): string | null {
-    const assistant = turn.segments.filter((s) => s.kind === 'assistant');
+  protected readonly lastTurnRecap = computed<string | null>(() => {
+    // Strict alternation with the loading line, which is the whole point: the
+    // recap renders in the loader's own slot, so exactly one of the two is on
+    // screen at any moment and the finished state reads as the live state
+    // settling rather than as a second, different thing appearing beneath it.
+    //
+    // `isChatLoading` is the signal that makes that true, because it spans the
+    // WHOLE turn — it clears at stream close, not at the last token. The
+    // narrower `streamingMessageId` clears at `message_stop`, which is earlier,
+    // and gating on it alone put the recap on screen while the loader was still
+    // running. Both are kept: the first guarantees the alternation, the second
+    // still holds in any context where `isChatLoading` is not threaded through.
+    if (this.isChatLoading()) return null;
+
+    // Only the latest turn. The number describes what just happened, and a
+    // column of durations down the whole conversation turns a punctuation mark
+    // into a metrics readout — every earlier turn's recap is a fact nobody
+    // asked for, competing with the answer it sits under.
+    const turns = this.turns();
+    if (!turns.length) return null;
+
+    const assistant = turns[turns.length - 1].segments.filter(
+      (s) => s.kind === 'assistant',
+    );
     if (!assistant.length) return null;
 
     const last = assistant[assistant.length - 1].last;
@@ -575,7 +597,7 @@ export class MessageListComponent {
     if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
 
     return parts.join(' \u00b7 ');
-  }
+  });
 
   /** Seconds under a minute, then minutes — matching the loader's readout. */
   private formatDuration(ms: number): string {

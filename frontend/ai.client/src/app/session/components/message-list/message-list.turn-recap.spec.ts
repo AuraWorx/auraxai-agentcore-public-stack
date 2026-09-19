@@ -67,16 +67,19 @@ describe('MessageListComponent — end-of-turn recap', () => {
    * shared-artifacts spec sidesteps by using user-role messages, which this
    * one cannot: a recap needs an assistant run to describe.
    */
-  function recap(messages: Message[], streamingId: string | null = null): string | null {
+  function recap(
+    messages: Message[],
+    streamingId: string | null = null,
+    loading = false,
+  ): string | null {
     fixture = TestBed.createComponent(MessageListComponent);
     fixture.componentRef.setInput('messages', messages);
     fixture.componentRef.setInput('streamingMessageId', streamingId);
+    fixture.componentRef.setInput('isChatLoading', loading);
     const api = fixture.componentInstance as unknown as {
-      turns: () => unknown[];
-      turnRecapFor: (turn: unknown) => string | null;
+      lastTurnRecap: () => string | null;
     };
-    const turns = api.turns();
-    return turns.length ? api.turnRecapFor(turns[turns.length - 1]) : null;
+    return api.lastTurnRecap();
   }
 
   beforeEach(() => {
@@ -148,5 +151,33 @@ describe('MessageListComponent — end-of-turn recap', () => {
 
   it('formats a long turn in minutes and seconds', () => {
     expect(recap([user(0), assistant(1, { turnDurationMs: 72000 })])).toBe('1m 12s');
+  });
+
+  /**
+   * The recap is the loading line's `@else`, sharing one slot with it. These
+   * two pin the halves of that contract that a rendering test would not: the
+   * recap belongs to the LATEST turn only, and it never coexists with the
+   * loader.
+   */
+  it('describes the latest turn, not the one before it', () => {
+    // Two complete turns. The first one's 9.6s is not a fact the user asked
+    // for any more — only the turn that just finished gets a mark.
+    const messages = [
+      user(0),
+      assistant(1, { turnDurationMs: 9600, tools: 4 }),
+      user(2),
+      assistant(3, { turnDurationMs: 4000 }),
+    ];
+    expect(recap(messages)).toBe('4s');
+  });
+
+  it('shows nothing while the turn is still loading', () => {
+    // `isChatLoading` spans the whole turn and clears at stream close, where
+    // `streamingMessageId` clears earlier at message_stop. Gating on the
+    // narrower signal alone put the recap on screen underneath a loader that
+    // was still running — so this asserts the wider one, with the narrower
+    // one deliberately already cleared.
+    const messages = [user(0), assistant(1, { turnDurationMs: 9600 })];
+    expect(recap(messages, null, true)).toBeNull();
   });
 });
