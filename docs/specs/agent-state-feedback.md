@@ -221,7 +221,21 @@ Three ways forward, in increasing order of both risk and value:
    ~1700-line handler that owns quota, resume-validation 400s, RAG and tool
    autoenable, several of which must still be able to fail *before* streaming.
 
-**Do the measurement first.** Before any of them, instrument the pre-generator
+**The measurement is now instrumented.** `inference_api/chat/turn_timing.py`
+records a delta per pre-stream stage — `preamble` (validation, model settings,
+files, quota), `rag`, `tools` (system prompt, lease, skills, every tool
+builder), `agent_build`, `stream_setup` — and logs one `turn_prelude` line per
+agent turn, just before the `StreamingResponse` is returned. Read it on the
+inference-api runtime log group with `filter-log-events --filter-pattern
+turn_prelude` (Logs Insights is unusable through the account guard).
+
+`totalMs` starts at handler entry, so it excludes the app-api hop and any
+Runtime cold start. Subtracting it from the client-side click→first-byte gap
+(3750ms on the warm turn measured above) sizes what is left outside the
+handler — which decides whether the fix belongs in inference-api at all, or in
+app-api / the Runtime configuration.
+
+**Then pick.**  Before any of them, instrument the pre-generator
 stages (agent build, RAG retrieval, tool building, the app-api→Runtime hop) and
 read the split in CloudWatch. On a warm turn the agent cache hits, so `get_agent`
 is probably NOT the bulk of the 3.75s — and narrating the wrong stage is exactly

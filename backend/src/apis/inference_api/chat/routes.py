@@ -80,6 +80,7 @@ from .app_tool_dispatch import AppToolCallError, dispatch_app_tool_call
 from .agent_binding_policy import binds_conversation
 from .models import FileContent, InvocationRequest
 from .service import generate_conversation_title, get_agent
+from .turn_timing import TurnPrelude
 from .system_prompt_resolver import (
     append_active_prompt,
     resolve_active_prompt_text,
@@ -1657,6 +1658,13 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
     user_id = current_user.user_id
     auth_token = current_user.raw_token
 
+    # Where the pre-stream time goes. Everything between here and the
+    # `StreamingResponse` return happens with NO channel open to the client —
+    # measured at 3.75s on a warm turn — so this is the only way to see which
+    # stage owns it. Pure timing: nothing reaches the model.
+    # See `turn_timing.py` and docs/specs/agent-state-feedback.md.
+    prelude = TurnPrelude()
+
     # Refuse a turn against a session id another user already owns.
     #
     # Session ids travel in shareable URLs (`/s/{sessionId}`). Opening someone
@@ -2157,6 +2165,10 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
         except Exception as e:
             # Log error but don't block request - fail open for quota errors
             logger.error("Error checking quota for user", exc_info=True)
+
+    # Covers request validation, model/settings resolution, file handling and
+    # the quota round trip — everything before RAG.
+    prelude.mark("preamble")
 
     # If quota exceeded, stream the quota exceeded message instead of agent response
     if quota_exceeded_event:
@@ -2699,6 +2711,10 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 % is_agent_mention
             )
 
+    # Assistant resolution, the knowledge-base search and its metadata writes.
+    # Zero on a plain chat turn, which is what makes it worth separating.
+    prelude.mark("rag")
+
     # Append active custom system prompt (if any). Gating rules + lookup live
     # in `system_prompt_resolver.py` so they can be unit-tested independently
     # of the route.
@@ -3046,6 +3062,11 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 has_memory_binding=bool(memory_tools),
             )
 
+            # System-prompt assembly, the single-flight lease, skill
+            # resolution and every tool builder (documents, attachments,
+            # memory, agent binding).
+            prelude.mark("tools")
+
             agent = await get_agent(
                 session_id=input_data.session_id,
                 user_id=user_id,
@@ -3066,6 +3087,11 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 has_document_tools=bool(document_tools),
                 assistant_id=input_data.rag_assistant_id,
             )
+
+            # The agent build itself. Expected to be near-zero on a cache hit,
+            # which is the point: if the 3.75s is NOT here on warm turns, then
+            # narrating "Getting ready" around it would explain nothing.
+            prelude.mark("agent_build")
 
         # Resume requests must target interrupts that the cached agent
         # actually has paused. Cache eviction, a process restart, or a
@@ -3352,6 +3378,20 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                     yield chunk
             finally:
                 await _release_turn_lease(heartbeat_task, session_lease)
+
+        # Everything after the agent build: citation assembly, the title task,
+        # the lease acquire and the generator wiring.
+        prelude.mark("stream_setup")
+        # Emitted HERE rather than in a `finally`, because returning this
+        # response is the moment the client can first hear anything — it is
+        # the end of the window being measured. The early-return paths above
+        # (quota exceeded, app tool calls) are not agent turns and are
+        # deliberately not recorded.
+        prelude.emit(
+            session_id=input_data.session_id,
+            stream_kind="agent",
+            extra={"isResume": is_resume, "hasAssistant": bool(input_data.rag_assistant_id)},
+        )
 
         # Stream response from agent as SSE (with optional files)
         # Note: Compression is handled by GZipMiddleware if configured in main.py
