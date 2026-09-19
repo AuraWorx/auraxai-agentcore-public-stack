@@ -197,6 +197,49 @@ export interface UserQuestionRequiredEvent {
 }
 
 /**
+ * The agent paused so the *user* can sign in to a site it cannot reach.
+ *
+ * Sibling of {@link UserQuestionRequiredEvent} — same tool-raised interrupt
+ * machinery, same resume contract — with one thing that is easy to get wrong:
+ *
+ * **There is no URL on this event, and there must never be one.** A Live View
+ * URL is SigV4 *query*-signed and expires in at most 300 seconds, so one put
+ * here would be dead before the user reacted and dead again on every reload of
+ * the thread. The client POSTs `sessionId` to
+ * `/sessions/{id}/browser/live-view` for a fresh URL instead, and re-requests
+ * against that response's `expiresAt`.
+ *
+ * `sessionId` is the **conversation** id, as on every other event here.
+ * `browserSessionId` is the AgentCore browser session, and the client never
+ * sends it anywhere — the live-view route resolves it server-side from the
+ * conversation, which is what stops one user streaming another's browser.
+ *
+ * `viewport` must be passed to the viewer as DCV's `remoteWidth`/
+ * `remoteHeight`. A mismatch crops the stream or letterboxes it, which is why
+ * it rides the event rather than being re-declared as a constant here.
+ *
+ * `deadlineAt` is when the backend stops waiting: past it the browser is
+ * released and made reapable, so the UI should show the time remaining and
+ * stop offering the viewer once it passes.
+ */
+export interface BrowserLoginRequiredEvent {
+  type: 'browser_login_required';
+  interruptId: string;
+  toolUseId: string;
+  /** Conversation id — NOT the browser session. */
+  sessionId: string;
+  browserSessionId: string;
+  browserId: string;
+  viewport: { width: number; height: number };
+  /** ISO 8601; the sign-in window closes here. */
+  deadlineAt?: string;
+  /** The page the browser is parked on, so the user knows what they sign into. */
+  targetUrl?: string;
+  /** The agent's one-line explanation of what it needs signed into. */
+  reason?: string;
+}
+
+/**
  * Compaction event — emitted after the final `metadata` event (so the badge
  * updates first) and before `done` when the backend rolls older turns into
  * a summary on this turn. The frontend feeds it to `CompactionSummaryService`,

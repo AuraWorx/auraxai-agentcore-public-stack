@@ -310,6 +310,33 @@ export function grantAppApiPermissions(props: AppApiIamGrantsProps): void {
     }),
   );
 
+  // ── AgentCore Browser: Live View only ──
+  // app-api mints the short-lived Live View URL for a browser takeover
+  // (docs/specs/authenticated-web-assessment.md D2). The URL is SigV4
+  // query-signed and lives at most 300 seconds, so it cannot be minted once
+  // by the agent and reused — app-api signs a fresh one per request, which
+  // is why these actions are needed here and not only on the Runtime role.
+  //
+  // Deliberately NARROWER than the Runtime's BrowserAccess statement: no
+  // Start/Stop, no ConnectBrowserAutomationStream. app-api never drives the
+  // browser and must not be able to — the agent owns the session lifecycle.
+  // UpdateBrowserStream is included because releasing a takeover from the
+  // API side is the next thing this route will need (an explicit "give the
+  // browser back" control), and GetBrowserSession so an ended session can be
+  // reported as such rather than surfacing a signing failure.
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'BrowserLiveViewAccess',
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock-agentcore:ConnectBrowserLiveViewStream',
+        'bedrock-agentcore:UpdateBrowserStream',
+        'bedrock-agentcore:GetBrowserSession',
+      ],
+      resources: [props.refs.agentCoreBrowserArn],
+    }),
+  );
+
   // ── Cognito admin ops ──
   taskRole.addToPrincipalPolicy(
     new iam.PolicyStatement({

@@ -42,6 +42,7 @@ import type {
   OAuthRequiredEvent,
   ToolApprovalRequiredEvent,
   UserQuestionRequiredEvent,
+  BrowserLoginRequiredEvent,
   UserQuestion,
   QuestionOption,
   CompactionEvent,
@@ -97,6 +98,9 @@ export interface StreamParserCallbacks {
 
   // The agent paused to ask the user structured clarifying questions
   onUserQuestionRequired?: (data: UserQuestionRequiredEvent) => void;
+
+  // The agent paused so the user can sign in to a site it cannot reach
+  onBrowserLoginRequired?: (data: BrowserLoginRequiredEvent) => void;
 
   // What the agent is doing right now (model/tool boundaries from the
   // runtime's AgentStatusHook). Drives the live status line and supplies the
@@ -513,6 +517,57 @@ export function validateUserQuestionRequiredEvent(
 }
 
 /**
+ * Validate BrowserLoginRequiredEvent structure.
+ *
+ * `viewport` is required and must be two positive numbers: it becomes DCV's
+ * `remoteWidth`/`remoteHeight`, and a missing or zero value silently produces
+ * a cropped or blank stream rather than an error the user could report.
+ *
+ * Deliberately rejects any event carrying a `url`-ish field. Nothing upstream
+ * should ever put one here (the backend asserts that too), so if one appears
+ * it means a contract regression shipped, and failing loudly beats framing a
+ * URL of unknown provenance.
+ */
+export function validateBrowserLoginRequiredEvent(
+  data: unknown,
+): data is BrowserLoginRequiredEvent {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const event = data as Partial<BrowserLoginRequiredEvent> & {
+    url?: unknown;
+    liveViewUrl?: unknown;
+  };
+
+  if (event.url !== undefined || event.liveViewUrl !== undefined) {
+    return false;
+  }
+
+  const viewport = event.viewport;
+  const viewportOk =
+    !!viewport &&
+    typeof viewport === 'object' &&
+    typeof viewport.width === 'number' &&
+    typeof viewport.height === 'number' &&
+    viewport.width > 0 &&
+    viewport.height > 0;
+
+  return (
+    event.type === 'browser_login_required' &&
+    typeof event.interruptId === 'string' &&
+    event.interruptId.length > 0 &&
+    typeof event.toolUseId === 'string' &&
+    typeof event.sessionId === 'string' &&
+    typeof event.browserSessionId === 'string' &&
+    event.browserSessionId.length > 0 &&
+    typeof event.browserId === 'string' &&
+    event.browserId.length > 0 &&
+    viewportOk
+  );
+}
+
+/**
  * Validate CompactionEvent structure
  */
 export function validateCompactionEvent(data: unknown): data is CompactionEvent {
@@ -915,6 +970,14 @@ export function processStreamEvent(
           callbacks.onUserQuestionRequired?.(data);
         } else {
           callbacks.onParseError?.('user_question_required: invalid data structure');
+        }
+        break;
+
+      case 'browser_login_required':
+        if (validateBrowserLoginRequiredEvent(data)) {
+          callbacks.onBrowserLoginRequired?.(data);
+        } else {
+          callbacks.onParseError?.('browser_login_required: invalid data structure');
         }
         break;
 
