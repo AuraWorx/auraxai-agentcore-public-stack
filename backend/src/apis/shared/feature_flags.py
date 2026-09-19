@@ -320,6 +320,39 @@ def agent_status_live_drain_enabled() -> bool:
     )
 
 
+def agent_preparing_phase_enabled() -> bool:
+    """Whether the agent build runs INSIDE the response stream, narrated.
+
+    Measured on dev (docs/specs/agent-state-feedback.md): a cold agent-cache
+    miss spends **1478ms** in ``get_agent`` against a 2542ms pre-stream window,
+    while a warm turn spends 0-38ms there. Because FastAPI flushes response
+    headers when the handler returns its ``StreamingResponse``, and
+    ``get_agent`` is awaited before that return, the whole of that 1478ms is
+    dead air: the client has no channel and the server has nothing to say on.
+
+    With this on, the non-resume path defers the build into the stream
+    generator and emits one ``agent_status`` ``preparing`` frame before it, so
+    the response opens immediately and the wait is narrated instead of silent.
+
+    **Default ON with a kill switch** (house style): unset or empty resolves to
+    enabled; only the literal ``"false"`` (case-insensitive) disables, which
+    restores the eager build exactly.
+
+    Deliberately NOT applied to resume turns. Resume validates the submitted
+    interrupt ids against the rebuilt agent's paused state and **400s** on a
+    mismatch; that guard has to run before any byte is sent, and it needs the
+    agent to run at all. Resume also reuses a cached agent by construction, so
+    it is the case with the least to gain.
+
+    Costs nothing against the model: one SSE frame, and the same build either
+    way. Nothing reaches the prompt.
+    """
+    return (
+        os.environ.get("AGENT_PREPARING_PHASE_ENABLED", "").strip().lower()
+        != "false"
+    )
+
+
 def tool_summaries_enabled() -> bool:
     """Whether tool batches get a model-generated one-line summary.
 
