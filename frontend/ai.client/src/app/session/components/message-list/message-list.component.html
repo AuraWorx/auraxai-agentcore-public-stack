@@ -222,6 +222,14 @@
     <app-user-question-prompt [request]="request" />
   }
 
+  <!-- Browser sign-in prompt: the agent paused so the user can authenticate a
+       site it cannot reach. Full width like the question picker, and for the
+       same reason — it is something the reader must act on, not a yes/no.
+       Survives a refresh via the same PendingInterrupt breadcrumb replay. -->
+  @for (request of pendingBrowserLogins(); track request.interruptId) {
+    <app-browser-login-prompt [request]="request" />
+  }
+
   <!-- Loading indicator -->
   @if (isChatLoading()) {
     <div class="py-4">

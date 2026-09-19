@@ -83,6 +83,25 @@ class TestNoUrlReachesTheClient:
             )
         )
 
+    def test_the_sandbox_origin_is_allowed_but_a_signed_url_is_not(self) -> None:
+        # The origin is a deployment constant with no credential in it, and the
+        # SPA needs it to know where to frame the viewer from. The guard exists
+        # for presigned URLs, which are credentials in URL form — so widening
+        # it for the origin must not widen it for those.
+        payload = _event(sandboxOrigin="https://mcp-sandbox.example.edu").model_dump(
+            by_alias=True, exclude_none=True
+        )
+        assert_no_url(payload)
+
+        payload["someOtherField"] = "https://example.com/x?X-Amz-Signature=abc"
+        with pytest.raises(ValueError):
+            assert_no_url(payload)
+
+    def test_an_absent_sandbox_origin_reads_as_no_viewer(self) -> None:
+        # Not an error: an environment without the sandbox origin deployed
+        # shows the prompt without a viewer rather than framing nothing.
+        assert _event().sandbox_origin == ""
+
     def test_sse_frame_names_the_event_and_carries_json(self) -> None:
         frame = _event().to_sse_format()
 

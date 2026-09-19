@@ -1,0 +1,210 @@
+/**
+ * Browser sign-in live view — DCV client for a browser takeover.
+ *
+ * `docs/specs/authenticated-web-assessment.md` D3. Plain ES2017, no framework,
+ * no build step, no third-party code: `window.dcv` comes from the Amazon DCV
+ * Web Client SDK, fetched and signature-verified at build time by
+ * `scripts/build/fetch-dcv-sdk.sh`.
+ *
+ * Trust model, which is the whole reason this file is not in the SPA
+ * ------------------------------------------------------------------
+ * 1. **It never calls app-api.** The SPA mints the short-lived live-view URL
+ *    and posts it in. app-api's CORS is a credentialed allowlist, so letting
+ *    this page call it would mean allowlisting an origin that also serves
+ *    untrusted MCP App HTML — handing every App a path to the user's session.
+ * 2. **It only accepts a URL from the origin that framed it.** Checked against
+ *    `document.referrer`'s origin, so a sibling frame cannot feed it a stream.
+ * 3. **It stores nothing.** No storage, no cookies. The signed URL lives in a
+ *    closure for as long as it is valid and is replaced when the SPA posts a
+ *    fresh one.
+ *
+ * The SigV4 query parameters
+ * --------------------------
+ * The live-view URL is SigV4 *query*-signed. The SDK forwards those parameters
+ * onto its own requests — including the WebSocket upgrade — through the
+ * `httpExtraSearchParams` callback. Without it the socket opens unsigned and
+ * the service rejects it. `connect` needs it just as much as `authenticate`
+ * does: the WS transport reads it directly when building the URI.
+ */
+(function () {
+  'use strict';
+
+  var CONNECT_MESSAGE = 'browser-live-view/connect';
+  var READY_MESSAGE = 'browser-live-view/ready';
+  var DISPLAY_ID = 'display';
+
+  var statusEl = document.getElementById('status');
+  var connection = null;
+  var currentUrl = null;
+
+  function setStatus(text) {
+    if (!statusEl) return;
+    if (text) {
+      statusEl.textContent = text;
+      statusEl.hidden = false;
+    } else {
+      statusEl.hidden = true;
+    }
+  }
+
+  /**
+   * The origin allowed to drive this page: the document that framed us.
+   *
+   * A top-level visit has no parent to trust and renders nothing — that is a
+   * refusal, not a failure mode to work around.
+   */
+  function parentOrigin() {
+    if (window.parent === window) return null;
+    try {
+      return document.referrer ? new URL(document.referrer).origin : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function isConnectMessage(data) {
+    return (
+      data &&
+      typeof data === 'object' &&
+      data.type === CONNECT_MESSAGE &&
+      typeof data.url === 'string' &&
+      data.url.length > 0 &&
+      data.viewport &&
+      typeof data.viewport.width === 'number' &&
+      typeof data.viewport.height === 'number' &&
+      data.viewport.width > 0 &&
+      data.viewport.height > 0
+    );
+  }
+
+  /** Forward the signed URL's query parameters onto the SDK's own requests. */
+  function extraSearchParamsFor(signedUrl) {
+    return function () {
+      try {
+        return new URL(signedUrl).searchParams;
+      } catch (e) {
+        return new URLSearchParams();
+      }
+    };
+  }
+
+  function start(signedUrl, viewport) {
+    // A re-mint for a still-live session: the stream is fine, and tearing it
+    // down mid-sign-in to reconnect with a fresher signature would be the
+    // opposite of what re-minting is for.
+    if (connection && currentUrl) {
+      currentUrl = signedUrl;
+      return;
+    }
+    currentUrl = signedUrl;
+
+    if (!window.dcv) {
+      setStatus('The viewer failed to load.');
+      return;
+    }
+
+    setStatus('Connecting…');
+    dcv.setLogLevel(dcv.LogLevel.WARN);
+
+    var extras = extraSearchParamsFor(signedUrl);
+
+    dcv.authenticate(signedUrl, {
+      // AgentCore's presigned URL *is* the credential, so there is never an
+      // interactive prompt. Supplying a no-op is required — the SDK refuses a
+      // configuration with a missing auth callback.
+      promptCredentials: function () {},
+      error: function (_auth, error) {
+        setStatus('Could not start the session. It may have ended.');
+        if (window.console) console.error('dcv.authenticate failed', error);
+      },
+      success: function (_auth, result) {
+        var first = (result && result[0]) || {};
+        if (!first.sessionId || !first.authToken) {
+          setStatus('The session could not be opened.');
+          return;
+        }
+        connect(first.sessionId, first.authToken, viewport, extras);
+      },
+      httpExtraSearchParams: extras,
+    });
+  }
+
+  function connect(sessionId, authToken, viewport, extras) {
+    // The query is supplied through `httpExtraSearchParams`, so strip it here
+    // rather than sending it twice — the transport appends to whatever URL it
+    // is given.
+    var base;
+    try {
+      base = new URL(currentUrl);
+      base.search = '';
+    } catch (e) {
+      setStatus('The session address was not usable.');
+      return;
+    }
+
+    dcv
+      .connect({
+        url: base.toString(),
+        sessionId: sessionId,
+        authToken: authToken,
+        divId: DISPLAY_ID,
+        // `baseUrl` is deliberately NOT set: the SDK defaults it to `dcvjs`
+        // relative to this page, and the fetch script extracts to exactly that
+        // name so the default resolves.
+        httpExtraSearchParams: extras,
+        // Callback names are exactly these — no `on` prefix. The SDK wraps
+        // each as an observer invoked with the connection as its FIRST
+        // argument, so the original arguments follow it.
+        callbacks: {
+          firstFrame: function (_conn) {
+            setStatus('');
+          },
+          disconnect: function (_conn, reason) {
+            connection = null;
+            setStatus('The sign-in session ended.');
+            if (window.console) console.info('dcv disconnected', reason);
+          },
+        },
+      })
+      .then(function (conn) {
+        connection = conn;
+        // Pin the remote display to the browser session's real viewport.
+        // Mismatched dimensions are what crop or letterbox the stream, which
+        // is why the viewport travels on the event rather than being a
+        // constant anywhere in the frontend.
+        if (conn && typeof conn.requestDisplayLayout === 'function') {
+          try {
+            conn.requestDisplayLayout([
+              {
+                name: 'Main Display',
+                rect: { x: 0, y: 0, width: viewport.width, height: viewport.height },
+                primary: true,
+              },
+            ]);
+          } catch (e) {
+            /* Not fatal: the stream renders at whatever the server chose. */
+          }
+        }
+      })
+      .catch(function (error) {
+        setStatus('Could not connect to the sign-in session.');
+        if (window.console) console.error('dcv.connect failed', error);
+      });
+  }
+
+  var allowed = parentOrigin();
+  if (!allowed) {
+    setStatus('This viewer must be opened from the app.');
+    return;
+  }
+
+  window.addEventListener('message', function (event) {
+    if (event.origin !== allowed) return;
+    if (!isConnectMessage(event.data)) return;
+    start(event.data.url, event.data.viewport);
+  });
+
+  // The SPA also posts on the iframe's `load` event; this covers the race
+  // where that fires before this script has attached its listener.
+  window.parent.postMessage({ type: READY_MESSAGE }, allowed);
+})();

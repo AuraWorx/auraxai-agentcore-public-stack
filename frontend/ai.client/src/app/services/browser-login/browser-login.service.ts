@@ -26,6 +26,8 @@ export interface BrowserLoginRequest {
   deadlineAt?: string;
   targetUrl?: string;
   reason?: string;
+  /** Origin to frame the viewer from; empty when undeployed. */
+  sandboxOrigin?: string;
   receivedAt: number;
   /** Assistant message whose tool call raised this, for inline anchoring. */
   messageId?: string;

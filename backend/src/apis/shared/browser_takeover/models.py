@@ -153,6 +153,18 @@ class BrowserLoginRequiredEvent(BaseModel):
         default=None,
         description="The agent's one-line explanation of what it needs signed into",
     )
+    sandbox_origin: str = Field(
+        default="",
+        alias="sandboxOrigin",
+        description=(
+            "Origin the SPA frames the live-view page from — the same "
+            "mcp-sandbox origin MCP Apps use, whose CloudFront function locks "
+            "`frame-ancestors` to the SPA and composes `connect-src` from the "
+            "`?csp=` query. Empty when the sandbox origin is not deployed, in "
+            "which case the SPA shows the prompt without a viewer rather than "
+            "framing nothing"
+        ),
+    )
 
     def to_sse_format(self) -> str:
         payload = self.model_dump(by_alias=True, exclude_none=True)
@@ -162,8 +174,25 @@ class BrowserLoginRequiredEvent(BaseModel):
         )
 
 
+# Fields allowed to hold a URL, and why each is not the thing this guard is for:
+#
+#   targetUrl     — the page the agent already browsed to, shown so the user
+#                   knows what they are signing into. Plain and navigational.
+#   sandboxOrigin — a deployment constant (the mcp-sandbox origin). It carries
+#                   no credential and is identical for every user of an
+#                   environment.
+#
+# What the guard IS for is a *presigned* live-view URL: SigV4 query-signed,
+# short-lived, and a credential in URL form. Add to this set only for a value
+# with the same property — constant, public, and not a bearer of authority.
+_URL_ALLOWED_KEYS = frozenset(
+    {"targetUrl", "target_url", "sandboxOrigin", "sandbox_origin"}
+)
+
+
 def assert_no_url(payload: Any) -> None:
-    """Raise if anything in ``payload`` looks like a URL, except ``targetUrl``.
+    """Raise if anything in ``payload`` looks like a URL, except the keys in
+    :data:`_URL_ALLOWED_KEYS`.
 
     The rule from PR #1101 is easy to state and easy to regress, because the
     obvious way to make the frontend's job simpler is to put the live-view URL
@@ -171,7 +200,7 @@ def assert_no_url(payload: Any) -> None:
     """
     if isinstance(payload, dict):
         for key, value in payload.items():
-            if key in ("targetUrl", "target_url"):
+            if key in _URL_ALLOWED_KEYS:
                 continue
             assert_no_url(value)
         return
