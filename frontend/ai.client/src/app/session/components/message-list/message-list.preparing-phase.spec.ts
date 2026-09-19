@@ -161,6 +161,33 @@ describe('MessageListComponent — preparing phase', () => {
     expect(label()).toBe('Getting ready');
   });
 
+  it('keeps the label steady on the way out of preparing', () => {
+    // The regression this fix exists for. Clearing the settle flag when the
+    // phase LEFT `preparing` meant the label could compute with the phase
+    // still `preparing` and the flag already false, and fall through to
+    // "Thinking" — a visible step backwards, observed on dev on every turn.
+    //
+    // A unit test cannot see that propagation window, so what is pinned here
+    // is the invariant that removes it: leaving the phase must not disarm the
+    // flag, so a late read while still `preparing` can only ever say
+    // "Getting ready".
+    render();
+    insights.recordStatus(SESSION, status('preparing'));
+    fixture.detectChanges();
+    vi.advanceTimersByTime(300);
+    fixture.detectChanges();
+    expect(label()).toBe('Getting ready');
+
+    insights.recordStatus(SESSION, status('thinking', 1));
+    fixture.detectChanges();
+    expect(label()).toBe('Waiting for the model');
+
+    // The flag survived the exit, so a read that still sees `preparing`
+    // resolves to the label the user was already looking at.
+    insights.recordStatus(SESSION, status('preparing'));
+    expect(label()).toBe('Getting ready');
+  });
+
   it('does not show another conversation’s build', () => {
     render();
     insights.recordStatus('some-other-session', status('preparing'));
