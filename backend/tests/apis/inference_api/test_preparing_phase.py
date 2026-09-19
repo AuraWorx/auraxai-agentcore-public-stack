@@ -87,6 +87,18 @@ class _Harness:
                 yield "event: done\ndata: {}\n\n"
                 return
             assert agent is not None
+            yield (
+                "event: agent_status\ndata: "
+                + json.dumps(
+                    {
+                        "type": "agent_status",
+                        "sessionId": "sess-1",
+                        "phase": "prepared",
+                        "durationMs": int(self.build_seconds * 1000),
+                    }
+                )
+                + "\n\n"
+            )
             yield 'event: message_start\ndata: {"role": "assistant"}\n\n'
             yield "event: done\ndata: {}\n\n"
         finally:
@@ -96,13 +108,18 @@ class _Harness:
 class TestTheFrame:
     @pytest.mark.asyncio
     async def test_is_emitted_for_every_deferred_build(self):
-        """Unconditional by design — the server cannot time its own build."""
+        """Unconditional by design — the server cannot time its own build.
+
+        It is always paired with `prepared`: the SPA needs the start to show
+        the label and the end to suppress it on a fast build.
+        """
         harness = _Harness(build_seconds=0.01)
 
         frames = [f async for f in harness.stream()]
 
         assert [s["phase"] for s in _frames_of("agent_status", frames)] == [
-            "preparing"
+            "preparing",
+            "prepared",
         ]
         assert harness.built
 
@@ -133,6 +150,65 @@ class TestTheFrame:
         assert "cycle" not in _frames_of("agent_status", frames)[0]
 
 
+class TestTheEndFrame:
+    """`prepared` is what lets the SPA suppress a fast build.
+
+    Without it the client can only infer the build ended from `thinking`,
+    which does not arrive until the head-of-turn work and the event loop's
+    startup have also run — well past the 250ms the SPA waits. Measured on
+    dev, builds of 0ms, 1ms and 40ms all rendered "Getting ready…" because of
+    exactly that gap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_follows_the_build(self):
+        harness = _Harness(build_seconds=0.05)
+
+        frames = [f async for f in harness.stream()]
+
+        assert [s["phase"] for s in _frames_of("agent_status", frames)] == [
+            "preparing",
+            "prepared",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_precedes_the_answer(self):
+        """It must land before `message_start`, or the label it clears is
+        already competing with streamed text."""
+        harness = _Harness(build_seconds=0.05)
+
+        frames = [f async for f in harness.stream()]
+
+        prepared = next(i for i, f in enumerate(frames) if "prepared" in f)
+        message_start = next(
+            i for i, f in enumerate(frames) if f.startswith("event: message_start")
+        )
+        assert prepared < message_start
+
+    @pytest.mark.asyncio
+    async def test_carries_the_build_duration(self):
+        """A bare marker would end the label; the duration also says how long
+        the wait the user was told about actually took."""
+        harness = _Harness(build_seconds=0.05)
+
+        frames = [f async for f in harness.stream()]
+
+        prepared = _frames_of("agent_status", frames)[1]
+        assert prepared["durationMs"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_is_not_emitted_when_the_build_fails(self):
+        """Nothing was prepared. The error frame is what ends the label."""
+        harness = _Harness(build_seconds=0.01, fails=True)
+
+        frames = [f async for f in harness.stream()]
+
+        assert [s["phase"] for s in _frames_of("agent_status", frames)] == [
+            "preparing"
+        ]
+        assert any(f.startswith("event: stream_error") for f in frames)
+
+
 class TestFailure:
     @pytest.mark.asyncio
     async def test_a_failed_build_surfaces_as_a_conversational_error(self):
@@ -161,6 +237,8 @@ class TestRouteContract:
         source = Path(routes_module.__file__).read_text()
 
         assert '"phase": "preparing"' in source
+        # The end frame, without which a 1ms build still renders the label.
+        assert '"phase": "prepared"' in source
         assert "Deferred agent build failed" in source
 
     def test_the_route_no_longer_races_its_own_build(self):

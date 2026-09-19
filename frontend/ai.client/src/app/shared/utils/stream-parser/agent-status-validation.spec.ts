@@ -28,6 +28,18 @@ describe('validateAgentStatusEvent', () => {
     });
   });
 
+  describe('prepared', () => {
+    it('accepts a prepared frame with no cycle', () => {
+      expect(validateAgentStatusEvent({ ...base, phase: 'prepared' })).toBe(true);
+    });
+
+    it('accepts the build duration it carries', () => {
+      expect(
+        validateAgentStatusEvent({ ...base, phase: 'prepared', durationMs: 1631 }),
+      ).toBe(true);
+    });
+  });
+
   describe('the hook-sourced phases', () => {
     it('accepts them with a cycle', () => {
       for (const phase of ['thinking', 'tool_start', 'tool_end']) {

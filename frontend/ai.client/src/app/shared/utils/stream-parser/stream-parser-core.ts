@@ -743,7 +743,7 @@ export function validateAgentStatusEvent(data: unknown): data is AgentStatusEven
   // hook — requiring `cycle` here would have dropped every one of them
   // silently, which is exactly the failure mode this validator exists to
   // avoid on the OTHER phases.
-  if (event.phase === 'preparing') {
+  if (event.phase === 'preparing' || event.phase === 'prepared') {
     return true;
   }
 
