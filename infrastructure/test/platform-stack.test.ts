@@ -175,8 +175,10 @@ describe('PlatformStack', () => {
       // artifacts-content, skill-resources (admin-managed Skills reference files),
       // memory-spaces (Memory Spaces feature content bucket),
       // shared-conversations (share snapshot-body offload),
-      // alb-access-logs (who terminated a connection — SSE disconnect attribution)
-      template.resourceCountIs('AWS::S3::Bucket', 10);
+      // alb-access-logs (who terminated a connection — SSE disconnect attribution),
+      // browser-policy (the Chromium MANAGED policy every browser session
+      // starts with — spec D6)
+      template.resourceCountIs('AWS::S3::Bucket', 11);
     });
   });
 

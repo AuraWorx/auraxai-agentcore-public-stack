@@ -70,6 +70,7 @@ import { MemorySpacesConstruct } from './constructs/memory/memory-spaces-constru
 import { AgentCoreMemoryConstruct } from './constructs/agentcore/memory-construct';
 import { AgentCoreCodeInterpreterConstruct } from './constructs/agentcore/code-interpreter-construct';
 import { AgentCoreBrowserConstruct } from './constructs/agentcore/browser-construct';
+import { AgentCoreBrowserPolicyConstruct } from './constructs/agentcore/browser-policy-construct';
 import { AgentCoreGatewayConstruct } from './constructs/gateway/agentcore-gateway-construct';
 
 // MCP sandbox (S3 + CloudFront — Platform edge surface)
@@ -257,6 +258,8 @@ export class PlatformStack extends cdk.Stack {
   public readonly agentCoreCodeInterpreterId: string;
   public readonly agentCoreBrowser: bedrock.CfnBrowserCustom;
   public readonly agentCoreBrowserArn: string;
+  public readonly browserPolicyBucketName: string;
+  public readonly browserPolicyKey: string;
   public readonly agentCoreBrowserId: string;
 
   // ── Internal handles for the two-step wiring methods
@@ -685,6 +688,20 @@ export class PlatformStack extends cdk.Stack {
     this.agentCoreBrowserArn = agentCoreBrowserConstruct.browserArn;
     this.agentCoreBrowserId = agentCoreBrowserConstruct.browserId;
 
+    // The Chromium managed policy every browser session is started with.
+    // Deliberately NOT attached to the browser resource: there is no
+    // UpdateBrowser, policies are read from S3 at API-call time and frozen
+    // thereafter, and CfnBrowserCustom does not expose enterprisePolicies at
+    // all. inference-api passes the reference on each StartBrowserSession.
+    // See docs/specs/authenticated-web-assessment.md D6.
+    const browserPolicy = new AgentCoreBrowserPolicyConstruct(
+      this,
+      'AgentCoreBrowserPolicy',
+      { config, browserExecutionRole: agentCoreBrowserConstruct.executionRole },
+    );
+    this.browserPolicyBucketName = browserPolicy.bucket.bucketName;
+    this.browserPolicyKey = browserPolicy.policyKey;
+
     // AgentCore Gateway — config-only (MCP protocol, AWS_IAM
     // authorizer, IAM execution role with invoke rights against the
     // /^${prefix}-mcp-/ Lambda naming convention used by the
@@ -859,6 +876,8 @@ export class PlatformStack extends cdk.Stack {
       agentCoreCodeInterpreterId: this.agentCoreCodeInterpreterId,
       agentCoreBrowserArn: this.agentCoreBrowserArn,
       agentCoreBrowserId: this.agentCoreBrowserId,
+      browserPolicyBucketName: this.browserPolicyBucketName,
+      browserPolicyKey: this.browserPolicyKey,
       mcpSandboxProxyOrigin: this.mcpSandboxProxyOrigin,
     };
 
@@ -872,6 +891,8 @@ export class PlatformStack extends cdk.Stack {
       codeInterpreterId: this.agentCoreCodeInterpreterId,
       browserArn: this.agentCoreBrowserArn,
       browserId: this.agentCoreBrowserId,
+      browserPolicyBucketName: this.browserPolicyBucketName,
+      browserPolicyKey: this.browserPolicyKey,
     });
 
     // Cross-service dashboard + alarms over the EMF metrics both APIs emit

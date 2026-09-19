@@ -194,6 +194,46 @@ describe('RAG Ingestion Configuration', () => {
   // Environment Variable Loading Tests
   // ============================================================
 
+  describe('Browser URL blocklist (spec D6)', () => {
+    // This list is a security control: it is what stops a human in a browser
+    // takeover navigating to the LMS and having an agent act as them. The
+    // cases below pin the three behaviours that matter — the seed is present,
+    // an override replaces it, and an explicitly empty value is honoured
+    // rather than silently falling back to the seed.
+    const BLOCKLIST_KEY = 'CDK_BROWSER_URL_BLOCKLIST';
+
+    afterEach(() => {
+      delete process.env[BLOCKLIST_KEY];
+    });
+
+    test('seeds the LMS when unset', () => {
+      delete process.env[BLOCKLIST_KEY];
+
+      expect(loadConfig(app).browser.urlBlocklist).toContain(
+        'boisestatecanvas.instructure.com',
+      );
+    });
+
+    test('an override replaces the seed and is trimmed', () => {
+      process.env[BLOCKLIST_KEY] = 'one.example.com, two.example.com';
+
+      expect(loadConfig(app).browser.urlBlocklist).toEqual([
+        'one.example.com',
+        'two.example.com',
+      ]);
+    });
+
+    test('an explicitly empty value means block nothing, not fall back', () => {
+      // An environment must be able to opt out deliberately. Treating '' as
+      // "unset" would silently re-arm a control the operator turned off — the
+      // inverse of the usual silent-arming hazard, and just as surprising.
+      process.env[BLOCKLIST_KEY] = '';
+
+      expect(loadConfig(app).browser.urlBlocklist).toEqual([]);
+    });
+  });
+
+
   describe('Environment Variable Loading', () => {
     test('loads CORS origins from CDK_RAG_CORS_ORIGINS environment variable', () => {
       process.env.CDK_RAG_CORS_ORIGINS = 'https://example.com,https://test.com';

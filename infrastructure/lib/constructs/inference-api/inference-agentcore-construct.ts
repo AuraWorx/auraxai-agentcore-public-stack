@@ -50,6 +50,10 @@ export interface InferenceAgentCoreConstructProps {
   browserArn: string;
   /** AgentCore Browser ID — same provenance as browserArn. */
   browserId: string;
+  /** S3 bucket holding the Chromium MANAGED policy (spec D6). */
+  browserPolicyBucketName: string;
+  /** Object key of that policy file. */
+  browserPolicyKey: string;
   alarmTopic?: sns.ITopic;
 }
 
@@ -350,6 +354,14 @@ export class InferenceAgentCoreConstruct extends Construct {
         MEMORY_ARN: props.memoryArn,
         AGENTCORE_CODE_INTERPRETER_ID: props.codeInterpreterId,
         BROWSER_ID: props.browserId,
+        // The Chromium MANAGED policy passed on every StartBrowserSession.
+        // This is the control that stops a human in a takeover navigating to
+        // the LMS — no check in our code can, because it only ever sees the
+        // page the takeover started on. Spec D6.
+        //
+        // One variable, not a bucket/key pair, because the runtime's env-var
+        // budget is full (see the ceiling note below).
+        BROWSER_POLICY_S3: `s3://${props.browserPolicyBucketName}/${props.browserPolicyKey}`,
 
         // Gateway inbound auth mode. Sourced from the SAME config value that
         // builds the Gateway's authorizer, so the agent's data-plane auth and
@@ -406,8 +418,15 @@ export class InferenceAgentCoreConstruct extends Construct {
         // bindings entirely (today's behavior).
         AGENTS_API_ENABLED: config.agents.enabled ? 'true' : 'false',
 
+        // ENABLE_QUOTA_ENFORCEMENT is deliberately NOT set. `quota.py` reads
+        // it with a 'true' default, and this was hardcoded to 'true' — so the
+        // entry only ever restated the default while consuming one of the 50
+        // slots. Removing it leaves enforcement ON and frees a slot, which is
+        // exactly the remedy runtime-env-var-limit.test.ts recommends. If
+        // enforcement ever needs to be switchable, make it config-driven
+        // rather than re-adding a constant.
+
         // Authentication
-        ENABLE_QUOTA_ENFORCEMENT: 'true',
 
         // ⚠️ NO ROOM FOR NEW VARIABLES HERE — see the assertion in
         // test/inference-agentcore-construct.test.ts. `AWS::BedrockAgentCore::Runtime`
