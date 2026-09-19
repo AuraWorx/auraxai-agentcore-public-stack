@@ -72,6 +72,21 @@ COPY backend/src/apis/shared/kb_backend/ ${LAMBDA_TASK_ROOT}/apis/shared/kb_back
 # The handlers themselves.
 COPY backend/src/apis/app_api/kb_migration/ ${LAMBDA_TASK_ROOT}/apis/app_api/kb_migration/
 
+# Precompile the copied source to bytecode. /var/task is READ-ONLY at runtime,
+# so a Lambda cold start can never cache the .pyc it produces — every cold start
+# re-parses the whole closure. This is the smallest win of the backend images
+# precisely because of the COPY-surface discipline described above: the closure
+# is ~16 first-party modules, so there is not much source to parse. It is also
+# one line and cannot regress, and it keeps the four Lambdas here consistent
+# with kb-sync and scheduled-runs as the surface grows. The pip install above
+# already compiled site-packages (pip does that by default, unlike uv), so this
+# covers the gap: the code we COPY in, which arrives as raw source. `-q` keeps
+# the layer log quiet; a syntax error still fails the build, which is the right
+# time to learn about it. Safe to point at the whole task root here — it holds
+# only our own code, since pip put the dependencies in
+# /var/lang/lib/python3.12/site-packages.
+RUN python -m compileall -q ${LAMBDA_TASK_ROOT}
+
 # Default command: the dispatcher. The other three functions override CMD
 # through their ImageConfig, so this default is only what an unconfigured
 # function would run.
