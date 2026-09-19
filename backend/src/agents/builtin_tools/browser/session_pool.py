@@ -130,34 +130,42 @@ def _write_state(agent: Any, entry: Optional[Dict[str, Any]]) -> None:
         logger.warning("browser: session state not serializable; not persisted")
 
 
+# Session-level policies are RECOMMENDED-only. The API's `type` enum accepts
+# MANAGED, but the service rejects it:
+#
+#   ValidationException ... Invalid value for parameter 'type'.
+#   MANAGED is not supported for session-level policies.
+#
+# Measured on dev 2026-09-19. Sending MANAGED here does not degrade — it fails
+# `StartBrowserSession` outright, so EVERY browser session dies and `browse_web`
+# stops working entirely. Do not "try" MANAGED here again.
+_SESSION_POLICY_TYPE = "RECOMMENDED"
+
+
 def _enterprise_policies() -> Optional[list]:
-    """The Chromium MANAGED policy to start every browser session with.
+    """The Chromium URL policy to start every browser session with.
 
-    This is the feature's primary security control, and it is deliberately
-    applied here rather than on the browser resource
-    (`docs/specs/authenticated-web-assessment.md` D6):
+    ⚠️ **This is NOT the security control it was designed to be, and must not
+    be relied on as one.** See `docs/specs/authenticated-web-assessment.md` D6.
 
-    * A takeover hands a human a fully interactive Chromium. Nothing in this
-      codebase can stop them navigating to the LMS and having an agent act as
-      them — a check in `request_user_login` sees only the page the takeover
-      *started* on. Chromium refusing is the only control that holds.
-    * The policy cannot live on the browser resource: there is no
-      `UpdateBrowser`, policy files are read from S3 "at the time of the API
-      call" and frozen thereafter, and `CfnBrowserCustom` does not expose
-      `enterprisePolicies` at all.
-    * `StartBrowserSession` accepts the same shape with `type` in
-      `{MANAGED, RECOMMENDED}`, read fresh per session.
+    The intent was a MANAGED policy — mandated and un-overridable — so that a
+    human holding the browser during a takeover could not navigate to the LMS
+    and have an agent act as them. That requires `CreateBrowser`, because the
+    service refuses MANAGED at session level (see `_SESSION_POLICY_TYPE`).
 
-    **MANAGED, never RECOMMENDED.** Chromium treats managed policies as
-    mandated and un-overridable; recommended ones are user-overridable
-    defaults, which would make this advisory against the very person it
-    constrains.
+    What a RECOMMENDED policy still buys, honestly stated:
 
-    Returns None when unconfigured, which starts the session with no policy.
-    That is the correct behaviour for a local dev box with no bucket, and it is
-    why `BROWSER_TAKEOVER_ENABLED` and the RBAC grant exist as separate gates —
-    but an environment that grants the tool without this configured has no
-    site-level control at all.
+    * It constrains the **agent**, which drives through CDP and never opens
+      Chromium's settings, so the blocklist holds for ordinary `browse_web`.
+    * It does **not** constrain a **human** in a takeover, who has a fully
+      interactive browser and can override a recommended policy.
+
+    So `request_user_login` must stay ungranted until the MANAGED policy is
+    applied at `CreateBrowser`. The RBAC grant and `BROWSER_TAKEOVER_ENABLED`
+    are what hold that line in the meantime.
+
+    Returns None when unconfigured, which starts the session with no policy at
+    all — correct for a local dev box with no bucket.
     """
     location = os.environ.get("BROWSER_POLICY_S3", "").strip()
     if not location:
@@ -180,7 +188,12 @@ def _enterprise_policies() -> Optional[list]:
         )
         return None
 
-    return [{"type": "MANAGED", "location": {"s3": {"bucket": bucket, "prefix": key}}}]
+    return [
+        {
+            "type": _SESSION_POLICY_TYPE,
+            "location": {"s3": {"bucket": bucket, "prefix": key}},
+        }
+    ]
 
 
 async def _start_remote_session() -> Tuple[Any, str, str]:
@@ -202,7 +215,7 @@ async def _start_remote_session() -> Tuple[Any, str, str]:
     logger.info(
         "browser: started session %s on %s (ttl=%ss, url_policy=%s)",
         session_id, identifier, SESSION_TIMEOUT_SECONDS,
-        "managed" if policies else "NONE",
+        _SESSION_POLICY_TYPE.lower() if policies else "NONE",
     )
     return client, identifier, session_id
 

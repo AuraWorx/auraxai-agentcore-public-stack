@@ -109,7 +109,7 @@ breadcrumb, and the resume route in `inference_api/chat/routes.py`.
 | D3 | DCV is embedded via a **plain-JS viewer page at the sandbox origin**, framed by the SPA. No React and no npm: AWS's `BrowserLiveView` imports `dcv`/`dcv-ui`, which are undeclared and unavailable on npm. The SDK is fetched and signature-verified at build time, never committed — it is EULA-licensed and this repo is public |
 | D4 | Browser session identity moves to the **DynamoDB session-metadata row** so app-api can act on it |
 | D5 | Profiles are keyed `user + assessment target`, with an explicit user-facing "forget this login" |
-| D6 | **One** browser, with a MANAGED Chromium `URLBlocklist` applied on every `StartBrowserSession`. Supersedes the second-resource/`URLAllowlist` draft — the browser resource is immutable (no `UpdateBrowser`) and RBAC cannot express a per-site rule |
+| D6 | **One** browser, with a Chromium `URLBlocklist`. ⚠️ Session-level policies are **RECOMMENDED-only** (measured — MANAGED is rejected), so this constrains the agent but not a human in a takeover; the real control needs `CreateBrowser`. Supersedes the second-resource/`URLAllowlist` draft — the browser resource is immutable (no `UpdateBrowser`) and RBAC cannot express a per-site rule |
 | D7 | axe-core ships as a **browser extension**, and the full report goes to the workspace, never to the model |
 | D8 | Everything rides `BROWSER_TAKEOVER_ENABLED` (default on, kill switch) |
 | D9 | A 40-target sweep is **40 sessions, not one turn** — the cost hazard is session shape, not takeover |
@@ -364,10 +364,35 @@ yearly, and fits an immutable resource. It also matches the requirement's
 actual shape: everything is open *except* where an agent acting as the user has
 academic or administrative consequences.
 
-**Applied at `StartBrowserSession`, as MANAGED.** `StartBrowserSession` takes
-`enterprisePolicies`, and its `type` enum is `['MANAGED', 'RECOMMENDED']` — the
-prose in the docs describes MANAGED as a `CreateBrowser` thing, but the wire
-contract permits it per session. This matters because the two levels are not
+**⚠️ MEASURED 2026-09-19, AND THIS IS WHERE THE DESIGN BROKE.** The plan was
+to apply the policy at `StartBrowserSession` as MANAGED, because its `type`
+enum is `['MANAGED', 'RECOMMENDED']`. **The enum lies.** The service returns:
+
+```
+ValidationException ... Invalid value for parameter 'type'.
+MANAGED is not supported for session-level policies.
+```
+
+And it does not degrade — `StartBrowserSession` fails outright, so **every**
+browser session dies and `browse_web` stops working entirely. That regression
+reached dev (never prod) and was reverted to `RECOMMENDED`.
+
+So risk 2b resolved **against** the design. Session-level policies are
+RECOMMENDED-only, which Chromium treats as a user-overridable default. What
+ships today therefore constrains the **agent** — which drives via CDP and never
+opens settings — but **not a human holding the browser during a takeover**,
+who is the threat this control exists for.
+
+**Consequence: `request_user_login` must stay ungranted** until the MANAGED
+policy is applied at `CreateBrowser`. That needs a custom resource, since
+`CfnBrowserCustom` does not expose `enterprisePolicies`, and it reinstates
+replace-per-edit on the browser resource — survivable only because profiles
+turned out to be account-level (risk 2). The RBAC grant and
+`BROWSER_TAKEOVER_ENABLED` hold the line meanwhile.
+
+The original reasoning for preferring session level, now moot:
+`StartBrowserSession` takes `enterprisePolicies`, and the docs' prose describes
+MANAGED as a `CreateBrowser` thing. This matters because the two levels are not
 interchangeable: MANAGED is "required and mandated by an administrator… cannot
 be overridden" and lands in `/etc/chromium/policies/managed/`; RECOMMENDED is
 user-overridable and lower-precedence, which makes it advisory rather than a
@@ -697,11 +722,13 @@ through.
    resources, not scoped to a browser, so replacing the browser resource does
    not invalidate saved logins. PR 3 and the policy work can land in either
    order.
-2b. **Is `type: MANAGED` honoured at `StartBrowserSession`, or silently
-   downgraded to RECOMMENDED?** The enum accepts it and the docs' prose only
-   ever pairs MANAGED with `CreateBrowser`. **This is now the load-bearing
-   assumption of the whole security posture** — verify on dev (apply, navigate
-   to a blocked host, confirm the refusal) before granting the tool to anyone.
+2b. ~~**Is `type: MANAGED` honoured at `StartBrowserSession`?**~~
+   **ANSWERED, AGAINST US (dev, 2026-09-19).** It is rejected:
+   `Invalid value for parameter 'type'. MANAGED is not supported for
+   session-level policies.` Not a silent downgrade — `StartBrowserSession`
+   fails and every session dies. See D6. **Do not grant
+   `request_user_login` until the MANAGED policy is applied at
+   `CreateBrowser`.**
 3. ~~**Does the DCV viewer work inside a cross-origin iframe with our CSP?**~~
    **Resolved in principle.** The sandbox origin's CloudFront function composes
    `connect-src` from a `?csp=` query parameter and is attached to the
