@@ -60,16 +60,24 @@ export interface AgentCoreBrowserPolicyConstructProps {
  *   2. `CfnBrowserCustom` (aws-cdk-lib 2.251.0) does not expose
  *      `enterprisePolicies` at all, so CFN cannot set it without a custom
  *      resource that would inherit problem 1.
- *   3. `StartBrowserSession` accepts the same `enterprisePolicies` shape, with
- *      `type` accepting MANAGED — read fresh on every session.
+ *   3. `StartBrowserSession` accepts the same `enterprisePolicies` shape and
+ *      reads it fresh on every session.
  *
  * So this construct owns only the *object and its IAM*; the backend passes the
  * reference on every `start()` (`agents/builtin_tools/browser/session_pool.py`).
  *
- * MANAGED, not RECOMMENDED: Chromium defines managed policies as mandated and
- * un-overridable, while recommended policies are user-overridable defaults —
- * which makes RECOMMENDED advisory rather than a boundary against the very
- * person we are constraining.
+ * ⚠️ **Session-level policies are RECOMMENDED-only.** The API's `type` enum
+ * accepts MANAGED, but the service rejects it — measured on dev 2026-09-19:
+ * "Invalid value for parameter 'type'. MANAGED is not supported for
+ * session-level policies." It does not degrade; `StartBrowserSession` fails and
+ * every browser session dies.
+ *
+ * Chromium treats recommended policies as user-overridable defaults, so what
+ * this deploys constrains the **agent** (which drives via CDP and never opens
+ * settings) but NOT a **human** holding the browser during a takeover. The
+ * un-overridable MANAGED policy needs `CreateBrowser`, which `CfnBrowserCustom`
+ * does not expose — so it needs a custom resource, and `request_user_login`
+ * must stay ungranted until that lands. See the spec's D6.
  *
  * The policy content is rendered from CDK config rather than being an object
  * an admin edits in place, so changing what the browser may reach is a

@@ -1,14 +1,12 @@
 /**
- * The Chromium MANAGED policy the browser is started with (spec D6).
+ * The Chromium URL policy the browser is started with (spec D6).
  *
- * This is the feature's primary security control. A browser takeover hands a
- * human a fully interactive Chromium inside our AWS account, and the *only*
- * thing that stops them navigating to the LMS and having an agent act as them
- * is Chromium refusing — no check in our own code can, because it only ever
- * sees the page the takeover started on.
+ * ⚠️ Applied at session level it is RECOMMENDED-only — the service rejects
+ * MANAGED — so it constrains the agent but not a human in a takeover. The
+ * un-overridable version needs `CreateBrowser`.
  *
- * So these tests care about two things: that the document says what we think
- * it says, and that the browser can actually read it.
+ * These tests care about two things regardless: that the document says what we
+ * think it says, and that the browser can actually read it.
  */
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';

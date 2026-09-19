@@ -599,36 +599,41 @@ class TestViewportFidelity:
         assert ref["viewport"] == {"width": 1600, "height": 900}
 
 
-class TestManagedUrlPolicy:
-    """The Chromium MANAGED policy every session is started with (spec D6).
+class TestSessionUrlPolicy:
+    """The Chromium URL policy every session is started with (spec D6).
 
-    This is the feature's primary security control. A takeover hands a human a
-    fully interactive Chromium, so nothing in this codebase can stop them
-    navigating somewhere they should not — only Chromium refusing does. These
-    assert the policy is well-formed, is MANAGED rather than advisory, and that
-    a misconfiguration is loud rather than silently permissive.
+    ⚠️ Session-level policies are RECOMMENDED-only — the service rejects
+    MANAGED — so this constrains the *agent*, not a *human* holding the browser
+    during a takeover. The real control needs `CreateBrowser`. These assert the
+    policy is well-formed, is never MANAGED (which breaks every session), and
+    that a misconfiguration is loud rather than silently permissive.
     """
 
-    def test_a_managed_policy_is_built_from_the_s3_uri(self, monkeypatch) -> None:
+    def test_a_policy_is_built_from_the_s3_uri(self, monkeypatch) -> None:
         monkeypatch.setenv("BROWSER_POLICY_S3", "s3://my-bucket/policies/managed.json")
 
         policies = session_pool._enterprise_policies()
 
         assert policies == [
             {
-                "type": "MANAGED",
+                "type": "RECOMMENDED",
                 "location": {
                     "s3": {"bucket": "my-bucket", "prefix": "policies/managed.json"}
                 },
             }
         ]
 
-    def test_the_policy_is_never_recommended(self, monkeypatch) -> None:
-        # RECOMMENDED is a user-overridable default in Chromium, which would
-        # make it advisory against the very person it is meant to constrain.
+    def test_the_session_policy_is_never_managed(self, monkeypatch) -> None:
+        # Measured on dev 2026-09-19: the API's enum accepts MANAGED but the
+        # service rejects it —
+        #   "Invalid value for parameter 'type'. MANAGED is not supported for
+        #    session-level policies."
+        # It does not degrade: StartBrowserSession fails outright, so EVERY
+        # browser session dies and browse_web stops working. This test exists
+        # so nobody "tries MANAGED" here again.
         monkeypatch.setenv("BROWSER_POLICY_S3", "s3://b/k.json")
 
-        assert session_pool._enterprise_policies()[0]["type"] == "MANAGED"
+        assert session_pool._enterprise_policies()[0]["type"] == "RECOMMENDED"
 
     def test_a_key_with_slashes_survives_intact(self, monkeypatch) -> None:
         monkeypatch.setenv("BROWSER_POLICY_S3", "s3://b/a/b/c/managed.json")
@@ -673,7 +678,7 @@ class TestManagedUrlPolicy:
 
         await session_pool._start_remote_session()
 
-        assert captured["enterprise_policies"][0]["type"] == "MANAGED"
+        assert captured["enterprise_policies"][0]["type"] == "RECOMMENDED"
         assert captured["viewport"] == session_pool.DEFAULT_VIEWPORT
 
     @pytest.mark.asyncio
