@@ -108,6 +108,17 @@
 
   }
 
+  <!-- How long the turn took. Anchored to the END of the turn rather than to
+       a message, because that is what it describes: a turn spans several
+       assistant messages and the number covers all of them, plus the tools
+       and the agent build between. Absent while streaming and on turns from
+       before the field existed. -->
+  @if (turnRecapFor(turn); as recap) {
+    <div class="mt-1 flex justify-start">
+      <span class="text-xs tabular-nums text-gray-400 dark:text-gray-500">{{ recap }}</span>
+    </div>
+  }
+
   <!-- End-of-conversation sections render INSIDE the last turn's reserved
        space so they stay adjacent to the response instead of landing a
        viewport below it — the loading indicator and the consent/approval
