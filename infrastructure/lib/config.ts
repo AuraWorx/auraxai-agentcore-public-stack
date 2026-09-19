@@ -59,6 +59,7 @@ export interface AppConfig {
   fineTuning: FineTuningConfig;
   artifacts: ArtifactsConfig;
   mcpSandbox: McpSandboxConfig;
+  browser: BrowserConfig;
   mcpIdentity: McpIdentityConfig;
   gateway: GatewayConfig;
   /**
@@ -92,6 +93,31 @@ export interface McpSandboxConfig {
   // iframe via CSP frame-ancestors — e.g. http://localhost:4200 for a local
   // SPA pointed at this deployment. Empty on prod.
   extraFrameAncestors: string[];
+}
+
+/**
+ * AgentCore Browser policy (docs/specs/authenticated-web-assessment.md D6).
+ */
+export interface BrowserConfig {
+  /**
+   * Hosts the browser must refuse to navigate to, as Chromium
+   * `URLBlocklist` entries.
+   *
+   * This is a **security control**, not a preference. A browser takeover hands
+   * a human a fully interactive Chromium, so the only thing that stops them
+   * navigating to the LMS and having an agent act as them is Chromium itself
+   * refusing — no check in our own code can, because it only ever sees the
+   * page the takeover started on.
+   *
+   * A blocklist rather than an allowlist because the list has to be
+   * maintainable: an allowlist of vendors under assessment would churn with
+   * every VPAT review, while institutional systems change about yearly.
+   *
+   * Lives here rather than as an S3 object edited in place, so a change to it
+   * is a reviewed deploy. Match the origin actually navigated to — a vanity
+   * CNAME that redirects is not what Chromium sees.
+   */
+  urlBlocklist: string[];
 }
 
 export interface ArtifactsConfig {
@@ -972,6 +998,21 @@ export function loadConfig(scope: cdk.App): AppConfig {
       shareInboxEnabled: process.env.CDK_ARTIFACT_SHARE_INBOX_ENABLED
         ? process.env.CDK_ARTIFACT_SHARE_INBOX_ENABLED !== 'false'
         : scope.node.tryGetContext('artifacts')?.shareInboxEnabled ?? true,
+    },
+    browser: {
+      // Seeded with the LMS; extended after the CISO review. Comma-separated
+      // in the env var. An explicitly empty CDK_BROWSER_URL_BLOCKLIST='' is
+      // honoured as "block nothing" rather than falling back to the default,
+      // so an environment can opt out deliberately — but note that leaves the
+      // RBAC grant as the only control (spec Security 3).
+      urlBlocklist:
+        process.env.CDK_BROWSER_URL_BLOCKLIST !== undefined
+          ? process.env.CDK_BROWSER_URL_BLOCKLIST.split(',')
+              .map((h) => h.trim())
+              .filter(Boolean)
+          : scope.node.tryGetContext('browser')?.urlBlocklist ?? [
+              'boisestatecanvas.instructure.com',
+            ],
     },
     mcpSandbox: {
       certificateArn: process.env.CDK_MCP_SANDBOX_CERTIFICATE_ARN || scope.node.tryGetContext('mcpSandbox')?.certificateArn,

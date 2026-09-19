@@ -131,6 +131,15 @@ export interface PlatformComputeRefs {
   agentCoreCodeInterpreterId: string;
   agentCoreBrowserArn: string;
   agentCoreBrowserId: string;
+  /**
+   * S3 location of the Chromium MANAGED policy every browser session is
+   * started with (docs/specs/authenticated-web-assessment.md D6). Passed to
+   * `StartBrowserSession` rather than attached to the browser resource: the
+   * resource is immutable (no UpdateBrowser) and CfnBrowserCustom does not
+   * expose enterprisePolicies.
+   */
+  browserPolicyBucketName: string;
+  browserPolicyKey: string;
 
   // ── MCP sandbox edge
   mcpSandboxProxyOrigin: string;

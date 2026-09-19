@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -596,3 +597,106 @@ class TestViewportFidelity:
         ref = await session_pool.take_control(FakeAgent())
 
         assert ref["viewport"] == {"width": 1600, "height": 900}
+
+
+class TestManagedUrlPolicy:
+    """The Chromium MANAGED policy every session is started with (spec D6).
+
+    This is the feature's primary security control. A takeover hands a human a
+    fully interactive Chromium, so nothing in this codebase can stop them
+    navigating somewhere they should not — only Chromium refusing does. These
+    assert the policy is well-formed, is MANAGED rather than advisory, and that
+    a misconfiguration is loud rather than silently permissive.
+    """
+
+    def test_a_managed_policy_is_built_from_the_s3_uri(self, monkeypatch) -> None:
+        monkeypatch.setenv("BROWSER_POLICY_S3", "s3://my-bucket/policies/managed.json")
+
+        policies = session_pool._enterprise_policies()
+
+        assert policies == [
+            {
+                "type": "MANAGED",
+                "location": {
+                    "s3": {"bucket": "my-bucket", "prefix": "policies/managed.json"}
+                },
+            }
+        ]
+
+    def test_the_policy_is_never_recommended(self, monkeypatch) -> None:
+        # RECOMMENDED is a user-overridable default in Chromium, which would
+        # make it advisory against the very person it is meant to constrain.
+        monkeypatch.setenv("BROWSER_POLICY_S3", "s3://b/k.json")
+
+        assert session_pool._enterprise_policies()[0]["type"] == "MANAGED"
+
+    def test_a_key_with_slashes_survives_intact(self, monkeypatch) -> None:
+        monkeypatch.setenv("BROWSER_POLICY_S3", "s3://b/a/b/c/managed.json")
+
+        prefix = session_pool._enterprise_policies()[0]["location"]["s3"]["prefix"]
+        assert prefix == "a/b/c/managed.json"
+
+    @pytest.mark.parametrize(
+        "value", ["", "   ", "my-bucket/key.json", "https://example.com/p.json", "s3://", "s3://bucket-only"]
+    )
+    def test_an_unusable_setting_yields_no_policy(self, monkeypatch, value) -> None:
+        monkeypatch.setenv("BROWSER_POLICY_S3", value)
+
+        assert session_pool._enterprise_policies() is None
+
+    def test_a_malformed_setting_is_logged_as_an_error(self, monkeypatch, caplog) -> None:
+        # Silently starting an unrestricted browser is the failure mode that
+        # matters here, so it must be loud in the logs.
+        monkeypatch.setenv("BROWSER_POLICY_S3", "not-a-uri")
+
+        with caplog.at_level(logging.ERROR):
+            session_pool._enterprise_policies()
+
+        assert "NO url policy" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_start_passes_the_policy_through(self, monkeypatch) -> None:
+        monkeypatch.setenv("BROWSER_POLICY_S3", "s3://my-bucket/policies/managed.json")
+        captured: Dict[str, Any] = {}
+
+        class RecordingClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            def start(self, **kwargs: Any) -> str:
+                captured.update(kwargs)
+                return "bs-new"
+
+        monkeypatch.setattr(
+            "bedrock_agentcore.tools.browser_client.BrowserClient", RecordingClient
+        )
+
+        await session_pool._start_remote_session()
+
+        assert captured["enterprise_policies"][0]["type"] == "MANAGED"
+        assert captured["viewport"] == session_pool.DEFAULT_VIEWPORT
+
+    @pytest.mark.asyncio
+    async def test_start_omits_the_kwarg_entirely_when_unconfigured(
+        self, monkeypatch
+    ) -> None:
+        # An older SDK or a local dev box must not get `enterprise_policies=None`
+        # forwarded into the start call.
+        monkeypatch.delenv("BROWSER_POLICY_S3", raising=False)
+        captured: Dict[str, Any] = {}
+
+        class RecordingClient:
+            def __init__(self, **_: Any) -> None:
+                pass
+
+            def start(self, **kwargs: Any) -> str:
+                captured.update(kwargs)
+                return "bs-new"
+
+        monkeypatch.setattr(
+            "bedrock_agentcore.tools.browser_client.BrowserClient", RecordingClient
+        )
+
+        await session_pool._start_remote_session()
+
+        assert "enterprise_policies" not in captured

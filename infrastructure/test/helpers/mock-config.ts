@@ -156,6 +156,9 @@ export function createMockConfig(overrides: Partial<AppConfig> = {}): AppConfig 
     mcpSandbox: {
       extraFrameAncestors: [],
     },
+    browser: {
+      urlBlocklist: ['blocked.example.com'],
+    },
     mcpIdentity: {
       tokenEnrichment: {
         enabled: false,

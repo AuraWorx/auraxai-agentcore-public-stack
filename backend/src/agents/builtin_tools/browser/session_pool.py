@@ -130,22 +130,79 @@ def _write_state(agent: Any, entry: Optional[Dict[str, Any]]) -> None:
         logger.warning("browser: session state not serializable; not persisted")
 
 
+def _enterprise_policies() -> Optional[list]:
+    """The Chromium MANAGED policy to start every browser session with.
+
+    This is the feature's primary security control, and it is deliberately
+    applied here rather than on the browser resource
+    (`docs/specs/authenticated-web-assessment.md` D6):
+
+    * A takeover hands a human a fully interactive Chromium. Nothing in this
+      codebase can stop them navigating to the LMS and having an agent act as
+      them — a check in `request_user_login` sees only the page the takeover
+      *started* on. Chromium refusing is the only control that holds.
+    * The policy cannot live on the browser resource: there is no
+      `UpdateBrowser`, policy files are read from S3 "at the time of the API
+      call" and frozen thereafter, and `CfnBrowserCustom` does not expose
+      `enterprisePolicies` at all.
+    * `StartBrowserSession` accepts the same shape with `type` in
+      `{MANAGED, RECOMMENDED}`, read fresh per session.
+
+    **MANAGED, never RECOMMENDED.** Chromium treats managed policies as
+    mandated and un-overridable; recommended ones are user-overridable
+    defaults, which would make this advisory against the very person it
+    constrains.
+
+    Returns None when unconfigured, which starts the session with no policy.
+    That is the correct behaviour for a local dev box with no bucket, and it is
+    why `BROWSER_TAKEOVER_ENABLED` and the RBAC grant exist as separate gates —
+    but an environment that grants the tool without this configured has no
+    site-level control at all.
+    """
+    location = os.environ.get("BROWSER_POLICY_S3", "").strip()
+    if not location:
+        return None
+
+    if not location.startswith("s3://"):
+        logger.error(
+            "browser: BROWSER_POLICY_S3 is not an s3:// URI (%r); "
+            "starting sessions with NO url policy",
+            location,
+        )
+        return None
+
+    bucket, _, key = location[len("s3://"):].partition("/")
+    if not bucket or not key:
+        logger.error(
+            "browser: BROWSER_POLICY_S3 names no bucket/key (%r); "
+            "starting sessions with NO url policy",
+            location,
+        )
+        return None
+
+    return [{"type": "MANAGED", "location": {"s3": {"bucket": bucket, "prefix": key}}}]
+
+
 async def _start_remote_session() -> Tuple[Any, str, str]:
     """Start an AgentCore browser session. Returns (client, identifier, id)."""
     from bedrock_agentcore.tools.browser_client import BrowserClient
 
     identifier = _browser_identifier()
     client = BrowserClient(region=_region())
+    policies = _enterprise_policies()
+    start_kwargs: Dict[str, Any] = {
+        "identifier": identifier,
+        "session_timeout_seconds": SESSION_TIMEOUT_SECONDS,
+        "viewport": DEFAULT_VIEWPORT,
+    }
+    if policies:
+        start_kwargs["enterprise_policies"] = policies
     # boto3 is synchronous; keep it off the event loop.
-    session_id = await asyncio.to_thread(
-        client.start,
-        identifier=identifier,
-        session_timeout_seconds=SESSION_TIMEOUT_SECONDS,
-        viewport=DEFAULT_VIEWPORT,
-    )
+    session_id = await asyncio.to_thread(client.start, **start_kwargs)
     logger.info(
-        "browser: started session %s on %s (ttl=%ss)",
+        "browser: started session %s on %s (ttl=%ss, url_policy=%s)",
         session_id, identifier, SESSION_TIMEOUT_SECONDS,
+        "managed" if policies else "NONE",
     )
     return client, identifier, session_id
 
