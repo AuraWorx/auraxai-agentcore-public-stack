@@ -197,6 +197,20 @@ async def session_has_documents(user_id: str, session_id: str) -> bool:
     return any(meta.user_id == user_id and is_document_class(meta.mime_type, meta.filename) for meta in files)
 
 
+async def session_has_tabular_files(user_id: str, session_id: str) -> bool:
+    """Whether the session has at least one READY spreadsheet (CSV/XLSX).
+
+    The Spreadsheet Analysis auto-enable gate — the tabular counterpart of
+    :func:`session_has_documents`, same one-query cost and the same
+    "memoize the positive answer" contract for callers. Spreadsheets never go
+    inline, so a session holding one is a session whose turns need the
+    analysis tools to read it at all.
+    """
+    _require_identity(user_id, session_id)
+    files = await get_file_upload_repository().list_session_files(session_id, status=FileStatus.READY)
+    return any(meta.user_id == user_id and is_tabular_file(meta.filename, meta.mime_type) for meta in files)
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------

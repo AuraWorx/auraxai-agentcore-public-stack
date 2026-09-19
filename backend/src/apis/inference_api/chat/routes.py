@@ -853,6 +853,130 @@ async def _build_document_tools(
 # Attachment Partitioning (#206)
 # ============================================================
 
+# ============================================================
+# Spreadsheet Analysis auto-enable on attachment
+# (docs/specs/load-test-assessment-2026-09.md P2-E)
+# ============================================================
+
+#: Sessions known to hold a spreadsheet attachment. Same contract as
+#: ``_DOCUMENT_SESSIONS``: one query per turn otherwise, positive answers
+#: memoized because an upload stays unless the user deletes it, negative
+#: answers never memoized because the next turn may be the upload.
+_TABULAR_SESSIONS: "OrderedDict[str, bool]" = OrderedDict()
+_TABULAR_SESSIONS_MAX = 10_000
+
+
+def _remember_tabular_session(session_id: str) -> None:
+    _TABULAR_SESSIONS[session_id] = True
+    _TABULAR_SESSIONS.move_to_end(session_id)
+    while len(_TABULAR_SESSIONS) > _TABULAR_SESSIONS_MAX:
+        _TABULAR_SESSIONS.popitem(last=False)
+
+
+async def _session_has_tabular(
+    session_id: str,
+    user_id: str,
+    turn_has_tabular: bool = False,
+) -> bool:
+    """Whether this session's turns need the Spreadsheet Analysis tools.
+
+    True when this turn attaches a CSV/XLSX (already partitioned, no query),
+    when the session was seen holding one earlier in this process, or when
+    the session's READY uploads include one. Sticky by design: the answer
+    feeds ``enabled_tools`` and therefore the agent-cache key, so it must
+    not flip between the attach turn and the follow-up. Fail-closed on
+    error: a turn without the tools is today's behavior, never a broken turn.
+    """
+    if turn_has_tabular:
+        _remember_tabular_session(session_id)
+        return True
+    if _TABULAR_SESSIONS.get(session_id):
+        return True
+    if not session_id or not user_id:
+        return False
+    try:
+        from apis.shared.files.document_read import session_has_tabular_files
+
+        present = await session_has_tabular_files(user_id, session_id)
+    except Exception:  # noqa: BLE001 - the gate must never fail a turn
+        logger.warning("spreadsheet auto-enable lookup failed; tools not injected this turn", exc_info=True)
+        return False
+    if present:
+        _remember_tabular_session(session_id)
+    return present
+
+
+def _with_auto_enabled_tools(enabled_tools: list | None, auto_ids: list[str]) -> list | None:
+    """``enabled_tools`` plus ``auto_ids`` not already present, appended in the
+    order given. Returns the same object when there is nothing to add, so a
+    caller that passed ``None`` still passes ``None`` and every consumer of the
+    list (cache key, builders, guidance, ToolFilter) sees one value."""
+    if not auto_ids:
+        return enabled_tools
+    current = list(enabled_tools or [])
+    missing = [tool_id for tool_id in auto_ids if tool_id not in current]
+    if not missing:
+        return enabled_tools
+    return current + missing
+
+
+async def _auto_enabled_attachment_tool_ids(
+    current_user: User,
+    session_id: str,
+    user_id: str,
+    turn_has_tabular: bool = False,
+) -> list[str]:
+    """The Spreadsheet Analysis ids this turn should carry regardless of the
+    picker, in a fixed order: every id in ``SPREADSHEET_TOOL_IDS`` the
+    caller's RBAC grant admits, when the session holds a spreadsheet.
+
+    Enables, never grants: ``can_access_tool`` is the same predicate the
+    picker and Agent bindings answer to (role grant ∪ public tools). A user
+    whose roles do not carry the tool gets today's behavior — the attachment
+    note tells them the tool is not available to their account.
+    """
+    from apis.shared.feature_flags import attachment_tool_autoenable_enabled
+
+    if not attachment_tool_autoenable_enabled():
+        return []
+    if not await _session_has_tabular(session_id, user_id, turn_has_tabular):
+        return []
+    role_service = get_app_role_service()
+    allowed: list[str] = []
+    for tool_id in sorted(SPREADSHEET_TOOL_IDS):
+        try:
+            if await role_service.can_access_tool(current_user, tool_id):
+                allowed.append(tool_id)
+        except Exception:  # noqa: BLE001 - an RBAC lookup failure must not fail the turn
+            logger.warning("RBAC check for %s failed; not auto-enabling", tool_id, exc_info=True)
+    if allowed:
+        logger.info(
+            "Auto-enabled %s for a session with a spreadsheet attachment (session=%s)",
+            allowed, scrub_log(session_id),
+        )
+    return allowed
+
+
+async def _apply_attachment_tool_autoenable(
+    enabled_tools: list | None,
+    current_user: User,
+    session_id: str,
+    user_id: str,
+    turn_has_tabular: bool = False,
+) -> list | None:
+    """``enabled_tools`` for this turn with the attachment auto-enable applied.
+
+    The single seam every ``get_agent`` caller on the invocation path goes
+    through, so the main turn and the MCP App dispatch paths compute the same
+    effective list — and therefore the same agent-cache slot — for a session
+    holding a spreadsheet.
+    """
+    auto_ids = await _auto_enabled_attachment_tool_ids(
+        current_user, session_id, user_id, turn_has_tabular=turn_has_tabular
+    )
+    return _with_auto_enabled_tools(enabled_tools, auto_ids)
+
+
 def _estimate_decoded_size(file: "FileContent") -> int:
     """Estimate decoded byte size of a base64-encoded FileContent payload.
 
@@ -1085,11 +1209,15 @@ def _build_attachment_guidance(
                 f"to run aggregations or lookups._"
             )
         else:
+            # Reached only when the auto-enable did not apply: the caller's
+            # roles do not carry the tool, or the kill switch is set. Say so
+            # without sending them to a toggle that may not be there.
             parts.append(
-                f"_Attached spreadsheet(s) {names} can't be read inline at "
-                f"this size. To analyze them, enable **Spreadsheet Analysis** "
-                f"under Customize → Tools in the sidebar, then re-send "
-                f"your message._"
+                f"_Attached spreadsheet(s) {names} can't be read inline. "
+                f"Analyzing them needs the **Spreadsheet Analysis** tool, which "
+                f"isn't available in this conversation — if it is listed under "
+                f"Customize → Tools in the sidebar, enable it and re-send your "
+                f"message; if it isn't, your account doesn't have access to it._"
             )
 
     if diverted_presentations:
@@ -1620,7 +1748,11 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 session_id=input_data.session_id,
                 user_id=user_id,
                 auth_token=auth_token,
-                enabled_tools=input_data.enabled_tools,
+                # Same auto-enable seam as the main turn, so a spreadsheet
+                # session's dispatch reads the slot the real turns fill.
+                enabled_tools=await _apply_attachment_tool_autoenable(
+                    input_data.enabled_tools, current_user, input_data.session_id, user_id
+                ),
                 model_id=input_data.model_id,
                 system_prompt=input_data.system_prompt,
                 caching_enabled=caching_enabled,
@@ -1677,7 +1809,11 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 session_id=input_data.session_id,
                 user_id=user_id,
                 auth_token=auth_token,
-                enabled_tools=input_data.enabled_tools,
+                # Same auto-enable seam as the main turn, so a spreadsheet
+                # session's dispatch reads the slot the real turns fill.
+                enabled_tools=await _apply_attachment_tool_autoenable(
+                    input_data.enabled_tools, current_user, input_data.session_id, user_id
+                ),
                 model_id=input_data.model_id,
                 system_prompt=input_data.system_prompt,
                 caching_enabled=caching_enabled,
@@ -2827,6 +2963,20 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 agent_tools_override.tool_ids
                 if agent_tools_override is not None
                 else input_data.enabled_tools
+            )
+            # A session holding a spreadsheet gets the Spreadsheet Analysis
+            # tools whether or not the picker has them on, gated on the
+            # caller's RBAC grant. Applied to the *effective* list so it
+            # flows into the cache key, every builder below, the attachment
+            # guidance and the paused-turn snapshot as one value. Sticky
+            # across the session (see `_session_has_tabular`), so the key
+            # does not flip between the attach turn and the follow-up.
+            effective_enabled_tools = await _apply_attachment_tool_autoenable(
+                effective_enabled_tools,
+                current_user,
+                input_data.session_id,
+                user_id,
+                turn_has_tabular=bool(diverted_tabular),
             )
 
             # An Agent's skill bindings replace the request's skills for this turn so
