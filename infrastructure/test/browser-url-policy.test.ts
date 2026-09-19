@@ -11,7 +11,10 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { PlatformStack } from '../lib/platform-stack';
-import { buildBrowserManagedPolicy } from '../lib/constructs/agentcore/browser-policy-construct';
+import {
+  buildBrowserManagedPolicy,
+  BROWSER_MANAGED_POLICY_KEY,
+} from '../lib/constructs/agentcore/browser-policy-construct';
 import { createMockConfig, mockSsmContext, MOCK_ACCOUNT, MOCK_REGION } from './helpers/mock-config';
 
 describe('buildBrowserManagedPolicy', () => {
@@ -43,6 +46,18 @@ describe('buildBrowserManagedPolicy', () => {
     // but the explicit key makes "this environment blocks nothing" visible in
     // the deployed object instead of looking like a failed render.
     expect(buildBrowserManagedPolicy([])).toEqual({ URLBlocklist: [] });
+  });
+});
+
+describe('the policy object key', () => {
+  it('is not double-prefixed', () => {
+    // Regression: the BucketDeployment's `destinationKeyPrefix` compounded
+    // with a source name that already carried the prefix, so the object landed
+    // at `policies/policies/managed-policies.json` while BROWSER_POLICY_S3
+    // pointed one level up. The deploy looked clean and the policy silently
+    // resolved to a missing key.
+    expect(BROWSER_MANAGED_POLICY_KEY).toBe('policies/managed-policies.json');
+    expect(BROWSER_MANAGED_POLICY_KEY).not.toContain('policies/policies');
   });
 });
 
@@ -101,5 +116,12 @@ describe('browser policy in the stack', () => {
 
     expect(env).toHaveProperty('BROWSER_POLICY_S3');
     expect(env).not.toHaveProperty('BROWSER_POLICY_BUCKET');
+
+    // The URI the backend is told must name the key the deployment writes.
+    // A template test cannot see inside the asset zip, so assert the two are
+    // derived from the same constant rather than two that drifted.
+    expect(JSON.stringify(env.BROWSER_POLICY_S3)).toContain(
+      BROWSER_MANAGED_POLICY_KEY,
+    );
   });
 });
