@@ -27,6 +27,15 @@ import { SystemPromptsService } from '../../../services/system-prompts/system-pr
 import { isPreviewSession } from '../../../shared/constants/session.constants';
 import { HttpErrorResponse } from '@angular/common/http';
 
+/**
+ * How long a send will wait for the tool/skill lists before giving up and
+ * assembling the request from whatever has loaded. Long enough to cover a
+ * normal `/tools/` + `/skills/` round trip on a cold page, short enough that a
+ * hung request is a slightly stale prefix rather than a composer that appears
+ * to have swallowed the message.
+ */
+const SELECTION_SOURCE_TIMEOUT_MS = 4000;
+
 export interface ContentFile {
   fileName: string;
   fileSize: number;
@@ -135,6 +144,14 @@ export class ChatRequestService implements OnDestroy {
     this.messageMapService.startStreaming(sessionId);
 
     try {
+      // Wait for the tool/skill selections to settle before assembling the
+      // request. On the first turn of a freshly loaded page these lists may
+      // still be in flight, and a turn built from an empty list discloses no
+      // skills and no tools — then the next turn discloses the real ones and
+      // rewrites the whole cacheable prefix at the cache-write premium. See
+      // `awaitSelectionSources`.
+      await this.awaitSelectionSources();
+
       // Build and send request with file upload IDs and assistant ID.
       // Built inside the try so a synchronous failure (e.g. no model
       // selected) still clears this session's loading state.
@@ -284,6 +301,11 @@ export class ChatRequestService implements OnDestroy {
     this.chatStateService.setChatLoading(sessionId, true);
 
     try {
+      // Same gate as a normal send: a continuation must rebuild the SAME agent
+      // shape as the turn it continues, which means the same tool and skill
+      // selections.
+      await this.awaitSelectionSources();
+
       // Reuse the normal request shape so the backend rebuilds the same
       // model/tools/assistant agent, but with an empty message and the
       // continuation flag. No addUserMessage call → no user bubble. Built
@@ -317,6 +339,52 @@ export class ChatRequestService implements OnDestroy {
       queryParams,
       queryParamsHandling: 'merge',
     });
+  }
+
+  /**
+   * Wait for the tool and skill selections to be loaded before a request is
+   * assembled from them.
+   *
+   * WHY: both lists arrive asynchronously — `ToolService` fetches in its
+   * constructor, `SkillService` lazily on the first composer focus — and until
+   * they land `getEnabledToolIds()` / `getEnabledSkillIds()` answer with an
+   * empty array. That is indistinguishable from "the user turned everything
+   * off", so a message sent a second or two after page load went out with no
+   * skills and a short tool list, and the *next* message went out with the real
+   * ones. Both `toolConfig` and the system prompt changed between turn 1 and
+   * turn 2, so turn 2 missed the prompt cache entirely and re-wrote a ~15k-token
+   * prefix at the cache-write premium — for nothing the user did.
+   *
+   * The wait is bounded and never fails the send. A slow or broken `/tools/` or
+   * `/skills/` response falls back to exactly the previous behaviour (assemble
+   * from whatever is loaded) rather than holding the user's message hostage to
+   * a request that may never return. Once loaded this resolves synchronously in
+   * the microtask sense, so it costs nothing on turn 2 and after.
+   *
+   * It runs AFTER the optimistic UI work (the user's bubble, the streaming
+   * state, the route change) so nothing the user sees is delayed by it.
+   */
+  private async awaitSelectionSources(): Promise<void> {
+    const settled = Promise.all([
+      this.toolService.ensureLoaded(),
+      this.skillService.ensureLoaded(),
+    ]);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, SELECTION_SOURCE_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([settled.then(() => undefined), bound]);
+    } catch {
+      // `ensureLoaded` is documented not to reject; a send must not fail here
+      // even if that ever changes.
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   private buildChatRequestObject(
