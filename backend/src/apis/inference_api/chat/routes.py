@@ -92,13 +92,6 @@ from apis.shared.security.log_sanitize import scrub_log
 
 logger = logging.getLogger(__name__)
 
-# How long the deferred agent build may take before the client is told it is
-# waiting on one. Below this a build is imperceptible and naming it would only
-# flicker; above it, the user is staring at a silent screen. Measured on dev:
-# warm builds land at 0-38ms, a cold agent-cache miss at 1478ms, so almost
-# nothing falls near this line.
-_PREPARING_NOTICE_SECONDS = 0.25
-
 # Router with no prefix - endpoints will be at root level
 router = APIRouter(tags=["agentcore-runtime"])
 
@@ -3410,37 +3403,37 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 # wire. The frame goes out FIRST so the client hears something
                 # the moment the response opens; the build follows.
                 if agent is None:
-                    # Narrate the build only if it is actually going to be
-                    # slow. A warm turn rebuilds in 0-38ms, and announcing
-                    # "Getting ready" for 38ms would flash a phase the user
-                    # cannot read — worse, it would land AFTER the generic
-                    # "Thinking" the client shows from the moment they hit
-                    # send, which reads as going backwards.
+                    # Announce the build unconditionally; the SPA decides
+                    # whether it is worth SHOWING.
                     #
-                    # Racing the build against a short timer is what makes
-                    # that decision without asking the cache: the frame is
-                    # emitted exactly when the build has already proven slow.
-                    # Peeking `_agent_cache` instead would mean rebuilding its
-                    # key out here, and a key that drifts from the real one is
-                    # a bug this repo has paid for before.
-                    build = asyncio.ensure_future(_build_main_agent())
-                    finished, _ = await asyncio.wait(
-                        {build}, timeout=_PREPARING_NOTICE_SECONDS
-                    )
-                    if not finished:
-                        yield (
-                            "event: agent_status\ndata: "
-                            + json.dumps(
-                                {
-                                    "type": "agent_status",
-                                    "sessionId": input_data.session_id,
-                                    "phase": "preparing",
-                                }
-                            )
-                            + "\n\n"
+                    # This used to race the build against a 250ms timer here
+                    # and emit only if it was still running, so a warm build
+                    # (0-38ms) never flashed a phase nobody can read. That
+                    # cannot work: `create_agent` is synchronous
+                    # (`agent_factory.py`), so a cold build occupies the event
+                    # loop for its whole duration and `asyncio.wait` cannot
+                    # fire its timeout — it returned only once the build was
+                    # already done, `finished` was non-empty, and the frame was
+                    # never sent. Verified on dev: a 1548ms build, six times
+                    # the threshold, emitted nothing.
+                    #
+                    # A timer only works where the clock actually runs, which
+                    # is the client. The SPA holds this phase for 250ms before
+                    # rendering it, so a warm build still never shows — see
+                    # `message-list.component.ts`.
+                    yield (
+                        "event: agent_status\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "agent_status",
+                                "sessionId": input_data.session_id,
+                                "phase": "preparing",
+                            }
                         )
+                        + "\n\n"
+                    )
                     try:
-                        agent = await build
+                        agent = await _build_main_agent()
                     except Exception as build_error:
                         # The handler has already returned, so the two `except`
                         # arms below cannot see this — a build that fails here

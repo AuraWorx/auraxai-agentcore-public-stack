@@ -1,8 +1,8 @@
 # Agent state feedback
 
 **Status:** PR-1 SHIPPED (#1159). PR-2 SHIPPED (#1160), VERIFIED on dev.
-Cleanup + instrumentation SHIPPED (#1163). PR-3 BUILT — rescoped by the
-measurement to one narrow change, pending dev verification.
+Cleanup + instrumentation SHIPPED (#1163). PR-3 SHIPPED (#1165) and VERIFIED on dev, which exposed a starved-timer
+bug in it; the fix is the follow-up described in its section.
 **Follow-up to:** `d2ee13e2` (emit agent_status and tool-batch summaries), `9bc9bc6b` / `5f0cd52a` / `67234329` (loading-indicator series)
 **Related:** `docs/specs/mid-turn-steering.md` (the other consumer of the drain), CLAUDE.md § SSE Event Types → `agent_status`
 
@@ -240,15 +240,29 @@ deferred path can need an HTTP status after the first byte.
 
 **As built**, three things the plan did not anticipate:
 
-1. **The frame is emitted only when the build is actually slow.** A warm build
-   is 0-38ms, and "Getting ready" for 38ms is a flicker — landing, worse,
-   *after* the generic "Thinking" the client shows from the moment the user
-   hits send, which reads as going backwards. The generator races the build
-   against `_PREPARING_NOTICE_SECONDS` (250ms, comfortably between the measured
-   warm and cold builds) and emits the frame only if the build is still
-   running. Peeking `_agent_cache` instead would mean rebuilding its key out in
-   the route, and a key that drifts from the real one is a bug this repo has
-   paid for.
+1. **The frame is emitted unconditionally; the SPA decides whether to show it.**
+   A warm build is 0-38ms, and "Getting ready" for 38ms is a flicker — landing,
+   worse, *after* the generic "Thinking" the client shows from the moment the
+   user hits send, which reads as going backwards.
+
+   The first attempt raced the build against a 250ms timer **in the
+   generator** and emitted only if it was still running. **That cannot work,
+   and dev proved it:** `create_agent` is synchronous
+   (`agent_factory.py`), so a cold build occupies the runtime's event loop for
+   its whole duration and `asyncio.wait` never gets to fire its timeout — it
+   returned only once the build was already finished, `finished` was non-empty,
+   and the frame was never sent. A 1548ms build, six times the threshold,
+   emitted nothing.
+
+   A timer only works where the clock actually runs, which is the client. The
+   backend now always announces the build; `message-list.component.ts` holds
+   the phase for 250ms before rendering it, so a warm build is superseded by
+   `thinking` and never reaches the screen. Cost of the change: one extra SSE
+   frame per non-resume turn.
+
+   (Peeking `_agent_cache` to predict a miss was considered and rejected both
+   times: it means rebuilding its key out in the route, and a key that drifts
+   from the real one is a bug this repo has paid for.)
 2. **A failed build needs its own error path.** The handler has already
    returned by then, so neither `except` arm can see it; without an in-generator
    catch a build failure is a silent hung stream. It now surfaces as a

@@ -1,4 +1,4 @@
-import { Component, computed, effect, input, output, inject, signal, PLATFORM_ID } from '@angular/core';
+import { Component, computed, effect, input, output, inject, signal, untracked, PLATFORM_ID } from '@angular/core';
 import { isPlatformBrowser, NgTemplateOutlet } from '@angular/common';
 import { Message, ToolUseData } from '../../services/models/message.model';
 import type { Artifact } from '../../services/artifacts/artifact.model';
@@ -160,6 +160,28 @@ export class MessageListComponent {
   private readonly LONG_STALL_NOTICE_MS = 90_000;
   private readonly STALL_TICK_MS = 5_000;
 
+  /**
+   * How long `preparing` must stay the current phase before it is rendered.
+   *
+   * The backend announces the agent build unconditionally, because it cannot
+   * time it: `create_agent` is synchronous, so a cold build occupies the
+   * runtime's event loop for its whole duration and a server-side timer never
+   * fires (verified on dev — a 1548ms build emitted nothing through a 250ms
+   * race). The client's clock is not blocked by any of that, so the decision
+   * lives here.
+   *
+   * 250ms is below the measured cold build (1478ms) and far above the warm one
+   * (0-38ms), so a warm turn's `preparing` is superseded by `thinking` long
+   * before this elapses and never reaches the screen. Which is the point: a
+   * 38ms flash of "Getting ready" is unreadable, and it lands AFTER the generic
+   * "Thinking" shown from the moment the user hits send, so it reads as going
+   * backwards.
+   */
+  private readonly PREPARING_RENDER_DELAY_MS = 250;
+
+  /** True once `preparing` has been the current phase for long enough to show. */
+  private readonly preparingSettled = signal(false);
+
   /** Clock for the stall thresholds; only ticks while a response is pending. */
   private readonly nowMs = signal(Date.now());
 
@@ -228,6 +250,29 @@ export class MessageListComponent {
         }
         const timer = setInterval(() => this.nowMs.set(Date.now()), this.STALL_TICK_MS);
         onCleanup(() => clearInterval(timer));
+      });
+
+      // Hold `preparing` back until it has lasted long enough to be worth
+      // reading. A one-shot timer rather than a poll: the phase either
+      // survives the delay or is replaced, and re-running on every tick would
+      // just be a slower way to ask the same question.
+      effect((onCleanup) => {
+        const sessionId = this.chatStateService.viewedSessionId();
+        const phase = sessionId
+          ? this.toolInsight.status(sessionId)?.phase
+          : undefined;
+
+        if (phase !== 'preparing') {
+          // Untracked: writing a signal this effect also reads would loop.
+          untracked(() => this.preparingSettled.set(false));
+          return;
+        }
+
+        const timer = setTimeout(
+          () => this.preparingSettled.set(true),
+          this.PREPARING_RENDER_DELAY_MS,
+        );
+        onCleanup(() => clearTimeout(timer));
       });
     }
   }
@@ -318,7 +363,9 @@ export class MessageListComponent {
     // slow (measured: 1478ms on a cold agent-cache miss, 0-38ms warm), so it
     // never flickers past on the common path.
     if (phase === 'preparing') {
-      return 'Getting ready';
+      // Not yet settled means the build is still plausibly a fast one, and a
+      // label that appears for 38ms is a flicker rather than a status.
+      return this.preparingSettled() ? 'Getting ready' : 'Thinking';
     }
 
     if (phase === 'thinking' && !this.hasStreamedText()) {
