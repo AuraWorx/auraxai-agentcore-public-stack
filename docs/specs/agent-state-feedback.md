@@ -1,6 +1,8 @@
 # Agent state feedback
 
-**Status:** PR-1 in progress. PR-2 and PR-3 designed, not started.
+**Status:** PR-1 SHIPPED (#1159, 2026-09-19). PR-2 in review. PR-3 designed, not started.
+**Not yet validated against a live backend** — every claim below about wall-clock
+timing is pinned by tests against fake streams, not by a turn on dev.
 **Follow-up to:** `d2ee13e2` (emit agent_status and tool-batch summaries), `9bc9bc6b` / `5f0cd52a` / `67234329` (loading-indicator series)
 **Related:** `docs/specs/mid-turn-steering.md` (the other consumer of the drain), CLAUDE.md § SSE Event Types → `agent_status`
 
@@ -68,7 +70,7 @@ Nothing in this spec reaches the model. No phase, label, or duration is appended
 to the conversation, so the cacheable prefix is untouched — the same standing
 this feature has had since `d2ee13e2`. PR-2 adds SSE frames but no model tokens.
 
-## PR-1 — "Thought for 17s"
+## PR-1 — "Thought for 17s" (SHIPPED, #1159)
 
 **Scope:** SPA only. No backend change, no dependency on the drain fix.
 
@@ -112,7 +114,7 @@ CLAUDE.md calls out for `tool_group_summary`.
 **Formatting.** `<1s`, `3s`, `17s`, `1m 12s`. Never rounds a sub-second block up
 to `1s`.
 
-## PR-2 — decouple the drain, then trust `agent_status`
+## PR-2 — decouple the drain, then trust `agent_status` (in review)
 
 **Backend.** `AgentStatusHook` pushes to an `asyncio.Queue` instead of a list,
 and the coordinator merges that queue with the agent stream rather than polling
@@ -136,6 +138,17 @@ count is known.
 **Keep the content-stream derivation as the fallback.** It is strictly more
 current when it fires, and it is the only source that works if a future SDK
 change starves the queue.
+
+**Found while building it.** The loader stays mounted for the WHOLE turn —
+`isChatLoading` clears at stream close, not at the first token — so a label
+keyed on the `thinking` phase would contradict text the user can already read.
+"Waiting for the model" is therefore gated on the answer still being silent,
+falling back to the previous wording once text arrives. The existing
+`loaderStatus` docstring asserts the loader "is gone anyway" at that point;
+that comment is wrong about the code and was deliberately left alone rather
+than widen this PR. Worth revisiting on its own: the right fix is probably that
+the loader should stop being mounted under a streaming answer at all, which is
+a change to when it renders, not to what it says.
 
 ## PR-3 — the phases ahead of the event loop
 
