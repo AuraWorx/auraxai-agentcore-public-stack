@@ -91,6 +91,14 @@ TOOL_CATALOG: Dict[str, ToolMetadata] = {
         icon="globe-alt",
     ),
 
+    "request_user_login": ToolMetadata(
+        tool_id="request_user_login",
+        name="Browser Sign-In",
+        description="Hand the browser to the user so they can sign in to a site the agent cannot reach, then continue browsing the authenticated session.",
+        category=ToolCategory.SEARCH,
+        icon="key",
+    ),
+
     # --- Built-in Tools (Code Interpreter) ---
     "generate_diagram_and_validate": ToolMetadata(
         tool_id="generate_diagram_and_validate",

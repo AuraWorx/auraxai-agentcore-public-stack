@@ -1,7 +1,13 @@
 # Response feedback
 
-**Status:** PROPOSED — no code. Written 2026-09-04 from the "how would we
-benefit?" conversation.
+**Status:** PARTIALLY BUILT — capture and the read model shipped in PR #1142
+(2026-09-16, as document-context-offload PR-7) and the consequence
+(retry-with-correction) in the PR stacked on it; §11 PR-1 is therefore
+complete, and §11 PR-2 (implicit signals) followed for copy and continue.
+Eval sampling (§11 PR-4) followed too, opt-in per environment, and §11 PR-3's
+config-dimension attribution now has a fleet page. The author surfaces are not
+built. See §13. Written 2026-09-04 from the "how would we benefit?"
+conversation.
 **Refs:** `docs/specs/agentcore-evaluations-spike-findings.md` (the eval
 harness this feeds), `docs/specs/mid-turn-steering.md` (the injection path
 Phase 1 reuses), `docs/specs/agent-marketplace.md` D15 (the *other* feedback
@@ -320,3 +326,117 @@ if PR-3 proves the signal is real.
    than copying whichever neighbour is read first. Agent Designer previews are
    exactly where an author would want to thumb their own work, but that data
    must never reach fleet aggregates.
+
+## 13. Built — PR #1142 (2026-09-16)
+
+Shipped as the outcome signal of `document-context-offload.md` §5 row 7, so
+it was built against that spec's content-free rule first and reconciled with
+this one after. What landed, and the decisions it took on this spec's open
+points:
+
+- **Storage exactly per §5**: `F#{session_id}#{message_id}` on
+  `sessions-metadata`, `GSI_SK F#{message_id}`, idempotent upsert, overwrite
+  in place, never on the message object (`apis/shared/sessions/feedback.py`).
+  Rows carry `signal: "explicit"` from day one so §10's implicit rows can
+  join the family without a backfill; every thumb reader filters on it, so
+  the two are never summed (§10's rule, enforced).
+- **Routes** `PUT`/`DELETE /sessions/{id}/messages/{message_id}/feedback` on
+  app-api (PUT rather than POST: the write is an upsert). Flag
+  `RESPONSE_FEEDBACK_ENABLED`, default on with a kill switch.
+- **Reason set = §6's six buckets as codes** (`wrong`, `instructions`,
+  `length`, `tool_failed`, `outdated`, `other`). **Free text is not stored,
+  and this is a decision, not an omission**: the row sits beside the `C#`
+  cost row and is read by the content-free admin profile, whose test walks
+  the projection against the denylist. "Something else → free text" is
+  served by the §3 hand-off to the Agent report dialog, which already has
+  moderation and a scope. Revisit only together with §8 rule 1.
+- **Read model**: the session profile (`GET /admin/costs/sessions/{id}/profile`)
+  joins thumbs to the call's document turn class with `n` per bucket
+  (§9's "every response carries its n"); `dataCoverage.feedback` says when
+  nothing is tracked. The other §7 attribution axes (model, compaction,
+  `agentSwitched`, skills) are further buckets in the same join loop.
+- **Open question 4 settled**: preview sessions echo the thumb and persist
+  nothing, matching the `D#` write. Preview data never reaches aggregates.
+- **Retry-with-correction (the consequence), second PR.** Open question 1
+  settled: **a new turn, not `/steer`** — the steer path targets a *running*
+  turn through the lease row, and a finished turn is corrected by an
+  ordinary next message. The down-thumb reason row offers *Retry with that
+  in mind*, which prefills the composer (`ComposerDraftService`) with a
+  correction template for the reason code; the user edits and sends it as a
+  normal message, so it goes where messages go (AgentCore Memory) and never
+  touches the metadata table. When that message is added, the send path
+  links it to the thumb as `retryMessageId` on the `F#` row — an index,
+  never the text — and a later re-thumb keeps the link. This is open
+  question 2's answer for now: the pair is *recorded* without its content,
+  so Phase 6 can find it once the consent decision is made. The profile
+  reports `feedback.retried` and `reworkUsd` (§7 "rework cost": the thumbed
+  call rows plus the retry turn's consecutive assistant rows).
+- **Implicit signals (§11 PR-2), third PR — copy and continue only.**
+  Same `F#` family under their own key, `F#{session}#{message}#{kind}`, so
+  they never collide with the thumb; `signal: "implicit"`, `kind`, and an
+  `ADD`ed `count`. `POST /sessions/{id}/messages/{message_id}/signals`,
+  fire-and-forget from the SPA (the Copy and Continue clicks in the actions
+  rail, once per message per kind per page load). The profile reports
+  `feedback.implicit` as *messages touched* per kind, on its own line — the
+  §10 rule that explicit and implicit are never summed is enforced in every
+  reader. Two of §10's four signals are deliberately not here:
+  **edit-and-resend** has no affordance in the SPA to hook, and
+  **abandonment** is deferred — a session that goes quiet after a good
+  answer is indistinguishable from one that goes quiet after a bad one, so
+  it needs its own design (or the §10 "dissatisfaction in the next message"
+  offline classifier) before it is worth a row.
+- **Eval sampling (§11 PR-4), fourth PR — opt-in.** Down-thumbs carry
+  `GSI1PK = FEEDBACK#down` / `GSI1SK = updatedAt` on the existing
+  `UserTimestampIndex`, so the fleet's recent down-thumbs are one query with
+  no new index. `POST /admin/feedback/evaluations/run` (scope `admin.costs`)
+  judges up to N not-yet-judged ones in a background task through
+  `bedrock_agentcore.evaluation.EvaluationClient` over the runtime log
+  group, keyed by the runtime session id the chat proxy already pins;
+  `GET /admin/feedback/evaluations` is the queue with verdicts. Routing is
+  §6's table: `wrong` → Correctness + Faithfulness, `instructions` →
+  InstructionFollowing, `length` → Conciseness, `other`/none → Helpfulness;
+  `tool_failed` gets **no judge** and is corroborated against the call's
+  tool census on the `C#` row (ops, not model); `outdated` gets no judge yet
+  (the KB-freshness join is a follow-up). The verdict stored on the `F#` row
+  is per-evaluator value / rating / n / tokens — **the judge's `explanation`
+  is dropped at summarisation, refused at the storage write, and denylisted
+  in the content policy**, because it quotes the conversation. The profile
+  shows `feedback.evaluations` (judged, mean per evaluator, tool failures
+  corroborated). **Default OFF** (`FEEDBACK_EVAL_SAMPLING_ENABLED`,
+  `CDK_FEEDBACK_EVAL_SAMPLING_ENABLED=true` to enable): the managed judge
+  reads the sampled conversation's spans, which is the scoping decision the
+  evaluations spike (§2) says to make explicitly per environment, and §8
+  rule 1 here. The IAM grant (Logs Insights on the runtime log group and
+  `aws/spans`; Evaluate / GetEvaluator) is wired but inert until an
+  environment opts in. Runs are admin-triggered; a schedule can follow once
+  a week of verdicts says the token spend is worth it.
+- **Fleet attribution (§11 PR-3, §7 "config-dimension attribution"), fifth
+  PR.** `GET /admin/feedback/fleet?days=` aggregates a trailing window of
+  thumbs into arms on four dimensions: **model**, **agent switch**,
+  **distance from a compaction cut** (the compaction spec's §7.2 question,
+  bucketed in model calls: never / same call / 1-3 / 4+), and **document
+  turn class**. The window is a range read on the `FEEDBACK#down` /
+  `FEEDBACK#up` partitions, then one cost-row query per session to join;
+  both are capped (2,000 thumbs, 300 sessions) and exceeding either is
+  reported as `coverage.truncated` / `sessionsOmitted` rather than silently
+  under-counted. `/admin/feedback` renders it, under the `admin.costs` scope.
+  §9 is enforced rather than promised: **every arm carries its own `n`**, an
+  arm under the floor returns `downRate: null` so there is no number to
+  quote, and **no fleet-wide rate field exists** at any level — the page
+  states the gap between the two furthest-apart reportable arms instead of a
+  score. Open question 3 is answered: the floor is **20**, picked because
+  below it one extra thumb swings the rate by more than five points; it is
+  env-tunable with `FEEDBACK_ARM_MINIMUM_N`.
+  Two deviations from §11 PR-3 as written. It is **a page of its own, not a
+  panel beside the cost panels** — the cost drill-down is per conversation
+  and this question is fleet-shaped, so co-locating them would have meant a
+  panel that ignored the session in whose page it sat. And the **skills axis
+  is not built**: `enabledTools` lives on the session row, not the `C#` row,
+  so a per-call skills arm needs either a denormalisation at write time or a
+  second join, and neither is worth doing before the signal is proven.
+- **Not built**: author/marketplace surfaces (PR-5), the report-dialog
+  escape hatch in the reason row, abandonment, the `outdated` → KB-freshness
+  join, a schedule for the sampler, the skills arm, and implicit signals in
+  the fleet view (their rows carry no `GSI1*` keys, so they are invisible to
+  the window query by construction — wiring them in is a follow-up to PR-2).
+

@@ -438,6 +438,26 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
         "forwardAuthToken": False,
     },
     {
+        "toolId": "request_user_login",
+        "displayName": "Browser Sign-In",
+        "description": (
+            "Hand the browser to the user so they can sign in to a site the "
+            "agent cannot reach, then continue browsing the authenticated "
+            "session."
+        ),
+        "category": "browser",
+        # Deliberately off by default, and the most restrictive default in this
+        # file. While a takeover is live the user has a fully interactive
+        # Chromium running inside our AWS account with our egress — that is a
+        # capability to grant to named staff/evaluator roles, never a default.
+        # RBAC granularity is one tool_id, which is exactly why this is its own
+        # entry rather than an action on browse_web.
+        "enabledByDefault": False,
+        "protocol": "local",
+        "isPublic": False,
+        "forwardAuthToken": False,
+    },
+    {
         "toolId": "generate_diagram_and_validate",
         "displayName": "Code Interpreter",
         "description": "Generate diagrams, charts, and visualizations using Python code in a sandboxed environment.",
@@ -489,6 +509,44 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
         "category": "document",
         "protocol": "local",
         "enabledByDefault": False,
+        "isPublic": True,
+        "forwardAuthToken": False,
+    },
+    {
+        # Spreadsheet ANALYSIS (read an uploaded .xlsx/.csv and answer questions
+        # about it via Code Interpreter) — distinct from the spreadsheet
+        # *authoring* tool below. Both ids are context-bound: enabling them
+        # injects the tools at runtime, see SPREADSHEET_TOOL_IDS and
+        # _build_spreadsheet_tools in apis/inference_api/chat/routes.py.
+        #
+        # These two rows were missing from this file until 1.23.0 while the
+        # Python TOOL_CATALOG carried them, so a freshly bootstrapped
+        # deployment got no catalog row and the tools could not be granted to
+        # any role — the live environments only have them because the rows
+        # were created by hand. test_seed_matches_tool_catalog now pins the
+        # two lists together so they cannot drift again.
+        #
+        # enabledByDefault mirrors the live deployments (True). Safe against
+        # the injected-tool cost trap because SPREADSHEET_TOOL_IDS is in
+        # KEY_DESCRIBED_INJECTED_TOOL_IDS: the factory closes over
+        # (session_id, user_id, assistant_id), all cache-key elements, so a
+        # default-on injected tool does NOT bypass the agent cache here.
+        "toolId": "list_spreadsheets",
+        "displayName": "List Spreadsheet Files",
+        "description": "List spreadsheet files available for analysis from the assistant's knowledge base or conversation attachments.",
+        "category": "data",
+        "protocol": "local",
+        "enabledByDefault": True,
+        "isPublic": True,
+        "forwardAuthToken": False,
+    },
+    {
+        "toolId": "analyze_spreadsheet",
+        "displayName": "Analyze Spreadsheet",
+        "description": "Analyze spreadsheet data with Python in a sandboxed Code Interpreter session: filter, aggregate, compute statistics and answer questions about the contents.",
+        "category": "data",
+        "protocol": "local",
+        "enabledByDefault": True,
         "isPublic": True,
         "forwardAuthToken": False,
     },

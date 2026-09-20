@@ -49,6 +49,12 @@ export interface AppApiIamGrantsProps {
    */
   agentCoreMemoryArn: string;
   /**
+   * AgentCore Runtime CloudWatch log group name. Feedback eval sampling runs
+   * Logs Insights queries against it (and `aws/spans`) to collect a
+   * conversation's spans for AgentCore Evaluations.
+   */
+  agentCoreRuntimeLogGroupName: string;
+  /**
    * SageMaker fine-tuning execution role ARN. Created by a sibling
    * construct in wireCompute() — passed in here.
    */
@@ -127,6 +133,21 @@ export function grantAppApiPermissions(props: AppApiIamGrantsProps): void {
         'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan',
       ],
       resources: [props.refs.systemPromptsTable.tableArn, `${props.refs.systemPromptsTable.tableArn}/index/*`],
+    }),
+  );
+
+  // ── Agent templates (create-agent picker catalog) ──
+  // Admin-managed CRUD; per-user reads (the enabled catalog) go through the
+  // user-facing `/templates` endpoint, which uses the same table.
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'AgentTemplatesTableAccess',
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem',
+        'dynamodb:DeleteItem', 'dynamodb:Query', 'dynamodb:Scan',
+      ],
+      resources: [props.refs.agentTemplatesTable.tableArn, `${props.refs.agentTemplatesTable.tableArn}/index/*`],
     }),
   );
 
@@ -286,6 +307,63 @@ export function grantAppApiPermissions(props: AppApiIamGrantsProps): void {
       effect: iam.Effect.ALLOW,
       actions: ['kms:Decrypt'],
       resources: [props.refs.bffCookieSigningKey.keyArn],
+    }),
+  );
+
+  // ── AgentCore Browser: Live View only ──
+  // app-api mints the short-lived Live View URL for a browser takeover
+  // (docs/specs/authenticated-web-assessment.md D2). The URL is SigV4
+  // query-signed and lives at most 300 seconds, so it cannot be minted once
+  // by the agent and reused — app-api signs a fresh one per request, which
+  // is why these actions are needed here and not only on the Runtime role.
+  //
+  // Deliberately NARROWER than the Runtime's BrowserAccess statement: no
+  // Start/Stop, no ConnectBrowserAutomationStream. app-api never drives the
+  // browser and must not be able to — the agent owns the session lifecycle.
+  // UpdateBrowserStream is included because releasing a takeover from the
+  // API side is the next thing this route will need (an explicit "give the
+  // browser back" control), and GetBrowserSession so an ended session can be
+  // reported as such rather than surfacing a signing failure.
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'BrowserLiveViewAccess',
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock-agentcore:UpdateBrowserStream',
+        'bedrock-agentcore:GetBrowserSession',
+      ],
+      resources: [props.refs.agentCoreBrowserArn],
+    }),
+  );
+
+  // ⚠️ `ConnectBrowserLiveViewStream` MUST be granted on `*`. AWS's own
+  // service reference lists NO resource types for it, while the two actions
+  // above list `browser` / `browser-custom`:
+  //
+  //   GetBrowserSession            -> ['browser', 'browser-custom']
+  //   UpdateBrowserStream          -> ['browser', 'browser-custom']
+  //   ConnectBrowserLiveViewStream -> []          <- no resource types
+  //
+  // An action with no resource types NEVER matches a resource-scoped
+  // statement, so scoping it alongside the others was an implicit deny. It
+  // failed silently and late: `generate_live_view_url` only signs locally and
+  // makes no API call, so a URL was minted happily and the browser's
+  // WebSocket was closed by the service — surfacing as DCV auth code 10
+  // ("Failed to communicate with server"), which reads like a service fault
+  // rather than a missing permission. Verified with
+  // `iam simulate-principal-policy`: allowed for the two above and
+  // implicitDeny for this one, from the SAME statement on the SAME ARN.
+  //
+  // `*` is as narrow as this action can be expressed; there is no
+  // browser-scoped form to fall back to. It is bounded by what the action
+  // itself permits — attaching to a live view stream — and app-api still
+  // cannot start, stop, or drive a browser.
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'BrowserLiveViewConnect',
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock-agentcore:ConnectBrowserLiveViewStream'],
+      resources: ['*'],
     }),
   );
 
@@ -505,6 +583,44 @@ export function grantAppApiPermissions(props: AppApiIamGrantsProps): void {
         'bedrock-agentcore:DeleteMemoryRecord',
       ],
       resources: [memoryArn],
+    }),
+  );
+
+  // ── AgentCore Evaluations (feedback eval sampling, spec §11 PR-4) ──
+  // The admin batch judges down-thumbed conversations with the built-in
+  // evaluators. Two halves: the SDK's span collector runs Logs Insights
+  // queries over the runtime log group and `aws/spans` (StartQuery is
+  // resource-scoped; GetQueryResults/StopQuery are not), then calls the
+  // data-plane Evaluate with the spans and the control-plane GetEvaluator
+  // to learn each evaluator's level. Built-in evaluators are AWS-owned, so
+  // the bedrock-agentcore actions cannot be resource-scoped. The flag
+  // (FEEDBACK_EVAL_SAMPLING_ENABLED) defaults OFF; the grant is inert until
+  // an environment opts in.
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'FeedbackEvalSpanQueries',
+      effect: iam.Effect.ALLOW,
+      actions: ['logs:StartQuery'],
+      resources: [
+        `arn:aws:logs:${config.awsRegion}:${config.awsAccount}:log-group:${props.agentCoreRuntimeLogGroupName}:*`,
+        `arn:aws:logs:${config.awsRegion}:${config.awsAccount}:log-group:aws/spans:*`,
+      ],
+    }),
+  );
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'FeedbackEvalSpanQueryResults',
+      effect: iam.Effect.ALLOW,
+      actions: ['logs:GetQueryResults', 'logs:StopQuery'],
+      resources: ['*'],
+    }),
+  );
+  taskRole.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      sid: 'FeedbackEvalEvaluate',
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock-agentcore:Evaluate', 'bedrock-agentcore:GetEvaluator', 'bedrock-agentcore:ListEvaluators'],
+      resources: ['*'],
     }),
   );
 

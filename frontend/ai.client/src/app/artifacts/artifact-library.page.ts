@@ -11,6 +11,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { firstValueFrom } from 'rxjs';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import {
+  heroArrowUpOnSquare,
   heroBars3,
   heroChatBubbleLeftRight,
   heroChevronDown,
@@ -50,6 +51,11 @@ import {
   type RenameArtifactDialogData,
   type RenameArtifactDialogResult,
 } from './components/rename-artifact-dialog.component';
+import {
+  ArtifactShareModalComponent,
+  type ArtifactShareModalData,
+} from '../session/components/message-list/components/artifact/artifact-share-modal.component';
+import { UserService } from '../auth/user.service';
 
 /**
  * Presentation for one artifact content type.
@@ -72,37 +78,37 @@ const TYPE_STYLES: Record<string, TypeStyle> = {
     label: 'Markdown',
     icon: 'heroDocumentText',
     bg: 'bg-filetype-markdown-100 dark:bg-filetype-markdown-900/60',
-    text: 'text-filetype-markdown-600 dark:text-filetype-markdown-300',
+    text: 'text-filetype-markdown-700 dark:text-filetype-markdown-300',
   },
   'text/x-markdown': {
     label: 'Markdown',
     icon: 'heroDocumentText',
     bg: 'bg-filetype-markdown-100 dark:bg-filetype-markdown-900/60',
-    text: 'text-filetype-markdown-600 dark:text-filetype-markdown-300',
+    text: 'text-filetype-markdown-700 dark:text-filetype-markdown-300',
   },
   'text/html': {
     label: 'Web page',
     icon: 'heroCodeBracket',
     bg: 'bg-filetype-code-100 dark:bg-filetype-code-900/60',
-    text: 'text-filetype-code-600 dark:text-filetype-code-300',
+    text: 'text-filetype-code-700 dark:text-filetype-code-300',
   },
   'application/xhtml+xml': {
     label: 'Web page',
     icon: 'heroCodeBracket',
     bg: 'bg-filetype-code-100 dark:bg-filetype-code-900/60',
-    text: 'text-filetype-code-600 dark:text-filetype-code-300',
+    text: 'text-filetype-code-700 dark:text-filetype-code-300',
   },
   'text/csv': {
     label: 'CSV',
     icon: 'heroTableCells',
     bg: 'bg-filetype-sheet-100 dark:bg-filetype-sheet-900/60',
-    text: 'text-filetype-sheet-600 dark:text-filetype-sheet-300',
+    text: 'text-filetype-sheet-700 dark:text-filetype-sheet-300',
   },
   'image/svg+xml': {
     label: 'SVG',
     icon: 'heroPhoto',
     bg: 'bg-filetype-image-100 dark:bg-filetype-image-900/60',
-    text: 'text-filetype-image-600 dark:text-filetype-image-300',
+    text: 'text-filetype-image-700 dark:text-filetype-image-300',
   },
 };
 
@@ -185,7 +191,8 @@ interface LibraryRow {
   changeDetection: ChangeDetectionStrategy.OnPush,
   viewProviders: [
     provideIcons({
-          heroBars3,
+      heroArrowUpOnSquare,
+      heroBars3,
       heroChatBubbleLeftRight,
       heroChevronDown,
       heroCodeBracket,
@@ -208,6 +215,7 @@ export class ArtifactLibraryPage {
   private readonly toast = inject(ToastService);
   private readonly router = inject(Router);
   private readonly dialog = inject(Dialog);
+  private readonly userService = inject(UserService);
 
   protected readonly items = signal<LibraryArtifact[]>([]);
 
@@ -549,6 +557,36 @@ export class ArtifactLibraryPage {
    */
   protected open(row: LibraryRow): void {
     void this.router.navigate([...row.route]);
+  }
+
+  /**
+   * Share an artifact from the library.
+   *
+   * The same dialog the in-conversation card opens — create and revoke
+   * both live in it — so there is exactly one place in the app that
+   * knows what an artifact share is.
+   *
+   * ⚠️ **It pins `item.version`, which here is always HEAD.** The library
+   * lists one row per artifact, not per version, so this shares the
+   * latest version and a later version of the same artifact will not
+   * follow the link. That is the share contract, not a shortcut: shares
+   * are immutable by design, and the dialog captions the version it is
+   * about to pin so the difference is visible before anything is
+   * created.
+   *
+   * Only offered on owned rows. A received artifact has no artifact id
+   * to share — the share id is the only handle you have on it — and
+   * re-sharing someone else's grant is not a thing this model supports.
+   */
+  protected share(item: LibraryArtifact): void {
+    this.dialog.open(ArtifactShareModalComponent, {
+      data: {
+        artifactId: item.artifactId,
+        version: item.version,
+        title: item.title,
+        ownerEmail: this.userService.currentUser()?.email ?? '',
+      } as ArtifactShareModalData,
+    });
   }
 
   /**

@@ -52,12 +52,14 @@ export interface AppConfig {
   managedKb: ManagedKbConfig;
   scheduledRuns: ScheduledRunsConfig;
   memorySpaces: MemorySpacesConfig;
+  feedbackEvalSampling: FeedbackEvalSamplingConfig;
   skills: SkillsConfig;
   agents: AgentsConfig;
   agentMarketplace: AgentMarketplaceConfig;
   fineTuning: FineTuningConfig;
   artifacts: ArtifactsConfig;
   mcpSandbox: McpSandboxConfig;
+  browser: BrowserConfig;
   mcpIdentity: McpIdentityConfig;
   gateway: GatewayConfig;
   /**
@@ -91,6 +93,31 @@ export interface McpSandboxConfig {
   // iframe via CSP frame-ancestors — e.g. http://localhost:4200 for a local
   // SPA pointed at this deployment. Empty on prod.
   extraFrameAncestors: string[];
+}
+
+/**
+ * AgentCore Browser policy (docs/specs/authenticated-web-assessment.md D6).
+ */
+export interface BrowserConfig {
+  /**
+   * Hosts the browser must refuse to navigate to, as Chromium
+   * `URLBlocklist` entries.
+   *
+   * This is a **security control**, not a preference. A browser takeover hands
+   * a human a fully interactive Chromium, so the only thing that stops them
+   * navigating to the LMS and having an agent act as them is Chromium itself
+   * refusing — no check in our own code can, because it only ever sees the
+   * page the takeover started on.
+   *
+   * A blocklist rather than an allowlist because the list has to be
+   * maintainable: an allowlist of vendors under assessment would churn with
+   * every VPAT review, while institutional systems change about yearly.
+   *
+   * Lives here rather than as an S3 object edited in place, so a change to it
+   * is a reviewed deploy. Match the origin actually navigated to — a vanity
+   * CNAME that redirects is not what Chromium sees.
+   */
+  urlBlocklist: string[];
 }
 
 export interface ArtifactsConfig {
@@ -271,6 +298,16 @@ export interface ScheduledRunsConfig {
  * are provisioned unconditionally, so this only gates route mounting at runtime.
  */
 export interface MemorySpacesConfig {
+  enabled: boolean;
+}
+
+/**
+ * Feedback eval sampling (response-feedback spec §11 PR-4): lets an admin
+ * send down-thumbed conversations to AgentCore Evaluations. **Opt-in** —
+ * the managed evaluator reads the conversation's spans (system prompt and
+ * user messages), so each environment turns it on deliberately.
+ */
+export interface FeedbackEvalSamplingConfig {
   enabled: boolean;
 }
 
@@ -872,6 +909,17 @@ export function loadConfig(scope: cdk.App): AppConfig {
         ? process.env.CDK_SCHEDULED_RUNS_ENABLED !== 'false'
         : scope.node.tryGetContext('scheduledRuns')?.enabled ?? true,
     },
+    feedbackEvalSampling: {
+      // Default OFF, opt-in (the `fineTuning`-style deferred pattern inverted):
+      // only the literal "true" enables. Sending real conversations to an
+      // AWS-managed judge is the scoping decision the evaluations spike says to
+      // make explicitly per environment — a workflow's empty/unset variable must
+      // never make it. A `feedbackEvalSampling.enabled: true` cdk.json context
+      // also enables it.
+      enabled: process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED
+        ? process.env.CDK_FEEDBACK_EVAL_SAMPLING_ENABLED === 'true'
+        : scope.node.tryGetContext('feedbackEvalSampling')?.enabled ?? false,
+    },
     memorySpaces: {
       // Default ON with a kill switch: Memory Spaces is a complete feature and
       // ships enabled for every deployer (opt-out, not opt-in — matches kbSync /
@@ -950,6 +998,44 @@ export function loadConfig(scope: cdk.App): AppConfig {
       shareInboxEnabled: process.env.CDK_ARTIFACT_SHARE_INBOX_ENABLED
         ? process.env.CDK_ARTIFACT_SHARE_INBOX_ENABLED !== 'false'
         : scope.node.tryGetContext('artifacts')?.shareInboxEnabled ?? true,
+    },
+    browser: {
+      // Hostnames Chromium refuses to navigate to during a browser session.
+      // This is a security control: it is what stops a human in a browser
+      // takeover navigating to a system the agent must not act inside.
+      //
+      // **Deliberately empty by default.** The contents are a per-deployment
+      // policy decision, not a property of this stack — the hosts that matter
+      // to one institution mean nothing to another — so this follows the
+      // `domainName` / `corsOrigins` convention: fork-neutral in the repo,
+      // supplied per environment by the `CDK_BROWSER_URL_BLOCKLIST` GitHub
+      // Actions variable that `platform.yml` forwards. Deployments that
+      // carried the old hardcoded seed MUST set that variable; a deploy whose
+      // list comes out empty while the browser tool is grantable says so in
+      // the deploy log (see the warning below).
+      //
+      // Comma-separated in the env var. Empty/unset falls through to context
+      // and then to `[]` — the house empty-string rule, because an unset
+      // GitHub Actions variable arrives as '' and must not be distinguishable
+      // from "not configured". "Block nothing" is the default, so opting out
+      // needs no sentinel; note it leaves the RBAC grant as the only control
+      // (spec Security 3).
+      //
+      // ⚠️ Chromium's URLBlocklist matches on HOST, not on the service behind
+      // it, so a site is only as blocked as its hostname list is complete.
+      // When adding an entry, enumerate the service's aliases first — vendor
+      // host, vanity CNAME, regional and mobile hostnames — and prefer the
+      // registrable domain (`instructure.com`) over one instance, so `.test.`
+      // and `.beta.` variants are covered rather than left as side doors.
+      //
+      // ⚠️ Blocking a vendor's *sign-in* host is usually wrong: an
+      // institutional login page is exactly what an accessibility or VPAT
+      // review needs to reach, which is the use case this feature exists for.
+      // Block where it LEADS, not the doorway.
+      urlBlocklist:
+        parseListEnv(process.env.CDK_BROWSER_URL_BLOCKLIST)
+        ?? scope.node.tryGetContext('browser')?.urlBlocklist
+        ?? [],
     },
     mcpSandbox: {
       certificateArn: process.env.CDK_MCP_SANDBOX_CERTIFICATE_ARN || scope.node.tryGetContext('mcpSandbox')?.certificateArn,
@@ -1162,10 +1248,49 @@ export function loadConfig(scope: cdk.App): AppConfig {
     + ` agentCoreAppLogs=${config.observability.agentCoreApplicationLogsEnabled}`
   );
 
+  // Printed because this list is a security control supplied entirely from
+  // outside the repo: a deploy that ships an empty one has to say so, or a
+  // forgotten `CDK_BROWSER_URL_BLOCKLIST` variable is indistinguishable in
+  // the log from a deliberate "block nothing".
+  if (config.browser.urlBlocklist.length > 0) {
+    console.log(
+      `   Browser URL blocklist (${config.browser.urlBlocklist.length}): `
+      + config.browser.urlBlocklist.join(', ')
+    );
+  } else {
+    console.warn(
+      '   ⚠️  Browser URL blocklist is EMPTY — browser sessions can reach any'
+      + ' host. Set the CDK_BROWSER_URL_BLOCKLIST variable if this environment'
+      + ' is meant to block one. RBAC on browse_web / request_user_login is'
+      + ' then the only control.'
+    );
+  }
+
   // Validate configuration
   validateConfig(config);
 
   return config;
+}
+
+/**
+ * Parse a comma-separated list environment variable.
+ *
+ * Returns undefined for a missing OR empty value so that nullish coalescing
+ * (??) falls through to context defaults — the house empty-string rule. An
+ * unset GitHub Actions variable is forwarded as '', and treating that as an
+ * explicit "empty list" would let a forgotten variable silently override a
+ * configured default.
+ *
+ * @param value The environment variable value to parse
+ * @returns Trimmed, non-empty entries, or undefined if unset/empty
+ */
+export function parseListEnv(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
+
+  const entries = value.split(',').map((s) => s.trim()).filter(Boolean);
+  return entries.length > 0 ? entries : undefined;
 }
 
 /**
@@ -1451,11 +1576,25 @@ function validateConfig(config: AppConfig): void {
     });
   }
 
-  // Validate top-level CORS origins.
-  if (!config.corsOrigins) {
-    console.warn(
-      'Warning: no CORS origins configured. ' +
-      'Set CDK_DOMAIN_NAME or CDK_CORS_ORIGINS to enable browser uploads.'
+  // Validate top-level CORS origins. Without at least one origin the uploads
+  // bucket (`FileUploadConstruct`) is created with NO CORS rule, and every
+  // browser upload fails at S3 with no server-side signal. A production-mirror
+  // load test shipped exactly that (docs/specs/load-test-assessment-2026-09.md
+  // §1 fix 4) because this used to be a console.warn lost in synth output.
+  // Fail synth instead; a deployment that genuinely has no browser front-end
+  // opts out explicitly.
+  //
+  // Gate on `buildCorsOrigins` -- the same filtered list FileUploadConstruct
+  // consumes -- not on the raw string. A value that is truthy but filters to
+  // nothing (`","` from a templated list's trailing comma, `" "` from a YAML
+  // value that quotes to a space, `"${UNSET_VAR},"` in CI) would otherwise
+  // pass the guard and still produce a bucket with no CORS rule. Pass no
+  // `additionalOrigins` here, for the same reason: the construct does not.
+  if (buildCorsOrigins(config).length === 0 && parseBooleanEnv(process.env.CDK_ALLOW_NO_CORS_ORIGINS) !== true) {
+    throw new Error(
+      'No CORS origins configured: the uploads bucket would be created without a CORS rule ' +
+      'and every browser upload would fail. Set CDK_DOMAIN_NAME (or CDK_CORS_ORIGINS), ' +
+      'or set CDK_ALLOW_NO_CORS_ORIGINS=true for a deployment with no browser front-end.'
     );
   }
 

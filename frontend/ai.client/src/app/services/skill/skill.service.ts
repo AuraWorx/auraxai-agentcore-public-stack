@@ -45,8 +45,9 @@ export interface SkillsResponse {
  *
  * Unlike ToolService this does NOT load in its constructor. Skills are opt-in
  * and the feature is off in every deployed env until PR-5, so the load is
- * deferred to the first open of the model-settings panel (and to an
- * Agent-bound conversation, which needs the names to render locked rows).
+ * deferred to the first open of a Customize → Skills page or the composer's
+ * skill-command menu (and to an Agent-bound conversation, which needs the
+ * names to render locked rows).
  */
 @Injectable({
   providedIn: 'root'
@@ -62,6 +63,16 @@ export class SkillService {
   private _loading = signal(false);
   private _error = signal<string | null>(null);
   private _initialized = signal(false);
+
+  /**
+   * The load currently in flight, so a second caller *joins* it instead of
+   * being told "already loading" and continuing with an empty list. The old
+   * `if (this._loading()) return;` guard deduped the request but resolved
+   * immediately, which is exactly what let a chat turn sent moments after page
+   * load disclose no skills while the next turn disclosed three — a rewritten
+   * system prompt on turn 2, paid at the cache-write premium.
+   */
+  private _inflight: Promise<void> | null = null;
 
   // Agent Designer: when the active conversation is bound to an Agent that binds
   // skills, the picker is locked to exactly that set — the backend governs skills
@@ -144,8 +155,20 @@ export class SkillService {
    * call again after login or role changes.
    */
   async loadSkills(): Promise<void> {
-    if (this._loading()) return;
+    // Join an in-flight load rather than returning early: callers await this to
+    // know the list is settled.
+    if (this._inflight) return this._inflight;
 
+    const inflight = this.fetchSkills();
+    this._inflight = inflight;
+    try {
+      await inflight;
+    } finally {
+      this._inflight = null;
+    }
+  }
+
+  private async fetchSkills(): Promise<void> {
     this._loading.set(true);
     this._error.set(null);
 
@@ -227,6 +250,24 @@ export class SkillService {
   /** Get the list of enabled skill IDs (for non-signal contexts). */
   getEnabledSkillIds(): string[] {
     return this.enabledSkillIds();
+  }
+
+  /**
+   * Resolve once the skill list has settled, starting the load if nothing has.
+   *
+   * The chat send path awaits this so a turn sent before the (lazily triggered)
+   * `/skills/` fetch returns still discloses the same skills a later turn
+   * would. Identical disclosure on turn 1 and turn 2 is what keeps the
+   * cacheable system-prompt prefix stable across a session.
+   *
+   * Never rejects: a failed load leaves the picker empty, which is the state
+   * the send path already tolerates. It is a no-op once loaded, and joins the
+   * in-flight request when one is already running, so awaiting it on every turn
+   * costs nothing after the first.
+   */
+  async ensureLoaded(): Promise<void> {
+    if (this._initialized()) return;
+    await this.loadSkills().catch(() => undefined);
   }
 
   /** Reload skills from the server. */

@@ -14,6 +14,7 @@ from agents.main_agent.core import ModelConfig, SystemPromptBuilder, AgentFactor
 from agents.main_agent.session import SessionFactory
 from agents.main_agent.session.hooks import (
     AgentStatusHook,
+    ContextLedgerHook,
     ToolCensusHook,
     DisplayTextHook,
     SteeringHook,
@@ -31,6 +32,8 @@ from agents.main_agent.tools import (
 from agents.main_agent.multimodal import PromptBuilder
 from agents.main_agent.streaming import StreamCoordinator
 from apis.shared.tools.scoped_ids import base_tool_id
+
+from apis.shared.observability.build_stages import mark_stage
 
 logger = logging.getLogger(__name__)
 
@@ -159,12 +162,17 @@ class BaseAgent(ABC):
         # prior turns; only the system-prompt date line shifts.
         self._construction_snapshot["system_prompt"] = system_prompt
 
+        # Sub-stages of `agent_build` (docs/specs/turn-latency-preamble.md).
+        # A no-op unless the inference-api turn path installed a recorder.
+        mark_stage("prompt")
+
         # Initialize tool registry and filter
         self.tool_registry = create_default_registry()
         self.tool_filter = ToolFilter(self.tool_registry)
 
         # Register external MCP tool IDs from enabled tools
         self._register_external_mcp_tools()
+        mark_stage("registry")
 
         # Initialize gateway integration
         self.gateway_integration = GatewayIntegration()
@@ -176,12 +184,16 @@ class BaseAgent(ABC):
         self.session_manager = SessionFactory.create_session_manager(
             session_id=session_id, user_id=self.user_id, caching_enabled=self.model_config.caching_enabled
         )
+        # Conversation restore from AgentCore Memory happens in here, so this
+        # is a prime suspect for the cold build and has never been timed.
+        mark_stage("session_mgr")
 
         # Initialize streaming coordinator
         self.stream_coordinator = StreamCoordinator()
 
         # Create the agent (subclass-specific)
         self._create_agent()
+        mark_stage("finalize")
 
     @abstractmethod
     def _create_agent(self) -> None:
@@ -329,8 +341,10 @@ class BaseAgent(ABC):
         # Per-turn context-token attribution (system / tools / messages).
         # Best-effort; computes the breakdown on BeforeModelCallEvent and
         # stashes it on the agent for the stream coordinator to surface on the
-        # final metadata SSE event.
-        hooks.append(ContextAttributionHook())
+        # final metadata SSE event. The session id keys a process-level memo
+        # of the stable split, so an Agent rebuilt for this session (cache
+        # bypass, @-mention, memory binding) adopts it instead of re-counting.
+        hooks.append(ContextAttributionHook(session_id=self.session_id))
 
         # Live narration of what the agent is doing (model call / tool call
         # boundaries) plus Strands-measured per-tool durations. Held on the
@@ -349,6 +363,13 @@ class BaseAgent(ABC):
         # COST_DIAGNOSTICS_ENABLED=false.
         self.tool_census_hook = ToolCensusHook()
         hooks.append(self.tool_census_hook)
+
+        # Per-model-call context ledger: the conversation window's cumulative
+        # trim count and the compaction decisions taken since the previous
+        # call. Same shape and lifecycle as the census — read per call at
+        # turn end, persisted on the cost row, off with the same kill switch.
+        self.context_ledger_hook = ContextLedgerHook()
+        hooks.append(self.context_ledger_hook)
 
         # Per-model-call prompt-cache prefix fingerprints (toolConfig /
         # system prompt / history hashes). Best-effort; the stream

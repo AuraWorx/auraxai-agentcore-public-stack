@@ -238,3 +238,54 @@ def admin_client(make_user):
         return TestClient(app)
 
     return _admin_client
+
+
+@pytest.fixture(autouse=True)
+def _no_live_infrastructure_reads(monkeypatch):
+    """Stub the infrastructure lookups the route paths make behind whatever the
+    test itself mocked.
+
+    Every one of these is fail-open — the route keeps serving if the table is
+    unreachable — so a live DynamoDB call from a unit test was swallowed and the
+    assertion passed anyway. They are stubbed to benign defaults here rather than
+    per file because the same handful recur across the whole directory. A test
+    that cares about one of them patches it itself, and that patch wins (it is
+    applied inside this one).
+
+    See the off-box socket guard in ``tests/conftest.py``.
+    """
+    from unittest.mock import AsyncMock as _AsyncMock, patch as _patch
+
+    stubs = [
+        # Inference invocation path.
+        ("apis.inference_api.chat.system_prompt_resolver.get_session_metadata", None),
+        ("apis.shared.files.document_read.session_has_documents", False),
+        ("apis.shared.files.document_read.session_has_tabular_files", False),
+        # Converse path: model routing, the rate-limit window, and the quota
+        # override lookup. The 429 test drives quota through `get_quota_checker`,
+        # which is a different seam, so stubbing these does not weaken it.
+        ("apis.shared.models.managed_models.list_managed_models", []),
+        ("apis.shared.rate_limit.RateLimiter.check_rate_limit", True),
+        ("agents.main_agent.quota.repository.QuotaRepository.get_active_override", None),
+        ("agents.main_agent.quota.repository.QuotaRepository.query_user_assignment", None),
+        ("agents.main_agent.quota.repository.QuotaRepository.query_role_assignments", []),
+        ("agents.main_agent.quota.repository.QuotaRepository.list_assignments_by_type", []),
+        # RBAC role resolution. Tests that care about authorization override the
+        # auth dependency itself, which never reaches this.
+        ("apis.shared.rbac.repository.AppRoleRepository.get_roles_for_jwt_role", []),
+        ("apis.shared.rbac.repository.AppRoleRepository.get_role", None),
+        # Agent-detail label resolution.
+        ("apis.shared.memory.repository.MemorySpaceRepository.get_space", None),
+        # Session delete cascades into artifact share cleanup. Whether it fires
+        # depends on whether an earlier test left artifacts "configured", which
+        # is why these passed alone and only failed in full-suite order.
+        ("apis.app_api.artifacts.service.ArtifactShareService.delete_for_session", 0),
+    ]
+    patchers = [_patch(target, new=_AsyncMock(return_value=value)) for target, value in stubs]
+    for patcher in patchers:
+        patcher.start()
+    try:
+        yield
+    finally:
+        for patcher in reversed(patchers):
+            patcher.stop()

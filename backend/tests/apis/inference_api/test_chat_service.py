@@ -548,3 +548,103 @@ class TestInjectedToolCacheEligibility:
             )
 
         assert mentioned.agent.messages, "the second live Agent forked the conversation"
+
+
+def test_adopting_the_conversation_also_adopts_the_compaction_offset(monkeypatch):
+    """The live list's coordinate system travels with it (thresholds spec §3.5).
+
+    Compaction expresses its checkpoint as ``_live_offset + index into the
+    list`` and the pending-cut apply slices the list in place at that offset,
+    so an instance that adopts another instance's list must adopt its offset.
+    """
+    live_inner = SimpleNamespace(messages=[{"role": "user", "t": 1}, {"role": "assistant", "t": 2}])
+    live_wrapper = SimpleNamespace(agent=live_inner, session_manager=SimpleNamespace(_live_offset=7))
+    monkeypatch.setattr(service, "_agent_cache", {("s", "key-a"): live_wrapper})
+
+    fresh_inner = SimpleNamespace(messages=[{"role": "user", "t": 1}])
+    fresh = SimpleNamespace(agent=fresh_inner, session_manager=SimpleNamespace(_live_offset=0))
+
+    service._adopt_session_conversation(fresh, "s")
+
+    assert fresh.agent.messages is live_inner.messages
+    assert fresh.session_manager._live_offset == 7
+
+
+def test_create_cache_key_includes_assistant_id():
+    """Spreadsheet-analysis tools close over the assistant, so two assistants
+    must not share a cache slot; no assistant hashes to a stable empty element
+    so pre-field keys are unchanged."""
+    base = dict(
+        session_id="s",
+        user_id="u",
+        enabled_tools=["analyze_spreadsheet"],
+        model_id="m",
+        inference_params={},
+        system_prompt=None,
+        caching_enabled=False,
+        provider="bedrock",
+        freshness_hash="f",
+        agent_type="chat",
+    )
+    k_a = service._create_cache_key(**base, assistant_id="asst-a")
+    k_b = service._create_cache_key(**base, assistant_id="asst-b")
+    k_none = service._create_cache_key(**base)
+    assert k_a != k_b
+    assert k_a != k_none
+    assert "asst-a" in k_a
+    assert "" in k_none and "asst-a" not in k_none
+    # skills_hash stays the trailing element (other tests index it as [-1]).
+    assert k_none[-1] == ""
+
+
+@pytest.mark.asyncio
+async def test_assistant_id_is_stamped_on_the_construction_snapshot(
+    mock_create_agent, mock_freshness_hash
+):
+    agent = await service.get_agent(
+        session_id="s1", user_id="u1", is_resume=False, assistant_id="asst-a"
+    )
+    assert agent._construction_snapshot["assistant_id"] == "asst-a"
+
+    bare = await service.get_agent(session_id="s2", user_id="u1", is_resume=False)
+    assert bare._construction_snapshot["assistant_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_resume_replays_assistant_id_onto_the_same_slot(
+    mock_create_agent, mock_freshness_hash
+):
+    """A spreadsheet turn against an assistant pauses; resume feeds the
+    snapshot's assistant_id back and must land on the paused agent. A
+    different assistant (or none) must NOT."""
+    first = await service.get_agent(
+        session_id="s1",
+        user_id="u1",
+        enabled_tools=["analyze_spreadsheet"],
+        extra_tools=[object()],
+        extra_tools_key_described=True,
+        is_resume=False,
+        assistant_id="asst-a",
+    )
+    first.agent._interrupt_state.activated = True
+    replay = first._construction_snapshot["assistant_id"]
+
+    same = await service.get_agent(
+        session_id="s1",
+        user_id="u1",
+        enabled_tools=["analyze_spreadsheet"],
+        is_resume=True,
+        assistant_id=replay,
+    )
+    assert same is first
+    assert mock_create_agent.call_count == 1
+
+    other = await service.get_agent(
+        session_id="s1",
+        user_id="u1",
+        enabled_tools=["analyze_spreadsheet"],
+        is_resume=True,
+        assistant_id="asst-b",
+    )
+    assert other is not first
+    assert mock_create_agent.call_count == 2

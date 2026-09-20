@@ -102,7 +102,16 @@ def test_session_profile_returns_200():
     assert resp.status_code == 200
     body = resp.json()
     assert body["sessionId"] == "s1" and body["compactionThreshold"] == 100_000
-    assert body["dataCoverage"] == {"toolCensus": False, "compactionCount": False, "fingerprints": False, "cost": False}
+    assert body["dataCoverage"] == {
+        "toolCensus": False, "compactionCount": False, "fingerprints": False, "cost": False,
+        "prefixTokens": False, "windowTrim": False, "compactionEvents": False,
+        "feedback": False,
+        "documents": False,
+    }
+    assert body["feedback"] == {
+        "up": 0, "down": 0, "byTurnClass": None, "reasons": {}, "unjoined": 0,
+        "retried": 0, "reworkUsd": None, "implicit": None, "evaluations": None,
+    }
     service.get_session_profile.assert_awaited_once_with("s1")
 
 

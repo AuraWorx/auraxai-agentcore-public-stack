@@ -42,6 +42,12 @@ export const adminRoutes: Routes = [
     loadComponent: () => import('./costs/pages/session-cost-anatomy.page').then(m => m.SessionCostAnatomyPage),
   },
   {
+    path: 'feedback',
+    canActivate: [adminScopeGuard],
+    data: { scope: 'admin.costs' } satisfies AdminScopeRouteData,
+    loadComponent: () => import('./feedback/fleet-feedback.page').then(m => m.FleetFeedbackPage),
+  },
+  {
     path: 'quota',
     canActivate: [adminScopeGuard],
     data: { scope: 'admin.quota' } satisfies AdminScopeRouteData,
@@ -340,5 +346,23 @@ export const adminRoutes: Routes = [
     canActivate: [adminScopeGuard],
     data: { scope: 'admin.system_prompts' } satisfies AdminScopeRouteData,
     loadComponent: () => import('./system-prompts/system-prompt-form.page').then(m => m.SystemPromptFormPage),
+  },
+  {
+    path: 'agent-templates',
+    canActivate: [adminScopeGuard],
+    data: { scope: 'admin.agent_templates' } satisfies AdminScopeRouteData,
+    loadComponent: () => import('./agent-templates/manage-agent-templates.page').then(m => m.ManageAgentTemplatesPage),
+  },
+  {
+    path: 'agent-templates/new',
+    canActivate: [adminScopeGuard],
+    data: { scope: 'admin.agent_templates' } satisfies AdminScopeRouteData,
+    loadComponent: () => import('./agent-templates/agent-template-form.page').then(m => m.AgentTemplateFormPage),
+  },
+  {
+    path: 'agent-templates/edit/:id',
+    canActivate: [adminScopeGuard],
+    data: { scope: 'admin.agent_templates' } satisfies AdminScopeRouteData,
+    loadComponent: () => import('./agent-templates/agent-template-form.page').then(m => m.AgentTemplateFormPage),
   },
 ];

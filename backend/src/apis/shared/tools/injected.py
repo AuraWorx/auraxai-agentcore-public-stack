@@ -42,9 +42,19 @@ POWERPOINT_PRESENTATION_TOOL_IDS = frozenset({"create_powerpoint_presentation"})
 # Session workspace files. A single toggle that provisions list/read/write.
 WORKSPACE_TOOL_IDS = frozenset({"workspace_files"})
 
-# Every id owned by a per-request factory. Memory-Space tools are deliberately
-# absent: they are gated on an Agent's memory binding rather than on
-# ``enabled_tools``, so they never reach the filter.
+# Document retrieval (bound to session/user). Listed for the record, and
+# deliberately NOT folded into ``INJECTED_TOOL_IDS`` below: ``document_read``
+# is gated on the session having a readable attachment, not on
+# ``enabled_tools`` — there is no catalog entry, no RBAC grant and no picker
+# toggle (docs/specs/document-context-offload.md §4B; the ``workspace_files``
+# key it would otherwise hang off is granted to no prod role). Like the
+# Memory-Space tools it never reaches ``ToolFilter``.
+DOCUMENT_TOOL_IDS = frozenset({"document_read"})
+
+# Every id owned by a per-request factory. Memory-Space and document tools are
+# deliberately absent: they are gated on an Agent's memory binding / the
+# session's attachments rather than on ``enabled_tools``, so they never reach
+# the filter.
 INJECTED_TOOL_IDS = frozenset(
     SPREADSHEET_TOOL_IDS
     | ARTIFACT_TOOL_IDS
@@ -72,24 +82,41 @@ INJECTED_TOOL_IDS = frozenset(
 # `initialize()` + AgentCore Memory restore (see
 # docs/specs/agent-cache-extra-tools-bypass.md §1–§2).
 #
-# Deliberately starting at ARTIFACT only. That spec's §6 asks for a
-# single-builder experiment rather than more observational data, because the
-# bypass→cache-write correlation is confounded by workload; artifacts are the
-# clean arm (no `assistant_id`, no memory binding, ~957 sessions). The rest are
-# excluded for now, each for a stated reason:
+# The set started at ARTIFACT only, as the single-variable arm of that spec's
+# §6 experiment. The arm read clean (§8, 2026-08-05: hit/hit/hit after turn 1
+# once #841 pinned sessions to a microVM, ~60% per-turn latency win, no
+# prompt-cache regression), so the families that capture exactly what
+# artifacts capture are promoted on the same reasoning. Each builder in
+# `inference_api/chat/routes.py` closes over `(session_id, user_id)` and
+# nothing else — both are key elements:
 #
-#   - SPREADSHEET: `make_*_tool(assistant_id, …)` closes over `assistant_id`,
-#     which is NOT a key element. Needs the key (and `PausedTurnSnapshot`)
-#     extended first, per that spec's §6.
-#   - WORD / EXCEL / POWERPOINT / WORKSPACE: capture only session+user, so they
-#     are *eligible on the same reasoning as artifacts* — held back only so the
-#     experiment measures one variable. Promote them once the artifact arm reads
-#     clean.
+#   - WORD (`_build_word_document_tools`), EXCEL
+#     (`_build_excel_spreadsheet_tools`), POWERPOINT
+#     (`_build_powerpoint_presentation_tools`), WORKSPACE
+#     (`_build_workspace_tools`).
+#
+#   - SPREADSHEET (`_build_spreadsheet_tools`) closes over `assistant_id` as
+#     well. That was NOT a key element until `_create_cache_key` gained it,
+#     alongside `PausedTurnSnapshot.assistant_id` and the resume path replaying
+#     it — all three have to agree or a paused agent is orphaned. With the key
+#     carrying it, the closure is described and the family is eligible. This
+#     is the dominant cohort: the 2026-08-03 prod read put
+#     `analyze_spreadsheet` on ~2,669 of 3,565 sessions.
+#
+# Still excluded:
+#
 #   - Memory-Space tools: capture the resolved binding (space id + access) and
 #     are not gated on `enabled_tools` at all, so they are not in any set here.
 #     `get_agent`'s caller must treat a live memory binding as an independent
 #     veto — see `injected_tools_are_key_described`.
-KEY_DESCRIBED_INJECTED_TOOL_IDS = frozenset(ARTIFACT_TOOL_IDS)
+KEY_DESCRIBED_INJECTED_TOOL_IDS = frozenset(
+    ARTIFACT_TOOL_IDS
+    | WORD_DOCUMENT_TOOL_IDS
+    | EXCEL_SPREADSHEET_TOOL_IDS
+    | POWERPOINT_PRESENTATION_TOOL_IDS
+    | WORKSPACE_TOOL_IDS
+    | SPREADSHEET_TOOL_IDS
+)
 
 
 def injected_tools_are_key_described(

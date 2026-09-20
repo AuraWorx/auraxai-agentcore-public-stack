@@ -19,7 +19,13 @@ function render(
   props: Partial<LoaderInputs> = {},
 ): ComponentFixture<PulsatingLoaderComponent> {
   const fixture = TestBed.createComponent(PulsatingLoaderComponent);
-  setInputs(fixture, { notice: null, status: null, statusTool: null, startedAt: null, ...props });
+  setInputs(fixture, {
+    notice: null,
+    status: null,
+    statusTool: null,
+    startedAt: null,
+    ...props,
+  });
   return fixture;
 }
 

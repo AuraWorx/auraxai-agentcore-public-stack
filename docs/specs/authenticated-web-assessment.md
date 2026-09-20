@@ -1,6 +1,6 @@
 # Authenticated web assessment (browser takeover, profiles, axe)
 
-**Status:** PROPOSED — no code written. Sized for four PRs.
+**Status:** IN PROGRESS — **PRs 1, 2, 3 merged; 2b (the viewer) built**. D3 and D6 rewritten (backend takeover: `request_user_login`, take/release control, the `browser_login_required` interrupt + SSE event, the D4 metadata projection, reaper pinning, the abandonment deadline, and the flag) and **PR 2's backend + SPA half** (the live-view route, its IAM, and the SPA's event/resume wiring). The viewer page itself is deliberately still open — see "Build notes (PR 2)". PRs 3-4 not started. Sized for four PRs.
 **Driver:** Two user requests, both blocked on the same missing capability:
 a Library agent that evaluates the accessibility of the databases they renew
 annually (subscription-gated), and a VPAT-evaluation agent that must test
@@ -103,13 +103,13 @@ breadcrumb, and the resume route in `inference_api/chat/routes.py`.
 
 | # | Decision |
 |---|----------|
-| D1 | Takeover is a **separately grantable tool** (`request_user_login`), not an action on `browse_web` — RBAC granularity is per `tool_id` |
+| D1 | Takeover is a **separately grantable tool** (`request_user_login`), not an action on `browse_web` — RBAC granularity is per `tool_id`. **Kept as a rollout control, not a security boundary** — see D6 and Security 3 |
 | D1b | Takeover is an **interrupt**, not a new endpoint — reuse `ask_user_question`'s machinery |
 | D2 | The live-view URL is **never** model-visible; it is minted on demand by app-api |
-| D3 | DCV is embedded via a **static viewer page at the sandbox origin**, framed by the SPA — not a React island in the Angular app |
+| D3 | DCV is embedded via a **plain-JS viewer page at the sandbox origin**, framed by the SPA. No React and no npm: AWS's `BrowserLiveView` imports `dcv`/`dcv-ui`, which are undeclared and unavailable on npm. The SDK is fetched and signature-verified at build time, never committed — it is EULA-licensed and this repo is public |
 | D4 | Browser session identity moves to the **DynamoDB session-metadata row** so app-api can act on it |
 | D5 | Profiles are keyed `user + assessment target`, with an explicit user-facing "forget this login" |
-| D6 | A **second** `CfnBrowserCustom` for assessment; never mutate the fleet's browser |
+| D6 | **One** browser, with a Chromium `URLBlocklist`. ⚠️ Session-level policies are **RECOMMENDED-only** (measured — MANAGED is rejected), so this constrains the agent but not a human in a takeover; the real control needs `CreateBrowser`. Supersedes the second-resource/`URLAllowlist` draft — the browser resource is immutable (no `UpdateBrowser`) and RBAC cannot express a per-site rule |
 | D7 | axe-core ships as a **browser extension**, and the full report goes to the workspace, never to the model |
 | D8 | Everything rides `BROWSER_TAKEOVER_ENABLED` (default on, kill switch) |
 | D9 | A 40-target sweep is **40 sessions, not one turn** — the cost hazard is session shape, not takeover |
@@ -211,31 +211,82 @@ inference-api — the Runtime data plane proxies only `/invocations` and `/ping`
 so a route added there would 404 in cloud.
 
 app-api's task role needs `ConnectBrowserLiveViewStream`, `UpdateBrowserStream`
-and `GetBrowserSession` on the assessment browser ARN.
+and `GetBrowserSession` on the browser ARN. (Built in PR 2, deliberately
+narrower than the Runtime's own grant — no Start/Stop and no
+`ConnectBrowserAutomationStream`, because app-api must never drive the
+browser.)
 
-### D3 — DCV embeds via a viewer page at the sandbox origin
+### D3 — A plain-JS viewer at the sandbox origin, SDK fetched at build time
 
-AWS ships React; we are Angular. Three options were considered:
+**This supersedes an earlier draft** that reached for AWS's React
+`<BrowserLiveView>` component from the `bedrock-agentcore` npm package. That
+package is official AWS and Apache-2.0, but the component **cannot be built
+from public npm**:
 
-| Option | Verdict |
-|---|---|
-| Drive the DCV Web Client SDK directly from Angular | Reimplements connection setup, SigV4 handling and frame rendering; carries the maintenance forever |
-| Mount a React island inside the Angular SPA | Adds React to the SPA bundle for one component; poor trade |
-| **Static viewer page at a separate origin, framed by the SPA** | **Chosen** |
+```
+import dcv from 'dcv';
+import { DCVViewer } from 'dcv-ui';
+```
 
-The third is what MCP Apps already do. A `live-view.html` asset built against
-`bedrock-agentcore`'s `BrowserLiveView`, deployed to the same CloudFront/S3
-origin pattern with `frame-ancestors <SPA origin only>`. React stays entirely
-outside the SPA bundle. The SPA frames it and passes the conversation id; the
-page calls the D2 route for its own URL and refreshes it on expiry.
+Neither is in its `dependencies`, `peerDependencies` or
+`optionalDependencies`. `dcv-ui` does not exist on the registry at all, and the
+only `dcv` package there is an unrelated third-party Vue component library. The
+component silently assumes you have already vendored the Amazon DCV Web Client
+SDK and made it resolvable under those names. So the React path is a strict
+*superset* of the vendoring work, not an alternative to it — and it would pull
+React plus ~189 packages into a surface where a user types a password.
 
-`remoteWidth`/`remoteHeight` **must** match the session viewport or the stream
-crops. `DEFAULT_VIEWPORT` is currently `1280x800` (`session_pool.py:45`); the
-viewport must be carried on the event rather than duplicated as a constant in
-the frontend, so the two cannot drift.
+**So: no React, no npm, no third-party code.** The viewer is
+`infrastructure/assets/mcp-sandbox/live-view.{html,js}` — plain ES2017 against
+the official Amazon DCV Web Client SDK, which is framework-agnostic.
 
-⚠️ `bedrock-agentcore` (npm) is a **new dependency** and needs explicit
-approval before anyone installs it. Exact-pin, no `^`.
+**The SDK is fetched at build time, never committed.** It is a EULA-licensed
+AWS download and **this repository is public**, so vendoring it would be
+redistribution. `scripts/build/fetch-dcv-sdk.sh` downloads it, verifies it, and
+extracts it to a gitignored directory; `platform.yml` runs it before the CDK
+deploy. This is also AWS's own instruction — "place the extracted directory on
+your web server" — and it means the signature is checked on every build rather
+than trusted once at commit time.
+
+What makes that safe is **not** "it comes from AWS". Three pins do: the exact
+version, the archive SHA256, and the signing-key fingerprint — the last two
+held in the script rather than read from the network, because whoever could
+swap the artifact could swap the published checksum and serve a different key.
+Importing whatever key the URL offers today and trusting it is
+trust-on-first-use on every build. ⚠️ The fingerprint was captured once and
+pinned at review time; AWS does not appear to publish it out-of-band.
+
+**Why a separate origin rather than an Angular component in the SPA.** The
+original reason — "AWS ships only React" — is gone. Two reasons remain, and the
+first is the real one:
+
+- This is the one surface where a user types a password, and `dcv.js` forwards
+  their keystrokes. Keeping it in an origin that holds **no session cookie**
+  means a compromised SDK cannot also reach their session.
+- The SDK must be *served* with its folder structure and license files intact,
+  which suits a static origin and fights a bundler.
+
+Note the isolation argument that justifies this origin for MCP Apps does **not**
+transfer: DCV streams pixels and forwards input, so the remote page's code runs
+in AWS's Chromium, never in our DOM. This is defence in depth, chosen
+deliberately rather than inherited.
+
+**The SPA mints; the viewer never calls app-api.** app-api's CORS is a
+credentialed allowlist, so letting the viewer call it would mean allowlisting an
+origin that also serves untrusted MCP App HTML. Instead the SPA mints the URL
+and `postMessage`s it in, targeted at the sandbox origin explicitly — never
+`'*'`, which would post a live credential to whatever happened to be framed. The
+viewer accepts messages only from the origin that framed it, and stores nothing.
+
+**CSP.** The sandbox origin's CloudFront function already composes `connect-src`
+from a `?csp=` query parameter, and is attached to the **default** behaviour, so
+it covers any path there. The SPA mints first and then names the minted URL's
+own origin in that parameter, so the grant is exactly the endpoint in use rather
+than a wildcard. This resolves risk 3 below.
+
+`remoteWidth`/`remoteHeight` come from the event's `viewport` and are applied
+via `requestDisplayLayout`; a mismatch crops or letterboxes the stream, which is
+why the viewport is carried rather than re-declared in the frontend.
 
 ### D4 — Browser session identity in the session-metadata row
 
@@ -274,22 +325,124 @@ Profiles are per-user by default. A shared institutional account (one Library
 subscription, several evaluators) is a genuinely different model with a
 different blast radius and is **out of scope** for v1.
 
-### D6 — A second browser resource
+### D6 — One browser, a MANAGED URL blocklist applied per session
 
-Add `browser-assessment` (`CfnBrowserCustom`) alongside the existing one:
+**This supersedes an earlier draft** which added a second `CfnBrowserCustom`
+carrying a `URLAllowlist` of the targets under evaluation. Three findings
+killed that design; the replacement is simpler and is the control that
+actually implements the requirement.
 
-- `networkMode: 'VPC'` with subnets/SGs, for campus-reachable targets;
-- `recording: { enabled: true, s3Location: ... }` — for a VPAT, evidence that a
-  test ran against a specific build is often worth more than the findings;
-- `enterprise_policies` carrying a Chromium `URLAllowlist` restricted to the
-  targets under evaluation (see Security);
-- `certificates` for internal CAs.
+**The requirement, stated from the outcome.** Faculty and staff run
+accessibility and VPAT checks behind authenticated pages. Nobody — including a
+grad assistant who legitimately holds a staff role — uses the same capability
+to have an agent submit their own coursework. That is a constraint on **which
+sites**, not on **which people**, and RBAC cannot express it: effective
+permissions merge as a **union** across every role a user matches
+(`rbac/service.py`, "Tools: Union"), priority decides only the quota tier, and
+there is no deny. A user in both the staff and the current-term student Entra
+groups gets the union of both roles' tools. At a university that population is
+large and permanent.
 
-Never mutate the existing browser. `executionRoleArn` is create-only and the
-construct documents the replacement collision; assume `networkConfiguration` is
-create-only too rather than discover it during a deploy. `BROWSER_ID` already
-selects the browser per environment (`session_pool.py:64`), so routing
-assessment sessions to the second resource is a config change.
+**An application-level URL check cannot implement it either.** Takeover hands
+the human a fully interactive Chromium. A check inside `request_user_login`
+sees only the *starting* page; once the user is driving they can navigate
+anywhere. The only thing that constrains them is Chromium itself refusing,
+which means an enterprise policy.
+
+**Blocklist, not allowlist — because the browser resource is immutable.**
+There is no `UpdateBrowser` operation (the control plane has only
+`CreateBrowser`, `GetBrowser`, `DeleteBrowser`, `ListBrowsers`), and per the
+[enterprise-policy docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/browser-enterprise-policies.html)
+"policy files are read from Amazon S3 at the time of the API call. Changes to
+policy files in Amazon S3 after calling `CreateBrowser` or
+`StartBrowserSession` are not reflected." So a policy attached at
+`CreateBrowser` is frozen for the life of the resource, and every edit means
+replacing it. An allowlist of vendors under evaluation would therefore require
+a browser replacement per VPAT review — untenable. A **blocklist of
+institutional systems** (the LMS, the SIS, HR, email) is small, changes about
+yearly, and fits an immutable resource. It also matches the requirement's
+actual shape: everything is open *except* where an agent acting as the user has
+academic or administrative consequences.
+
+**⚠️ MEASURED 2026-09-19, AND THIS IS WHERE THE DESIGN BROKE.** The plan was
+to apply the policy at `StartBrowserSession` as MANAGED, because its `type`
+enum is `['MANAGED', 'RECOMMENDED']`. **The enum lies.** The service returns:
+
+```
+ValidationException ... Invalid value for parameter 'type'.
+MANAGED is not supported for session-level policies.
+```
+
+And it does not degrade — `StartBrowserSession` fails outright, so **every**
+browser session dies and `browse_web` stops working entirely. That regression
+reached dev (never prod) and was reverted to `RECOMMENDED`.
+
+So risk 2b resolved **against** the design. Session-level policies are
+RECOMMENDED-only, which Chromium treats as a user-overridable default. What
+ships today therefore constrains the **agent** — which drives via CDP and never
+opens settings — but **not a human holding the browser during a takeover**,
+who is the threat this control exists for.
+
+**Consequence: `request_user_login` must stay ungranted** until the MANAGED
+policy is applied at `CreateBrowser`. That needs a custom resource, since
+`CfnBrowserCustom` does not expose `enterprisePolicies`, and it reinstates
+replace-per-edit on the browser resource — survivable only because profiles
+turned out to be account-level (risk 2). The RBAC grant and
+`BROWSER_TAKEOVER_ENABLED` hold the line meanwhile.
+
+The original reasoning for preferring session level, now moot:
+`StartBrowserSession` takes `enterprisePolicies`, and the docs' prose describes
+MANAGED as a `CreateBrowser` thing. This matters because the two levels are not
+interchangeable: MANAGED is "required and mandated by an administrator… cannot
+be overridden" and lands in `/etc/chromium/policies/managed/`; RECOMMENDED is
+user-overridable and lower-precedence, which makes it advisory rather than a
+boundary against the person driving the browser.
+
+Applying it per session buys three things a `CreateBrowser` policy cannot: the
+list is read fresh from S3 on every session, it needs no `CfnBrowserCustom`
+change, and it works **today** — `CfnBrowserCustom` in our pinned aws-cdk-lib
+(2.251.0) does not expose `enterprisePolicies` at all (its props are
+`browserSigning`, `description`, `executionRoleArn`, `name`,
+`networkConfiguration`, `recordingConfig`, `tags`), so the CFN route would need
+a custom resource *and* would inherit the replacement-per-edit problem.
+
+⚠️ **Verify before granting the tool to anyone:** that MANAGED is honoured at
+`StartBrowserSession` and not silently downgraded. An enum accepting a value is
+not proof the service enforces it. The test is one browser session on dev:
+apply the policy, navigate to a blocked host, confirm Chromium refuses. Until
+that passes, the blocklist is unproven and the RBAC grant is the only control.
+
+**Consequences:**
+
+- **No second browser resource.** One `URLBlocklist` covers `browse_web` and
+  `request_user_login` alike. The LMS already has a first-class API
+  integration in this product, so the browser reaching it was the unsanctioned
+  path regardless.
+- **VPC `networkMode`, `certificates` and `recording` are decoupled** from this
+  and can be revisited on their own merits, for campus-only targets.
+- `session_pool._start_remote_session` is the single place a session is
+  started, so "the policy is always applied" is one assertion in one place.
+
+**The list.** Seeded with the LMS and extended after the CISO review. Match on
+the origin actually navigated to, not a vanity hostname — a CNAME that
+redirects to the real origin is not what Chromium's `URLBlocklist` sees:
+
+```json
+{
+  "URLBlocklist": [
+    "boisestatecanvas.instructure.com"
+  ]
+}
+```
+
+It lives in CDK config and deploys as the S3 object, rather than being editable
+in place. A security control that can be changed out-of-band without review is
+worse than one that needs a deploy, and this list changes about yearly.
+
+**Residual risk, stated plainly.** A blocklist is only as good as its entries.
+It stops the named threat and whatever else is enumerated; it does not stop a
+takeover against some authenticated system nobody listed. Session recording
+(Security 2) is the detective complement.
 
 ### D7 — axe-core as an extension; report to the workspace
 
@@ -381,13 +534,21 @@ look expensive when the feature itself is nearly free.
 **An interactive browser inside our AWS account is the headline risk.** During
 takeover the user has a fully interactive Chromium with our egress. Controls:
 
-1. **`URLAllowlist` Chromium enterprise policy** on the assessment browser,
-   scoped to the targets under evaluation. This is the primary control.
+1. **A MANAGED `URLBlocklist` Chromium enterprise policy**, applied on every
+   `StartBrowserSession` (D6). This is the primary control, and it is the only
+   one on this list that constrains **where the human can go** once they hold
+   the browser. MANAGED specifically: RECOMMENDED is user-overridable and so is
+   not a boundary against the person driving.
 2. **Session recording to S3** — every takeover is recorded. This must be
    disclosed to users in the UI before control is handed over; silent recording
    of a session in which someone types a password is not acceptable.
-3. **Takeover is gated by the same RBAC as `browse_web`**, and the assessment
-   browser is a separate resource so it can be granted separately.
+3. **RBAC is a rollout control, not a security boundary.** It was drafted as
+   one, and it cannot be: effective permissions are a **union** across matched
+   roles (`rbac/service.py`) with no deny, so a grad assistant holding both a
+   staff and a student role receives the union. Granting `request_user_login`
+   separately from `browse_web` is still worth keeping — it lets the capability
+   be piloted with the evaluator group before it is widened — but the thing
+   that stops coursework submission is control 1, not this.
 4. **`frame-ancestors`** on the viewer origin, so only the SPA can frame it.
 5. **The agent provably cannot act while the human holds control** — the
    automation stream is `DISABLED` at the service, not by convention in our code.
@@ -407,19 +568,131 @@ For a Library procurement workflow this is fixable at the source — ask for
 scanning rights in the renewal terms, or request an evaluation tenant. Worth
 having in writing before forty scans run, not after.
 
+## Build notes (PR 1)
+
+Two deliberate deviations from the sketch above, both recorded here so PR 2
+does not have to rediscover them:
+
+1. **`sessionId` on the event is the conversation, not the browser session.**
+   D1b wrote a single ambiguous `sessionId`. Every other SSE event in this
+   codebase uses `sessionId` for the conversation, and D2's route is owner-
+   scoped by conversation, so the event carries both: `sessionId` (conversation)
+   and `browserSessionId`. Collapsing them would have collided the moment
+   app-api needed to check ownership.
+
+2. **The conversation id and the D4 projection are stamped on in the streaming
+   layer, not the tool.** The tool knows only which browser session it handed
+   over; `stream_coordinator` is the layer that holds `session_id` / `user_id`.
+   Keeping identity out of the tool also keeps it a *static* registry tool
+   rather than an `extra_tools` injection, so it does not touch the injected-
+   tool agent-cache bypass.
+
+Three things worth knowing before building PR 2:
+
+* **Strands re-executes an interrupted tool from the top on resume**
+  (`strands/types/interrupt.py`), so `request_user_login` runs twice per
+  takeover. `take_control` is idempotent and a marker on `agent.state` carries
+  the descriptor across the pause; without the marker a resume that lands in a
+  container which lost the session would call `acquire` and silently start a
+  *second, unauthenticated* browser, then report success.
+* **The abandonment deadline is enforced by the reaper, not by a timer.**
+  Nothing runs while a turn is paused. `_reap_idle` exempts a user-controlled
+  session only until `deadlineAt`, and it runs on any conversation's next
+  browser call in the same container, with the remote TTL as the backstop.
+  `BROWSER_TAKEOVER_DEADLINE_SECONDS` defaults to 480, with a 60s grace on the
+  resume side so a user who finished at 7:59 whose POST lands at 8:01 is not
+  told their sign-in expired.
+* **`live_view` is gone from `browse_web`.** It returned a presigned URL as
+  tool-result text — the exact failure PR #1101 diagnosed — and its 300-second
+  cap made it useless for a human anyway.
+
+⚠️ Still unverified, and still blocking PR 3: whether `profileConfiguration`
+survives a browser *resource* replacement (risk 2 below).
+
+## Build notes (PR 2)
+
+The route, its IAM and the SPA's handling of `browser_login_required` are
+built. The **viewer page is not**, and two findings from building the rest
+change its design — which is why it was left open rather than stubbed.
+
+### D3 correction — the viewer must NOT call app-api itself
+
+D3 says "the page calls the D2 route for its own URL and refreshes it on
+expiry." It must not. app-api's CORS is an allowlist with
+`allow_credentials=True`, so for the viewer to call the route from the sandbox
+origin, **that origin would have to be added to `CORS_ORIGINS`** — and the
+mcp-sandbox origin is where we frame *untrusted MCP App HTML*. Granting it
+credentialed access to app-api would hand every App a same-origin-ish path to
+the user's session.
+
+The viewer should instead receive its URL by `postMessage` from the SPA, which
+already holds the cookie and is already the trusted origin:
+
+- the SPA calls `POST /sessions/{id}/browser/live-view` (built, and the SPA
+  client for it is in `BrowserLoginService.mintLiveView`),
+- posts `{url, viewport}` into the frame,
+- re-mints before `expiresAt` and posts again.
+
+The viewer then needs no credentials, no CORS entry, and no knowledge of
+app-api at all. This is strictly less surface than D3 as drafted.
+
+### D3 correction — no new distribution, no new certificate
+
+D3 implies a viewer origin built like the mcp-sandbox one. A *second*
+CloudFront distribution means a second subdomain, a second us-east-1 ACM cert
+and a second `CDK_*_CERTIFICATE_ARN` deploy var — and per the scar tissue in
+`mcp-sandbox-distribution-construct.ts` (#396) a configured domain with a
+missing cert **throws at synth**, so adding one ahead of the cert would break
+every deploy until ops caught up.
+
+The mcp-sandbox origin already is what D3 describes: a static, non-SPA origin
+with `frame-ancestors` locked to the SPA. The viewer should be one more static
+file served from it. Note its `BucketDeployment` is `prune: true` with no key
+prefix, so the page belongs in `infrastructure/assets/mcp-sandbox/` — a second
+prefixed deployment to the same bucket would be pruned by the first.
+
+### What PR 2 ships
+
+`POST /sessions/{session_id}/browser/live-view` on app-api (404 for a
+conversation that is not the caller's or has no browser session, 409 for one
+whose session has ended, 404 while the flag is off), a **narrower** IAM
+statement than the Runtime's — `ConnectBrowserLiveViewStream`,
+`UpdateBrowserStream`, `GetBrowserSession` only, no Start/Stop and no
+`ConnectBrowserAutomationStream`, because app-api must never drive the browser
+— plus the SPA's validator, `BrowserLoginService`, and the resume path.
+
+The SPA validator rejects any event carrying a `url`, mirroring the backend's
+`assert_no_url`: nothing upstream should ever put one there, so its presence
+means a contract regression shipped and refusing to render beats framing a URL
+of unknown provenance.
+
+⚠️ Still unverified, and now the *first* thing the viewer PR must answer: does
+DCV work inside a cross-origin iframe under this CSP? It opens a WebSocket to
+the AgentCore data plane, which the sandbox origin's `connect-src` does not
+currently allow (risk 3 below).
+
 ## PR breakdown
 
 | PR | Scope | Notes |
 |----|-------|-------|
 | **1** | Backend takeover: `request_user_login`, take/release control, interrupt + `browser_login_required` SSE event, D4 metadata row, reaper pinning, abandonment deadline, flag | Testable end to end with a curl-minted live-view URL — no frontend needed |
-| **2** | app-api live-view route + IAM; `live-view.html` viewer at the sandbox origin; SPA framing and resume | Needs the `bedrock-agentcore` npm dependency approved first |
-| **3** | Profiles (D5) + the Customize-surface "saved logins" list with forget/expiry | The PR that makes the annual sweep actually repeatable |
-| **4** | `browser-assessment` CDK resource (D6) + axe extension and `accessibility_scan` (D7) | D6 needs campus network decisions from whoever owns routing |
+| **2** | app-api live-view route + IAM; SPA `browser_login_required` handling and resume | Shipped WITHOUT the viewer — see "Build notes (PR 2)" |
+| **2b** | The viewer itself: sign-in prompt component, plain-JS `live-view.{html,js}`, the DCV SDK fetch step, `sandboxOrigin` on the event | The PR that makes the feature usable at all. No npm dependency (D3) |
+| **3** | **MANAGED `URLBlocklist` applied per session (D6)** + the policy object and its IAM | Re-sequenced ahead of profiles. This is the control that lets the tool be granted at all, so it gates rollout rather than following it |
+| **4** | Profiles (D5) + the Customize-surface "saved logins" list with forget/expiry | The PR that makes the annual sweep actually repeatable |
+| **5** | axe extension and `accessibility_scan` (D7) | Turns the output into VPAT-grade evidence |
 
 PR 1 alone unblocks a developer-driven demo. PRs 1+2 unblock the Library user
 for anything login-gated and publicly routable, which is most of the renewal
-list. PR 3 is what makes it worth doing annually. PR 4 covers campus-only
-targets and turns the output into VPAT-grade evidence.
+list. **PR 3 is the gate on granting the tool to real users** — until the
+blocklist is in place and verified, RBAC is the only control, and Security 3
+explains why that is not enough on its own. PR 4 is what makes the sweep worth
+doing annually.
+
+Profiles were re-sequenced *after* the blocklist deliberately: a persisted
+login is standing authenticated access with no takeover in the path, so
+shipping it first would remove the one control the user actually passes
+through.
 
 ## Testing
 
@@ -438,16 +711,31 @@ targets and turns the output into VPAT-grade evidence.
 
 ## Risks and open questions
 
-1. **Is `networkConfiguration` create-only on `CfnBrowserCustom`?** Assumed yes.
-   Confirm before planning PR 4; if it is not, D6 could collapse to a config
-   change on the existing resource — though a separate resource is still the
-   better design for blast radius.
-2. **Does `profileConfiguration` survive a browser *resource* replacement?**
-   If profiles are scoped to the browser id rather than the account, a PR-4
-   deploy could invalidate every saved login. Verify before shipping PR 3.
-3. **Does the DCV viewer work inside a cross-origin iframe with our CSP?**
-   MCP Apps proved the pattern for `srcdoc` content; DCV opens a WebSocket and
-   may need `connect-src` allowances the current policy does not grant.
+1. ~~**Is `networkConfiguration` create-only on `CfnBrowserCustom`?**~~
+   **Moot, and worse than assumed.** There is no `UpdateBrowser` operation at
+   all, so *every* property is effectively create-only and any change replaces
+   the resource. This is what moved the URL policy off the browser resource and
+   onto `StartBrowserSession` (D6).
+2. ~~**Does `profileConfiguration` survive a browser *resource* replacement?**~~
+   **Answered: yes.** `CreateBrowserProfile` takes `name`, `description`,
+   `clientToken` and `tags` — and **no `browserId`**. Profiles are account-level
+   resources, not scoped to a browser, so replacing the browser resource does
+   not invalidate saved logins. PR 3 and the policy work can land in either
+   order.
+2b. ~~**Is `type: MANAGED` honoured at `StartBrowserSession`?**~~
+   **ANSWERED, AGAINST US (dev, 2026-09-19).** It is rejected:
+   `Invalid value for parameter 'type'. MANAGED is not supported for
+   session-level policies.` Not a silent downgrade — `StartBrowserSession`
+   fails and every session dies. See D6. **Do not grant
+   `request_user_login` until the MANAGED policy is applied at
+   `CreateBrowser`.**
+3. ~~**Does the DCV viewer work inside a cross-origin iframe with our CSP?**~~
+   **Resolved in principle.** The sandbox origin's CloudFront function composes
+   `connect-src` from a `?csp=` query parameter and is attached to the
+   *default* behaviour, so it covers `live-view.html` too. The SPA names the
+   minted URL's own origin there. Still to confirm against a live session:
+   that DCV needs nothing beyond `connect-src` (its workers and decoders are
+   same-origin, and `worker-src 'self' blob:` is already granted).
 4. **Mobile.** DCV interaction on a phone, for a login form in a 1280x800
    remote viewport, is likely poor. May need an explicit "open in a new tab"
    escape hatch rather than pretending the frame works everywhere.

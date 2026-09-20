@@ -197,6 +197,55 @@ export interface UserQuestionRequiredEvent {
 }
 
 /**
+ * The agent paused so the *user* can sign in to a site it cannot reach.
+ *
+ * Sibling of {@link UserQuestionRequiredEvent} — same tool-raised interrupt
+ * machinery, same resume contract — with one thing that is easy to get wrong:
+ *
+ * **There is no URL on this event, and there must never be one.** A Live View
+ * URL is SigV4 *query*-signed and expires in at most 300 seconds, so one put
+ * here would be dead before the user reacted and dead again on every reload of
+ * the thread. The client POSTs `sessionId` to
+ * `/sessions/{id}/browser/live-view` for a fresh URL instead, and re-requests
+ * against that response's `expiresAt`.
+ *
+ * `sessionId` is the **conversation** id, as on every other event here.
+ * `browserSessionId` is the AgentCore browser session, and the client never
+ * sends it anywhere — the live-view route resolves it server-side from the
+ * conversation, which is what stops one user streaming another's browser.
+ *
+ * `viewport` must be passed to the viewer as DCV's `remoteWidth`/
+ * `remoteHeight`. A mismatch crops the stream or letterboxes it, which is why
+ * it rides the event rather than being re-declared as a constant here.
+ *
+ * `deadlineAt` is when the backend stops waiting: past it the browser is
+ * released and made reapable, so the UI should show the time remaining and
+ * stop offering the viewer once it passes.
+ */
+export interface BrowserLoginRequiredEvent {
+  type: 'browser_login_required';
+  interruptId: string;
+  toolUseId: string;
+  /** Conversation id — NOT the browser session. */
+  sessionId: string;
+  browserSessionId: string;
+  browserId: string;
+  viewport: { width: number; height: number };
+  /** ISO 8601; the sign-in window closes here. */
+  deadlineAt?: string;
+  /** The page the browser is parked on, so the user knows what they sign into. */
+  targetUrl?: string;
+  /** The agent's one-line explanation of what it needs signed into. */
+  reason?: string;
+  /**
+   * Origin to frame the live-view page from — the same mcp-sandbox origin
+   * MCP Apps use. Empty when it is not deployed, in which case the prompt
+   * renders without a viewer rather than framing nothing.
+   */
+  sandboxOrigin?: string;
+}
+
+/**
  * Compaction event — emitted after the final `metadata` event (so the badge
  * updates first) and before `done` when the backend rolls older turns into
  * a summary on this turn. The frontend feeds it to `CompactionSummaryService`,
@@ -218,6 +267,19 @@ export interface CompactionEvent {
   newCheckpoint: number;
   summarizedTurns: number;
   inputTokens: number;
+  /**
+   * Model-relative policy the cut was made under (additive, optional —
+   * docs/specs/compaction-model-relative-thresholds.md). `contextWindow` is
+   * the catalog's `maxInputTokens`; `ceiling` is the trigger, `floor` the
+   * target size after the cut, `hardCeiling` the level that forces a cut
+   * while the trigger is disarmed; `forced` says this cut was one of those.
+   */
+  contextWindow?: number | null;
+  ceiling?: number | null;
+  floor?: number | null;
+  hardCeiling?: number | null;
+  forced?: boolean;
+  retainedTokensEstimate?: number | null;
 }
 
 /**
@@ -323,6 +385,19 @@ export interface ModelRetryEvent {
  * either way. Each transition here names something that actually happened.
  *
  * PHASES
+ * - `preparing`   the agent is being BUILT — tool registry, MCP pre-flight,
+ *                 session restore. Emitted by the chat route rather than the
+ *                 status hook, because it happens before the event loop (and
+ *                 before `message_start`) exists. Measured at 1478ms on a cold
+ *                 agent-cache miss and 0-38ms warm, so in practice it appears
+ *                 only when it is worth appearing. Carries no `cycle`.
+ * - `prepared`    that build FINISHED, carrying its measured `durationMs`.
+ *                 Its whole job is to end `preparing`. Without it the SPA
+ *                 could only infer the end from `thinking`, which does not
+ *                 arrive until the head-of-turn work and the event loop's
+ *                 startup have run too — so a 1ms cache-hit build still
+ *                 rendered "Getting ready…". A phase that is only ever the
+ *                 "latest event" cannot express a wait that ended.
  * - `thinking`    the model is generating (one per event-loop cycle, so a
  *                 three-tool turn reports it four times — that IS the turn's
  *                 shape, and `cycle` distinguishes them)
@@ -334,16 +409,23 @@ export interface ModelRetryEvent {
  * streaming because the deltas are arriving. A backend-derived duplicate of a
  * fact the client holds first-hand would only disagree at the edges.
  *
- * Gated by `AGENT_STATUS_ENABLED` (default on with a kill switch). Absence is
- * the pre-feature behaviour — cycling phrases and no durations — never an
- * error.
+ * Gated by `AGENT_STATUS_ENABLED` (default on with a kill switch); `preparing`
+ * rides its own `AGENT_PREPARING_PHASE_ENABLED`, since deferring the build
+ * into the stream is a change to the turn path rather than to narration.
+ * Absence is the pre-feature behaviour — cycling phrases and no durations —
+ * never an error.
  */
 export interface AgentStatusEvent {
   type: 'agent_status';
   sessionId: string;
-  phase: 'thinking' | 'tool_start' | 'tool_end';
-  /** 1-based event-loop cycle this transition belongs to. */
-  cycle: number;
+  phase: 'preparing' | 'prepared' | 'thinking' | 'tool_start' | 'tool_end';
+  /**
+   * 1-based event-loop cycle this transition belongs to.
+   *
+   * Absent on `preparing`, which precedes the event loop — there is no cycle
+   * to number yet.
+   */
+  cycle?: number;
   toolName?: string;
   toolUseId?: string;
   /** Present on `tool_end`: measured by the event loop, not the client. */
@@ -591,6 +673,25 @@ export interface ContentBlockBuilder {
   };
   status?: 'pending' | 'complete' | 'error';
   isComplete: boolean;
+  /**
+   * Epoch ms of the first reasoning delta in this block.
+   *
+   * Client-observed, unlike the tool durations on the rail, which Strands
+   * measures inside its own event loop and ships over `agent_status`. The
+   * parser has no server-side measurement of thinking time, so this is the
+   * arrival of the first reasoning byte — see docs/specs/agent-state-feedback.md
+   * PR-1 for why that span is sound (a reasoning block never spans a tool
+   * call, because the agent loop starts a new message at every round trip).
+   */
+  reasoningStartedAt?: number;
+  /**
+   * Epoch ms the model demonstrably stopped reasoning: the first non-reasoning
+   * content in the same message, or that message's end.
+   *
+   * Absent while the model is still thinking, which is what lets the header
+   * stay on the live "Thinking" label until there is a real number to show.
+   */
+  reasoningEndedAt?: number;
 }
 
 /**

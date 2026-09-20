@@ -1,4 +1,4 @@
-import { Component, computed, effect, input, output, inject, signal, PLATFORM_ID } from '@angular/core';
+import { Component, computed, effect, input, output, inject, signal, untracked, PLATFORM_ID } from '@angular/core';
 import { isPlatformBrowser, NgTemplateOutlet } from '@angular/common';
 import { Message, ToolUseData } from '../../services/models/message.model';
 import type { Artifact } from '../../services/artifacts/artifact.model';
@@ -11,9 +11,11 @@ import { PulsatingLoaderComponent } from '../../../components/pulsating-loader.c
 import { OAuthConsentPromptComponent } from './components/oauth-consent-prompt/oauth-consent-prompt.component';
 import { ToolApprovalPromptComponent } from './components/tool-approval-prompt/tool-approval-prompt.component';
 import { UserQuestionPromptComponent } from './components/user-question-prompt/user-question-prompt.component';
+import { BrowserLoginPromptComponent } from './components/browser-login-prompt/browser-login-prompt.component';
 import { CompactionSummaryComponent } from './components/compaction-summary/compaction-summary.component';
 import { ArtifactCardComponent } from './components/artifact/artifact-card.component';
 import { ArtifactPanelComponent } from './components/artifact/artifact-panel.component';
+import { FilePreviewPanelComponent } from './components/file-preview/file-preview-panel.component';
 import { ArtifactStateService } from '../../services/artifacts/artifact-state.service';
 import { SharedArtifactCardComponent } from '../../../shared/artifact/shared-artifact-card.component';
 import type { SharedConversationArtifact } from '../../services/share/share.service';
@@ -36,6 +38,10 @@ import {
   UserQuestionRequest,
   UserQuestionService,
 } from '../../../services/user-question/user-question.service';
+import {
+  BrowserLoginRequest,
+  BrowserLoginService,
+} from '../../../services/browser-login/browser-login.service';
 import { CompactionSummaryService } from '../../services/chat/compaction-summary.service';
 import { ChatStateService } from '../../services/chat/chat-state.service';
 import { ToolInsightService } from '../../services/chat/tool-insight.service';
@@ -122,9 +128,11 @@ function segmentTurn(messages: readonly Message[]): TurnSegment[] {
     OAuthConsentPromptComponent,
     ToolApprovalPromptComponent,
     UserQuestionPromptComponent,
+    BrowserLoginPromptComponent,
     CompactionSummaryComponent,
     ArtifactCardComponent,
     ArtifactPanelComponent,
+    FilePreviewPanelComponent,
     SharedArtifactCardComponent,
     McpAppActionsComponent,
     AgentFeedbackLinkComponent,
@@ -157,6 +165,28 @@ export class MessageListComponent {
   private readonly STALL_NOTICE_MS = 30_000;
   private readonly LONG_STALL_NOTICE_MS = 90_000;
   private readonly STALL_TICK_MS = 5_000;
+
+  /**
+   * How long `preparing` must stay the current phase before it is rendered.
+   *
+   * The backend announces the agent build unconditionally, because it cannot
+   * time it: `create_agent` is synchronous, so a cold build occupies the
+   * runtime's event loop for its whole duration and a server-side timer never
+   * fires (verified on dev — a 1548ms build emitted nothing through a 250ms
+   * race). The client's clock is not blocked by any of that, so the decision
+   * lives here.
+   *
+   * 250ms is below the measured cold build (1478ms) and far above the warm one
+   * (0-38ms), so a warm turn's `preparing` is superseded by `thinking` long
+   * before this elapses and never reaches the screen. Which is the point: a
+   * 38ms flash of "Getting ready" is unreadable, and it lands AFTER the generic
+   * "Thinking" shown from the moment the user hits send, so it reads as going
+   * backwards.
+   */
+  private readonly PREPARING_RENDER_DELAY_MS = 250;
+
+  /** True once `preparing` has been the current phase for long enough to show. */
+  private readonly preparingSettled = signal(false);
 
   /** Clock for the stall thresholds; only ticks while a response is pending. */
   private readonly nowMs = signal(Date.now());
@@ -199,6 +229,7 @@ export class MessageListComponent {
   private consentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
   private userQuestionService = inject(UserQuestionService);
+  private browserLoginService = inject(BrowserLoginService);
   private compactionSummary = inject(CompactionSummaryService);
   private artifactState = inject(ArtifactStateService);
   private mcpAppCardState = inject(McpAppCardStateService);
@@ -226,6 +257,44 @@ export class MessageListComponent {
         }
         const timer = setInterval(() => this.nowMs.set(Date.now()), this.STALL_TICK_MS);
         onCleanup(() => clearInterval(timer));
+      });
+
+      // Hold `preparing` back until it has lasted long enough to be worth
+      // reading. A one-shot timer rather than a poll: the phase either
+      // survives the delay or is replaced, and re-running on every tick would
+      // just be a slower way to ask the same question.
+      effect((onCleanup) => {
+        const sessionId = this.chatStateService.viewedSessionId();
+        const phase = sessionId
+          ? this.toolInsight.status(sessionId)?.phase
+          : undefined;
+
+        // Armed on the way IN, never cleared on the way out.
+        //
+        // Clearing it when the phase left `preparing` opened a propagation
+        // window where the label computed with the phase still `preparing`
+        // and the flag already false, fell through to "Thinking", and showed
+        // a ~40ms step backwards — "Getting ready…" → "Thinking…" → "Waiting
+        // for the model…" — on every single turn. Observed on dev 5/5 turns;
+        // it is the exact reading this delay exists to prevent.
+        //
+        // Leaving the flag set costs nothing: the only branch that reads it
+        // is unreachable unless the phase IS `preparing`, and entering that
+        // phase again re-arms it below. The fast-build case is still
+        // suppressed by `onCleanup` cancelling the pending timer, which is
+        // what actually keeps a 38ms build off the screen.
+        if (phase !== 'preparing') {
+          return;
+        }
+
+        // Untracked: writing a signal this effect also reads would loop.
+        untracked(() => this.preparingSettled.set(false));
+
+        const timer = setTimeout(
+          () => this.preparingSettled.set(true),
+          this.PREPARING_RENDER_DELAY_MS,
+        );
+        onCleanup(() => clearTimeout(timer));
       });
     }
   }
@@ -295,30 +364,96 @@ export class MessageListComponent {
    * Returns null once text starts streaming: at that point the loader is gone
    * anyway, and a lingering "Thinking" under a visible answer would be wrong.
    */
-  protected readonly loaderStatus = computed<string | null>(() =>
-    this.loaderStatusTool() ? 'Running' : 'Thinking',
-  );
+  protected readonly loaderStatus = computed<string | null>(() => {
+    if (this.loaderStatusTool()) return 'Running';
+
+    // `thinking` is the runtime telling us the model call is in flight, which
+    // is a narrower and more useful claim than the fallback: it rules out the
+    // agent build, the session restore and the head-of-turn context work that
+    // all precede it and all read "Thinking" today.
+    //
+    // Only while the answer is still silent, though. The loader stays mounted
+    // for the whole turn — `isChatLoading` clears at stream close, not at the
+    // first token — so once text is arriving, "Waiting for the model" would
+    // contradict what the user can already read. In that case this says
+    // exactly what it said before, which is vague but not wrong.
+    const sessionId = this.chatStateService.viewedSessionId();
+    const phase = sessionId ? this.toolInsight.status(sessionId)?.phase : undefined;
+
+    // The agent is being built — tool registry, MCP pre-flight, session
+    // restore. The backend only sends this once the build has already proven
+    // slow (measured: 1478ms on a cold agent-cache miss, 0-38ms warm), so it
+    // never flickers past on the common path.
+    if (phase === 'preparing') {
+      // Not yet settled means the build is still plausibly a fast one, and a
+      // label that appears for 38ms is a flicker rather than a status.
+      //
+      // `prepared` deliberately does NOT land here: it means the build is
+      // over, so it falls through to the generic label below. That frame is
+      // what makes the settle timer work at all — the build's END used to be
+      // inferred from `thinking`, which arrives only after the head-of-turn
+      // work, so a 1ms build still sat in `preparing` past the delay and
+      // rendered "Getting ready…".
+      return this.preparingSettled() ? 'Getting ready' : 'Thinking';
+    }
+
+    if (phase === 'thinking' && !this.hasStreamedText()) {
+      return 'Waiting for the model';
+    }
+
+    return 'Thinking';
+  });
+
+  /**
+   * Whether the turn's newest assistant message has produced visible text yet.
+   *
+   * First-hand from the content stream, which is the only place this is
+   * knowable without the backend duplicating a fact the client already holds.
+   */
+  private readonly hasStreamedText = computed<boolean>(() => {
+    const messages = this.messages();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role !== 'assistant') continue;
+      return message.content.some(block => !!block.text?.trim());
+    }
+    return false;
+  });
+
+  // A count of the OTHER tools in a batch used to live here, rendering
+  // "Running list_assignments and 2 more". It was removed as dead code: the
+  // agent pins `tool_executor=SequentialToolExecutor()`
+  // (`agents/main_agent/core/agent_factory.py`) so that concurrent browser
+  // tools cannot start two Playwright sessions, which means a batch emits
+  // strictly interleaved start/end pairs and more than one tool is NEVER in
+  // flight. Verified on dev against a real three-tool batch. If that executor
+  // ever becomes concurrent, `ToolInsightService.runningTools` already tracks
+  // the whole set and the count is a few lines to restore.
 
   /**
    * The tool currently executing, or null.
    *
-   * Derived from the CONTENT stream — a `toolUse` block on the streaming
-   * message that has no result yet — rather than from `agent_status`, and
-   * that choice is load-bearing.
+   * `agent_status` first, the content stream as the fallback.
    *
-   * `agent_status` transitions are drained by the stream coordinator when the
-   * agent stream yields its next event. During tool execution the agent
-   * stream yields nothing, so a `tool_start` sits in the queue for exactly
-   * the silent stretch it exists to explain, and arrives alongside its own
-   * `tool_end` once the batch finishes. Measured on a three-tool browse turn:
-   * the indicator read "Thinking" for the entire 4.5s the tools were running
-   * and never once showed their name.
+   * The order used to be the other way round, for a good reason that no
+   * longer holds: the coordinator drained status transitions only between
+   * yields of the agent stream, and during tool execution that stream yields
+   * nothing — so a `tool_start` sat in the queue for exactly the silent
+   * stretch it exists to explain and arrived alongside its own `tool_end`.
+   * Measured on a three-tool browse turn: the indicator read "Thinking" for
+   * the entire 4.5s the tools were running and never once showed their name.
+   * PR-2 drains concurrently, so the transitions now arrive while the tools
+   * are running (docs/specs/agent-state-feedback.md).
    *
-   * The client does not have that problem. It knows a tool is in flight the
-   * moment the block streams in, first-hand, with no round trip. So this is
-   * both simpler and strictly more current. `agent_status` keeps its real
-   * job: the event-loop-measured durations, which the client genuinely
-   * cannot derive.
+   * `agent_status` is preferred because it knows things the content stream
+   * cannot: that a batch has THREE tools in it rather than one, and that a
+   * tool has finished (a `toolUse` block whose result has not streamed in yet
+   * looks identical to one still executing).
+   *
+   * The content-stream derivation stays as the fallback rather than being
+   * deleted. It needs no round trip, so it is strictly more current when it
+   * fires, and it is the only source left if the live drain is killed by its
+   * flag or a future SDK change starves the queue.
    *
    * Shown verbatim rather than prettified — `list_assignments` is the thing
    * that is running, and it is the same identifier the tool rail and the
@@ -326,6 +461,12 @@ export class MessageListComponent {
    * thing.
    */
   protected readonly loaderStatusTool = computed<string | null>(() => {
+    const sessionId = this.chatStateService.viewedSessionId();
+    if (sessionId) {
+      const running = this.toolInsight.runningTools(sessionId);
+      if (running.length) return running[0].toolName;
+    }
+
     const messages = this.messages();
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
@@ -387,6 +528,91 @@ export class MessageListComponent {
     const m = this.messages();
     return m.length ? m[m.length - 1].id : null;
   });
+
+  /**
+   * The one-line recap shown at the foot of a finished turn — "9.6s · 4 tools".
+   *
+   * Everything else about a turn disappears when it ends: the loading line
+   * goes, and with it the elapsed timer the user was watching. The tool rail
+   * keeps per-tool durations, but nothing said how long the turn took.
+   *
+   * `turnDurationMs` rather than `latency.endToEndLatency`, which is not the
+   * same number: the persisted form of that field prefers the provider's own
+   * API-call time, so summing it across a turn drops tool execution and the
+   * pre-stream agent build — a turn the user watched for 9s reads as 3s. The
+   * backend sends `turnDurationMs` on the live stream AND persists it on the
+   * turn's last message, so this reads the same either way.
+   *
+   * Null while the turn is still streaming (the duration only exists once it
+   * has ended) and null for a turn that predates the field, which is why the
+   * footer is absent on old conversations rather than showing a zero.
+   */
+  protected readonly lastTurnRecap = computed<string | null>(() => {
+    // Strict alternation with the loading line, which is the whole point: the
+    // recap renders in the loader's own slot, so exactly one of the two is on
+    // screen at any moment and the finished state reads as the live state
+    // settling rather than as a second, different thing appearing beneath it.
+    //
+    // `isChatLoading` is the signal that makes that true, because it spans the
+    // WHOLE turn — it clears at stream close, not at the last token. The
+    // narrower `streamingMessageId` clears at `message_stop`, which is earlier,
+    // and gating on it alone put the recap on screen while the loader was still
+    // running. Both are kept: the first guarantees the alternation, the second
+    // still holds in any context where `isChatLoading` is not threaded through.
+    if (this.isChatLoading()) return null;
+
+    // Only the latest turn. The number describes what just happened, and a
+    // column of durations down the whole conversation turns a punctuation mark
+    // into a metrics readout — every earlier turn's recap is a fact nobody
+    // asked for, competing with the answer it sits under.
+    const turns = this.turns();
+    if (!turns.length) return null;
+
+    const assistant = turns[turns.length - 1].segments.filter(
+      (s) => s.kind === 'assistant',
+    );
+    if (!assistant.length) return null;
+
+    const last = assistant[assistant.length - 1].last;
+    if (last.id === this.streamingMessageId()) return null;
+
+    const durationMs = last.metadata?.['turnDurationMs'];
+    if (typeof durationMs !== 'number' || durationMs <= 0) return null;
+
+    const parts = [this.formatDuration(durationMs)];
+
+    const tools = assistant.reduce(
+      (count, segment) =>
+        count +
+        segment.messages.reduce(
+          (n, message) =>
+            n +
+            message.content.filter(
+              (block) => block.type === 'toolUse' || block.type === 'tool_use',
+            ).length,
+          0,
+        ),
+      0,
+    );
+    if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
+
+    return parts.join(' \u00b7 ');
+  });
+
+  /** Seconds under a minute, then minutes — matching the loader's readout. */
+  private formatDuration(ms: number): string {
+    if (ms < 1000) return '<1s';
+    const seconds = ms / 1000;
+    if (seconds < 10) {
+      // One decimal, but only when it says something: "4.0s" is noise where
+      // "4s" is the same fact.
+      const tenths = seconds.toFixed(1);
+      return tenths.endsWith('.0') ? `${tenths.slice(0, -2)}s` : `${tenths}s`;
+    }
+    const whole = Math.round(seconds);
+    if (whole < 60) return `${whole}s`;
+    return `${Math.floor(whole / 60)}m ${whole % 60}s`;
+  }
 
   protected canContinueFor(messageId: string): boolean {
     return (
@@ -594,6 +820,16 @@ export class MessageListComponent {
     const sessionId = this.sessionId();
     if (!sessionId) return [];
     return this.userQuestionService.pending().filter((r) => r.sessionId === sessionId);
+  });
+
+  /** Browser sign-in prompts for THIS list's session, filtered for the same
+   *  reason as the two above: the service queue is global, and resuming a
+   *  paused turn from another pane's transcript would hand the browser back on
+   *  a conversation the reader isn't looking at. */
+  protected pendingBrowserLogins = computed<BrowserLoginRequest[]>(() => {
+    const sessionId = this.sessionId();
+    if (!sessionId) return [];
+    return this.browserLoginService.pending().filter((r) => r.sessionId === sessionId);
   });
 
   /** Messages grouped into turns: each user message starts a group and the

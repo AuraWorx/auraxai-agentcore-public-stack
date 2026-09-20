@@ -12,7 +12,13 @@ on:
       - 'infrastructure/cdk.context.json'
       - 'infrastructure/bin/infrastructure.ts'
       - 'infrastructure/bootstrap-assets/**'
+      # Staged into the mcp-sandbox bucket at synth (mcp-sandbox-bucket-construct).
+      # Without this a viewer change deploys NOWHERE: frontend-deploy.yml does not
+      # ship it, so the push goes green and the old asset stays live.
+      - 'infrastructure/assets/**'
       - 'scripts/platform/**'
+      # fetch-dcv-sdk.sh runs in THIS workflow, before synth.
+      - 'scripts/build/**'
       - '.github/workflows/platform.yml'
 
 permissions:
@@ -128,6 +134,20 @@ jobs:
       # backfill.
       CDK_ARTIFACT_SHARE_INBOX_ENABLED: ${{ vars.CDK_ARTIFACT_SHARE_INBOX_ENABLED }}
       CDK_FRONTEND_CERTIFICATE_ARN: ${{ vars.CDK_FRONTEND_CERTIFICATE_ARN }}
+      # Hostnames Chromium refuses to navigate to during a browser session —
+      # the control that stops a human in a browser takeover reaching a system
+      # the agent must not act inside. Comma-separated, e.g.
+      # "instructure.com,vendor.example.com".
+      #
+      # ⚠️ There is NO built-in default: unset resolves to an empty string,
+      # which config.ts treats as "not configured" and leaves the list EMPTY,
+      # so browser sessions can reach any host and RBAC on browse_web /
+      # request_user_login becomes the only control. The stack ships
+      # fork-neutral on purpose (the hosts that matter are a per-institution
+      # policy call), so every environment that needs a blocklist must set
+      # this variable. The synth log prints the list, or warns when it is
+      # empty — check it after a deploy.
+      CDK_BROWSER_URL_BLOCKLIST: ${{ vars.CDK_BROWSER_URL_BLOCKLIST }}
       # MCP Apps sandbox-proxy origin (mcp-sandbox.{domain}). Without the
       # cert ARN the construct silently falls back to the CloudFront default
       # domain and creates no Route53 ALIAS — the SPA then frames a
@@ -294,6 +314,15 @@ jobs:
           aws-role-arn: ${{ secrets.AWS_ROLE_ARN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # The browser sign-in live view is served from the mcp-sandbox origin and
+      # needs the Amazon DCV Web Client SDK deployed alongside it. The SDK is a
+      # EULA-licensed AWS download and this repo is PUBLIC, so it is fetched and
+      # verified here rather than committed. Must run BEFORE the deploy: CDK
+      # stages assets/mcp-sandbox at synth time, so an absent SDK silently ships
+      # a viewer that cannot load. See docs/specs/authenticated-web-assessment.md.
+      - name: Fetch Amazon DCV Web Client SDK
+        run: bash scripts/build/fetch-dcv-sdk.sh
 
       - name: Deploy PlatformStack
         run: bash scripts/platform/deploy.sh

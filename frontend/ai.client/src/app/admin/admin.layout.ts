@@ -15,6 +15,7 @@ import {
   heroArrowLeft,
   heroShieldCheck,
   heroCurrencyDollar,
+  heroHandThumbDown,
   heroScale,
   heroAcademicCap,
   heroPencilSquare,
@@ -34,6 +35,7 @@ import {
   heroBuildingLibrary,
   heroTag,
   heroBookmark,
+  heroSquares2x2,
 } from '@ng-icons/heroicons/outline';
 
 interface NavItem {
@@ -68,6 +70,7 @@ interface NavGroup {
       heroArrowLeft,
       heroShieldCheck,
       heroCurrencyDollar,
+      heroHandThumbDown,
       heroScale,
       heroAcademicCap,
       heroPencilSquare,
@@ -87,6 +90,7 @@ interface NavGroup {
       heroBuildingLibrary,
       heroTag,
       heroBookmark,
+      heroSquares2x2,
     }),
   ],
   host: { class: 'block' },
@@ -193,6 +197,10 @@ export class AdminLayout implements OnInit {
       label: 'Usage & Spend',
       items: [
         { label: 'Cost Analytics', icon: 'heroCurrencyDollar', route: '/admin/costs', scope: 'admin.costs' },
+        // Same scope as Cost Analytics on purpose: the feedback arms are read
+        // against the cost rows they join to, and there is no separate signal
+        // to delegate independently.
+        { label: 'Feedback', icon: 'heroHandThumbDown', route: '/admin/feedback', scope: 'admin.costs' },
         { label: 'Quotas', icon: 'heroScale', route: '/admin/quota', scope: 'admin.quota' },
         { label: 'Fine-Tuning', icon: 'heroAcademicCap', route: '/admin/fine-tuning', scope: 'admin.fine_tuning' },
       ],
@@ -203,6 +211,7 @@ export class AdminLayout implements OnInit {
         { label: 'Models', icon: 'heroPencilSquare', route: '/admin/manage-models', scope: 'admin.models' },
         { label: 'Tools', icon: 'heroWrenchScrewdriver', route: '/admin/tools', scope: 'admin.tools' },
         { label: 'Skills', icon: 'heroSparkles', route: '/admin/skills', scope: 'admin.skills' },
+        { label: 'Agent Templates', icon: 'heroSquares2x2', route: '/admin/agent-templates', scope: 'admin.agent_templates' },
         { label: 'Connectors', icon: 'heroLink', route: '/admin/connectors', scope: 'admin.connectors' },
       ],
     },

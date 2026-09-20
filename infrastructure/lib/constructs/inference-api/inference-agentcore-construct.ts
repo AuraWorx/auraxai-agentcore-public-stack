@@ -50,6 +50,10 @@ export interface InferenceAgentCoreConstructProps {
   browserArn: string;
   /** AgentCore Browser ID — same provenance as browserArn. */
   browserId: string;
+  /** S3 bucket holding the Chromium MANAGED policy (spec D6). */
+  browserPolicyBucketName: string;
+  /** Object key of that policy file. */
+  browserPolicyKey: string;
   alarmTopic?: sns.ITopic;
 }
 
@@ -231,6 +235,27 @@ export class InferenceAgentCoreConstruct extends Construct {
       resources: [props.browserArn],
     }));
 
+    // The Chromium URL policy is passed on every StartBrowserSession, and the
+    // service reads the S3 object as **the caller** — this role — not as the
+    // browser's execution role. Granting only the browser role (which the
+    // service's own prerequisites document) produced:
+    //
+    //   ValidationException ... Access denied to S3 object - bucket: ...,
+    //   key: policies/managed-policies.json. Verify that the caller has
+    //   permission to access this bucket and is the bucket owner.
+    //
+    // and that failure takes down EVERY browser session, not just the policy.
+    // Scoped to the one object rather than the prefix: this role only ever
+    // needs to read the policy it is passing.
+    runtimeExecutionRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'BrowserPolicyObjectRead',
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:GetObjectVersion'],
+      resources: [
+        `arn:aws:s3:::${props.browserPolicyBucketName}/${props.browserPolicyKey}`,
+      ],
+    }));
+
     // ============================================================
     // Import Cognito SSM Parameters for JWT Authorizer
     // ============================================================
@@ -350,6 +375,14 @@ export class InferenceAgentCoreConstruct extends Construct {
         MEMORY_ARN: props.memoryArn,
         AGENTCORE_CODE_INTERPRETER_ID: props.codeInterpreterId,
         BROWSER_ID: props.browserId,
+        // The Chromium MANAGED policy passed on every StartBrowserSession.
+        // This is the control that stops a human in a takeover navigating to
+        // the LMS — no check in our code can, because it only ever sees the
+        // page the takeover started on. Spec D6.
+        //
+        // One variable, not a bucket/key pair, because the runtime's env-var
+        // budget is full (see the ceiling note below).
+        BROWSER_POLICY_S3: `s3://${props.browserPolicyBucketName}/${props.browserPolicyKey}`,
 
         // Gateway inbound auth mode. Sourced from the SAME config value that
         // builds the Gateway's authorizer, so the agent's data-plane auth and
@@ -406,12 +439,22 @@ export class InferenceAgentCoreConstruct extends Construct {
         // bindings entirely (today's behavior).
         AGENTS_API_ENABLED: config.agents.enabled ? 'true' : 'false',
 
-        // Authentication
-        ENABLE_QUOTA_ENFORCEMENT: 'true',
+        // ENABLE_QUOTA_ENFORCEMENT is deliberately NOT set. `quota.py` reads
+        // it with a 'true' default, and this was hardcoded to 'true' — so the
+        // entry only ever restated the default while consuming one of the 50
+        // slots. Removing it leaves enforcement ON and frees a slot, which is
+        // exactly the remedy runtime-env-var-limit.test.ts recommends. If
+        // enforcement ever needs to be switchable, make it config-driven
+        // rather than re-adding a constant.
 
-        // ⚠️ NO ROOM FOR NEW VARIABLES HERE — see the assertion in
-        // test/inference-agentcore-construct.test.ts. `AWS::BedrockAgentCore::Runtime`
-        // caps EnvironmentVariables at 50 and this construct is AT the cap.
+        // Authentication
+
+        // ⚠️ ALMOST NO ROOM HERE — see the assertion in
+        // test/runtime-env-var-limit.test.ts, which prints the live headroom.
+        // `AWS::BedrockAgentCore::Runtime` caps EnvironmentVariables at 50.
+        // This construct sat AT the cap until retiring the three dead
+        // directory variables above took it to 47/50; treat those 3 as a
+        // one-off reprieve, not permission to spend them casually.
         // Adding one more fails CloudFormation's *changeset validation* — after
         // synth, after tsc, after jest, after CI is green. It broke the dev
         // Platform Stack deploy on 2026-08-05 (`maximum size: [50], found: [51]`,
@@ -425,10 +468,13 @@ export class InferenceAgentCoreConstruct extends Construct {
         // deployed environment requires an out-of-band Runtime update until a
         // slot is freed.
 
-        // Directories
-        UPLOAD_DIR: '/tmp/uploads',
-        OUTPUT_DIR: '/tmp/output',
-        GENERATED_IMAGES_DIR: '/tmp/generated_images',
+        // NOTE: UPLOAD_DIR / OUTPUT_DIR / GENERATED_IMAGES_DIR used to be set
+        // here to /tmp/*. The runtime never read them for anything but a log
+        // line — the directories actually resolved from __file__, inside the
+        // source tree — so they pointed operators at paths nothing used. The
+        // whole local-output mechanism has since been deleted (output goes to
+        // S3), so there is nothing left to configure. Retiring them freed three
+        // of the 50 slots called out below.
 
         // URLs
         FRONTEND_URL: config.domainName ? `https://${config.domainName}` : 'http://localhost:4200',

@@ -70,6 +70,7 @@ import { MemorySpacesConstruct } from './constructs/memory/memory-spaces-constru
 import { AgentCoreMemoryConstruct } from './constructs/agentcore/memory-construct';
 import { AgentCoreCodeInterpreterConstruct } from './constructs/agentcore/code-interpreter-construct';
 import { AgentCoreBrowserConstruct } from './constructs/agentcore/browser-construct';
+import { AgentCoreBrowserPolicyConstruct } from './constructs/agentcore/browser-policy-construct';
 import { AgentCoreGatewayConstruct } from './constructs/gateway/agentcore-gateway-construct';
 
 // MCP sandbox (S3 + CloudFront — Platform edge surface)
@@ -87,6 +88,7 @@ import { PlatformDashboardConstruct } from './constructs/observability/platform-
 import { LambdaAlarmsConstruct } from './constructs/observability/lambda-alarms-construct';
 import { EcsServiceAlarmsConstruct } from './constructs/observability/ecs-service-alarms-construct';
 import { PromptCacheObservabilityConstruct } from './constructs/observability/prompt-cache-observability-construct';
+import { TurnLatencyObservabilityConstruct } from './constructs/observability/turn-latency-observability-construct';
 
 // Fine-tuning (data half lives in Platform)
 import { FineTuningDataConstruct } from './constructs/fine-tuning/fine-tuning-data-construct';
@@ -185,6 +187,7 @@ export class PlatformStack extends cdk.Stack {
   public readonly userMenuLinksTable: dynamodb.ITable;
   public readonly announcementsTable: dynamodb.ITable;
   public readonly systemPromptsTable: dynamodb.ITable;
+  public readonly agentTemplatesTable: dynamodb.ITable;
   public readonly sharedConversationsTable: dynamodb.ITable;
   public readonly sharedConversationsBucket: s3.IBucket;
   public readonly fileUploadBucket: s3.IBucket;
@@ -256,6 +259,8 @@ export class PlatformStack extends cdk.Stack {
   public readonly agentCoreCodeInterpreterId: string;
   public readonly agentCoreBrowser: bedrock.CfnBrowserCustom;
   public readonly agentCoreBrowserArn: string;
+  public readonly browserPolicyBucketName: string;
+  public readonly browserPolicyKey: string;
   public readonly agentCoreBrowserId: string;
 
   // ── Internal handles for the two-step wiring methods
@@ -426,6 +431,7 @@ export class PlatformStack extends cdk.Stack {
     this.userMenuLinksTable = adminTables.userMenuLinksTable;
     this.announcementsTable = adminTables.announcementsTable;
     this.systemPromptsTable = adminTables.systemPromptsTable;
+    this.agentTemplatesTable = adminTables.agentTemplatesTable;
 
     const fileUpload = new FileUploadConstruct(this, 'FileUpload', { config });
     this.fileUploadBucket = fileUpload.bucket;
@@ -683,6 +689,20 @@ export class PlatformStack extends cdk.Stack {
     this.agentCoreBrowserArn = agentCoreBrowserConstruct.browserArn;
     this.agentCoreBrowserId = agentCoreBrowserConstruct.browserId;
 
+    // The Chromium managed policy every browser session is started with.
+    // Deliberately NOT attached to the browser resource: there is no
+    // UpdateBrowser, policies are read from S3 at API-call time and frozen
+    // thereafter, and CfnBrowserCustom does not expose enterprisePolicies at
+    // all. inference-api passes the reference on each StartBrowserSession.
+    // See docs/specs/authenticated-web-assessment.md D6.
+    const browserPolicy = new AgentCoreBrowserPolicyConstruct(
+      this,
+      'AgentCoreBrowserPolicy',
+      { config, browserExecutionRole: agentCoreBrowserConstruct.executionRole },
+    );
+    this.browserPolicyBucketName = browserPolicy.bucket.bucketName;
+    this.browserPolicyKey = browserPolicy.policyKey;
+
     // AgentCore Gateway — config-only (MCP protocol, AWS_IAM
     // authorizer, IAM execution role with invoke rights against the
     // /^${prefix}-mcp-/ Lambda naming convention used by the
@@ -830,6 +850,7 @@ export class PlatformStack extends cdk.Stack {
       userMenuLinksTable: this.userMenuLinksTable,
       announcementsTable: this.announcementsTable,
       systemPromptsTable: this.systemPromptsTable,
+      agentTemplatesTable: this.agentTemplatesTable,
       sharedConversationsTable: this.sharedConversationsTable,
       sharedConversationsBucket: this.sharedConversationsBucket,
       fileUploadBucket: this.fileUploadBucket,
@@ -856,6 +877,8 @@ export class PlatformStack extends cdk.Stack {
       agentCoreCodeInterpreterId: this.agentCoreCodeInterpreterId,
       agentCoreBrowserArn: this.agentCoreBrowserArn,
       agentCoreBrowserId: this.agentCoreBrowserId,
+      browserPolicyBucketName: this.browserPolicyBucketName,
+      browserPolicyKey: this.browserPolicyKey,
       mcpSandboxProxyOrigin: this.mcpSandboxProxyOrigin,
     };
 
@@ -869,6 +892,8 @@ export class PlatformStack extends cdk.Stack {
       codeInterpreterId: this.agentCoreCodeInterpreterId,
       browserArn: this.agentCoreBrowserArn,
       browserId: this.agentCoreBrowserId,
+      browserPolicyBucketName: this.browserPolicyBucketName,
+      browserPolicyKey: this.browserPolicyKey,
     });
 
     // Cross-service dashboard + alarms over the EMF metrics both APIs emit
@@ -877,6 +902,17 @@ export class PlatformStack extends cdk.Stack {
     // group name from the construct above.
     new PromptCacheObservabilityConstruct(this, 'PromptCacheObservability', {
       alarmTopic: this.alarmTopic,
+      config: this._config,
+      runtimeLogGroupName: inferenceApi.runtimeLogGroupName,
+    });
+
+    // Percentiles over the pre-stream stages `turn_timing.py` emits. Sits
+    // beside the prompt-cache dashboard and for the same reason — it needs the
+    // runtime's service-created log group name — but in its own namespace and
+    // its own dashboard: that one answers "what did this cost", this one
+    // answers "how long did the user wait". The fourth dashboard is $3/month
+    // beyond CloudWatch's free three, taken deliberately; see the construct.
+    new TurnLatencyObservabilityConstruct(this, 'TurnLatencyObservability', {
       config: this._config,
       runtimeLogGroupName: inferenceApi.runtimeLogGroupName,
     });
@@ -898,6 +934,7 @@ export class PlatformStack extends cdk.Stack {
       agentCoreMemoryArn: this.agentCoreMemoryArn,
       agentCoreMemoryId: this.agentCoreMemoryId,
       inferenceApiRuntimeEndpointUrl: inferenceApi.runtimeEndpointUrl,
+      agentCoreRuntimeLogGroupName: inferenceApi.runtimeLogGroupName,
       artifactsOrigin: this.artifactsOriginUrl,
       sagemakerExecutionRoleArn: sagemaker.executionRole.roleArn,
       sagemakerSecurityGroupId: sagemaker.securityGroup.securityGroupId,
@@ -1005,6 +1042,7 @@ export class PlatformStack extends cdk.Stack {
         { name: 'user-menu-links', table: this.userMenuLinksTable },
         { name: 'announcements', table: this.announcementsTable },
         { name: 'system-prompts', table: this.systemPromptsTable },
+        { name: 'agent-templates', table: this.agentTemplatesTable },
         { name: 'shared-conversations', table: this.sharedConversationsTable },
         { name: 'user-file-uploads', table: this.fileUploadTable },
         { name: 'rag-assistants', table: this.ragAssistantsTable },

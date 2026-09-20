@@ -923,6 +923,11 @@ from .costs.routes import router as costs_router
 
 router.include_router(costs_router)
 
+# ========== Include Feedback Eval-Sampling Subrouter ==========
+from .feedback.routes import router as feedback_admin_router
+
+router.include_router(feedback_admin_router)
+
 # ========== Include User Admin Subrouter ==========
 from .users.routes import router as users_router
 
@@ -999,6 +1004,11 @@ router.include_router(user_menu_links_admin_router)
 from .system_prompts.routes import router as system_prompts_admin_router
 
 router.include_router(system_prompts_admin_router)
+
+# ========== Include Agent Templates Admin Subrouter ==========
+from .agent_templates.routes import router as agent_templates_admin_router
+
+router.include_router(agent_templates_admin_router)
 
 # ========== Include Announcements Admin Subrouter (conditional) ==========
 # Default ON with a kill switch. While ANNOUNCEMENTS_ENABLED=false the admin

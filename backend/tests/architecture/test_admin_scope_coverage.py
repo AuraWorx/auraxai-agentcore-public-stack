@@ -44,6 +44,7 @@ EXPECTED_MODULE_SCOPES = {
     "routes.py": "admin.models",
     "quota/routes.py": "admin.quota",
     "costs/routes.py": "admin.costs",
+    "feedback/routes.py": "admin.costs",  # eval-sampling queue sits beside the cost rows
     "users/routes.py": "admin.users",
     "tools/routes.py": "admin.tools",
     "skills/routes.py": "admin.skills",
@@ -54,6 +55,7 @@ EXPECTED_MODULE_SCOPES = {
     "user_menu_links/routes.py": "admin.user_menu_links",
     "announcements/routes.py": "admin.announcements",
     "system_prompts/routes.py": "admin.system_prompts",
+    "agent_templates/routes.py": "admin.agent_templates",
     "fine_tuning/routes.py": "admin.fine_tuning",
 }
 

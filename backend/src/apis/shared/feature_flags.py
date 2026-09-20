@@ -92,6 +92,36 @@ def workspace_tools_enabled() -> bool:
     return os.environ.get("WORKSPACE_TOOLS_ENABLED", "").strip().lower() != "false"
 
 
+def document_read_enabled() -> bool:
+    """Whether the ``document_read`` agent tool is injected for sessions that
+    carry a readable attachment (``docs/specs/document-context-offload.md``
+    §4B). **Default ON with a kill switch** (house style): unset or empty
+    resolves to enabled; only the literal ``"false"`` disables.
+
+    This is the *only* control on the tool. It is deliberately not gated on
+    RBAC or the tool picker: the governing capability is the user's own
+    attachment, and the ``workspace_files`` catalog key is granted to no prod
+    role, so an RBAC gate would ship the recovery path dark.
+    """
+    return os.environ.get("DOCUMENT_READ_ENABLED", "").strip().lower() != "false"
+
+
+def attachment_tool_autoenable_enabled() -> bool:
+    """Whether a turn that carries (or a session that holds) a spreadsheet
+    attachment gets the Spreadsheet Analysis tools injected for that session
+    even when the picker has them off — gated on the caller's RBAC grant, so
+    it enables, never grants. **Default ON with a kill switch** (house style):
+    unset or empty resolves to enabled; only the literal ``"false"`` disables.
+
+    Why: CSV/XLSX never go inline (``_partition_attachments``), and the
+    analysis tools are opt-in in the picker, so on the default tool set an
+    attached spreadsheet was a dead end — the model told the user to go find a
+    sidebar toggle (docs/specs/load-test-assessment-2026-09.md §1 fix 5). The
+    user's own attachment is the governing intent.
+    """
+    return os.environ.get("ATTACHMENT_TOOL_AUTOENABLE_ENABLED", "").strip().lower() != "false"
+
+
 def agents_enabled() -> bool:
     """Whether the Agent Designer surface is enabled for this environment.
 
@@ -258,6 +288,71 @@ def agent_status_enabled() -> bool:
     return os.environ.get("AGENT_STATUS_ENABLED", "").strip().lower() != "false"
 
 
+def agent_status_live_drain_enabled() -> bool:
+    """Whether ``agent_status`` transitions are drained DURING agent-stream silence.
+
+    The hook records its transitions from inside Strands' event loop, which has
+    no route to the SSE stream — so the coordinator drains them. Draining
+    between yields of the agent stream means a transition can only leave the
+    container when the agent stream next produces an event, and during tool
+    execution the agent stream produces nothing. A ``tool_start`` therefore
+    queued for exactly the silence it existed to explain and arrived bundled
+    with its own ``tool_end`` (measured: a three-tool browse turn narrated
+    nothing for 4.5s). This flag turns on the concurrent drain that fixes it.
+
+    **Default ON with a kill switch** (house style): unset or empty resolves to
+    enabled; only the literal ``"false"`` (case-insensitive) disables.
+
+    Its own kill switch rather than riding ``AGENT_STATUS_ENABLED`` because the
+    two carry different risk. That flag gates what the hook *records*, all of
+    it in-process. This one changes how the turn's stream is consumed — the
+    merge races the agent stream against a short timer — so a regression here
+    would be a streaming bug, not a missing status line. Turning it off
+    restores the original between-yields drain exactly, leaving every other
+    part of the feature intact.
+
+    Costs nothing against the model: it changes only when an already-recorded
+    transition is written to the SSE channel. Nothing reaches the prompt.
+    """
+    return (
+        os.environ.get("AGENT_STATUS_LIVE_DRAIN_ENABLED", "").strip().lower()
+        != "false"
+    )
+
+
+def agent_preparing_phase_enabled() -> bool:
+    """Whether the agent build runs INSIDE the response stream, narrated.
+
+    Measured on dev (docs/specs/agent-state-feedback.md): a cold agent-cache
+    miss spends **1478ms** in ``get_agent`` against a 2542ms pre-stream window,
+    while a warm turn spends 0-38ms there. Because FastAPI flushes response
+    headers when the handler returns its ``StreamingResponse``, and
+    ``get_agent`` is awaited before that return, the whole of that 1478ms is
+    dead air: the client has no channel and the server has nothing to say on.
+
+    With this on, the non-resume path defers the build into the stream
+    generator and emits one ``agent_status`` ``preparing`` frame before it, so
+    the response opens immediately and the wait is narrated instead of silent.
+
+    **Default ON with a kill switch** (house style): unset or empty resolves to
+    enabled; only the literal ``"false"`` (case-insensitive) disables, which
+    restores the eager build exactly.
+
+    Deliberately NOT applied to resume turns. Resume validates the submitted
+    interrupt ids against the rebuilt agent's paused state and **400s** on a
+    mismatch; that guard has to run before any byte is sent, and it needs the
+    agent to run at all. Resume also reuses a cached agent by construction, so
+    it is the case with the least to gain.
+
+    Costs nothing against the model: one SSE frame, and the same build either
+    way. Nothing reaches the prompt.
+    """
+    return (
+        os.environ.get("AGENT_PREPARING_PHASE_ENABLED", "").strip().lower()
+        != "false"
+    )
+
+
 def tool_summaries_enabled() -> bool:
     """Whether tool batches get a model-generated one-line summary.
 
@@ -352,3 +447,88 @@ def ask_user_question_enabled() -> bool:
     every time it flipped.
     """
     return os.environ.get("ASK_USER_QUESTION_ENABLED", "").strip().lower() != "false"
+
+
+def browser_takeover_enabled() -> bool:
+    """Whether a turn can hand the browser to the user so they can sign in.
+
+    Covers the ``request_user_login`` built-in tool, its Strands interrupt, the
+    ``browser_login_required`` SSE event and the ``browser_login``
+    ``PendingInterrupt`` breadcrumb. **Default ON with a kill switch** (house
+    style, mirroring ``ask_user_question_enabled``): unset or empty resolves to
+    enabled; only the literal ``"false"`` (case-insensitive) disables.
+
+    While off the tool is never registered, so it never reaches ``toolConfig``
+    and the model cannot pause a turn behind a prompt no client is listening
+    for. The tool re-checks the flag at call time as well, so a registry built
+    before a flip cannot strand a turn. Note this flag is a second gate, not
+    the first: ``request_user_login`` is its own catalog entry, so a role that
+    was never granted it never sees the tool regardless of the flag
+    (``docs/specs/authenticated-web-assessment.md`` D1).
+
+    Cost note (CLAUDE.md token-effectiveness tenet): flipping this changes
+    ``toolConfig`` for granted users and therefore re-writes the cacheable
+    prefix once per in-flight session — the ordinary cost of a deploy-time tool
+    change. Do not derive it from conversation state.
+    """
+    return os.environ.get("BROWSER_TAKEOVER_ENABLED", "").strip().lower() != "false"
+
+
+def response_feedback_enabled() -> bool:
+    """Whether users can thumb an assistant message up or down.
+
+    Covers the ``PUT`` / ``DELETE /sessions/{id}/messages/{messageId}/feedback``
+    routes, the ``feedback`` field merged into ``GET /sessions/{id}/messages``,
+    and the ``thumbsUp`` / ``thumbsDown`` session rollups. **Default ON with a
+    kill switch** (house style, mirroring ``cost_diagnostics_enabled``): unset
+    or empty resolves to enabled; only the literal ``"false"`` (case-
+    insensitive) disables. While off the write routes 404 and the read merge
+    is skipped; rows already written stay in the table. Name and default per
+    ``docs/specs/response-feedback.md`` §5.
+
+    The signal is content-free by construction (a ±1, a timestamp and an
+    optional reason *code* from a fixed enum — never free text), which is
+    what lets it join the ``C#`` cost row's turn class on the admin session
+    profile without the profile ever reading the conversation. See
+    ``docs/specs/document-context-offload.md`` §5 row 7 / §6.1.
+    """
+    return os.environ.get("RESPONSE_FEEDBACK_ENABLED", "").strip().lower() != "false"
+def attachment_turn_guard_enabled() -> bool:
+    """Whether a turn's attachments are held to the per-message file count and
+    the aggregate inline-bytes budget before the message is built.
+
+    Covers ``_apply_message_file_cap`` and ``_apply_inline_byte_budget`` in
+    the inference API chat route (docs/specs/document-context-offload.md §4E,
+    PR-6). **Default ON with a kill switch** (house style): unset or empty
+    resolves to enabled; only the literal ``"false"`` (case-insensitive)
+    disables.
+
+    While off the route behaves as before this shipped: the ``file_upload_ids``
+    resolver silently truncates at five, direct ``files`` are uncounted, and
+    a turn whose attachments sum past the AgentCore Memory event quota fails
+    at ``create_message`` with a ``SessionException``. The tuning knobs
+    (``INLINE_ATTACHMENTS_MAX_TOTAL_BYTES``, ``FILE_UPLOAD_MAX_FILES_PER_MESSAGE``)
+    live in ``apis.shared.files.models``.
+    """
+    return os.environ.get("ATTACHMENT_TURN_GUARD_ENABLED", "").strip().lower() != "false"
+
+
+def feedback_eval_sampling_enabled() -> bool:
+    """Whether down-thumbed turns may be sent to AgentCore Evaluations.
+
+    Covers ``POST /admin/feedback/evaluations/run`` (the offline batch that
+    judges recent down-thumbs, response-feedback spec §11 PR-4). **Defaults
+    OFF** (the ``FINE_TUNING_ENABLED``-style opt-in): set
+    ``FEEDBACK_EVAL_SAMPLING_ENABLED=true`` to turn it on.
+
+    Off by default on purpose, not by caution: the judge is an AWS-managed
+    evaluator that reads the conversation's spans — the full system prompt
+    and every user message of the sampled session. The evaluations spike
+    (``docs/specs/agentcore-evaluations-spike-findings.md`` §2) says to make
+    that decision explicitly per environment rather than let it happen as a
+    side effect, and the feedback spec's §8 puts conversation content behind
+    a scope. Flipping this flag is that decision. The read surfaces (the
+    queue list, the profile's judged aggregates) are not gated — they show
+    numbers only and tolerate the absence of any judged row.
+    """
+    return os.environ.get("FEEDBACK_EVAL_SAMPLING_ENABLED", "false").strip().lower() == "true"

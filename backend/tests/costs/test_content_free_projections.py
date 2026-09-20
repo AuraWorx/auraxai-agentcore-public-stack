@@ -148,12 +148,115 @@ async def test_top_sessions_reader_keeps_title_by_decision(storage):
     assert "compaction" not in rows[0]  # and it never widened into the diagnostic fields
 
 
-@pytest.mark.asyncio
-async def test_deleted_sessions_are_excluded_from_the_diagnostic_list(storage):
-    _seed(storage)
+def _seed_deleted(storage):
     storage.sessions_metadata_table.put_item(Item={
         "PK": f"USER#{USER_ID}", "SK": "S#gone", "GSI_PK": "SESSION#gone", "GSI_SK": "META",
-        "sessionId": "gone", "userId": USER_ID, "deleted": True, "totalCost": Decimal("9"),
+        "sessionId": "gone", "userId": USER_ID, "deleted": True, "status": "deleted",
+        "totalCost": Decimal("9"), "title": "DELETED TITLE",
     })
+
+
+@pytest.mark.asyncio
+async def test_deleted_sessions_are_excluded_from_the_diagnostic_list_by_default(storage):
+    _seed(storage)
+    _seed_deleted(storage)
     rows = await storage.get_user_session_diagnostics(USER_ID)
     assert [r["sessionId"] for r in rows] == [SESSION_ID]
+
+
+@pytest.mark.asyncio
+async def test_deleted_sessions_are_listed_on_request_and_stay_content_free(storage):
+    # A delete is a tombstone, not a refund: the row's cost survives it, so
+    # the audit must be able to see it to account for the period total.
+    _seed(storage)
+    _seed_deleted(storage)
+    rows = await storage.get_user_session_diagnostics(USER_ID, include_deleted=True)
+    by_id = {r["sessionId"]: r for r in rows}
+    assert set(by_id) == {SESSION_ID, "gone"}
+    assert by_id["gone"]["deleted"] is True
+    assert by_id["gone"]["status"] == "deleted"
+    assert by_id["gone"]["totalCost"] == 9
+    assert "title" not in by_id["gone"]
+
+
+@pytest.mark.asyncio
+async def test_feedback_rows_come_back_content_free_and_keyed_to_the_call(storage):
+    _seed(storage)
+    storage.sessions_metadata_table.put_item(Item={
+        "PK": f"USER#{USER_ID}", "SK": f"F#{SESSION_ID}#3",
+        "GSI_PK": f"SESSION#{SESSION_ID}", "GSI_SK": "F#3",
+        "sessionId": SESSION_ID, "messageId": Decimal(3), "userId": USER_ID,
+        "value": Decimal(-1), "reason": "wrong", "signal": "explicit", "updatedAt": "2026-09-16T00:00:00Z",
+        "ttl": Decimal(1_800_000_000),
+        # A stray content-bearing attribute must never leave the reader even
+        # if something wrote one (the writer cannot, but the reader is the guard).
+        "displayText": "SECRET",
+    })
+    rows = await storage.get_session_feedback_rows(SESSION_ID)
+    assert len(rows) == 1
+    row = rows[0]
+    assert content_bearing_paths(row) == []
+    assert row == {"sessionId": SESSION_ID, "messageId": 3, "value": -1, "reason": "wrong", "signal": "explicit", "updatedAt": "2026-09-16T00:00:00Z"}
+    # Joins the C# row on messageId.
+    records = await storage.get_session_cost_records(SESSION_ID)
+    assert records[0]["messageId"] == row["messageId"]
+    assert await storage.get_session_feedback_rows("no-such-session") == []
+
+
+@pytest.mark.asyncio
+async def test_recent_down_thumbs_queue_is_content_free_and_newest_first(storage):
+    _seed(storage)
+    for i, ts in ((1, "2026-09-16T00:00:01Z"), (2, "2026-09-16T00:00:02Z")):
+        storage.sessions_metadata_table.put_item(Item={
+            "PK": f"USER#{USER_ID}", "SK": f"F#{SESSION_ID}#{i}",
+            "GSI_PK": f"SESSION#{SESSION_ID}", "GSI_SK": f"F#{i}",
+            "GSI1PK": "FEEDBACK#down", "GSI1SK": ts,
+            "sessionId": SESSION_ID, "messageId": Decimal(i), "userId": USER_ID,
+            "value": Decimal(-1), "reason": "wrong", "signal": "explicit", "updatedAt": ts,
+            "evaluation": {"reason": "wrong", "scores": {"Builtin.Correctness": {"value": Decimal("0.5"), "n": Decimal(1), "explanation": "SECRET"}}},
+            "displayText": "SECRET",
+        })
+    rows = await storage.get_recent_down_thumbs(limit=10)
+    assert [r["messageId"] for r in rows] == [2, 1]
+    assert all(content_bearing_paths(r) == [] for r in rows)
+    assert "userId" not in rows[0] and "displayText" not in rows[0]
+    assert rows[0]["evaluation"]["scores"]["Builtin.Correctness"] == {"value": 0.5, "n": 1}
+
+
+def _seed_thumb(storage, message_id, value, ts, *, reason=None, signal="explicit", session_id=SESSION_ID):
+    item = {
+        "PK": f"USER#{USER_ID}", "SK": f"F#{session_id}#{message_id}",
+        "GSI_PK": f"SESSION#{session_id}", "GSI_SK": f"F#{message_id}",
+        "GSI1PK": f"FEEDBACK#{'down' if value == -1 else 'up'}", "GSI1SK": ts,
+        "sessionId": session_id, "messageId": Decimal(message_id), "userId": USER_ID,
+        "value": Decimal(value), "signal": signal, "updatedAt": ts,
+        "displayText": "SECRET",
+    }
+    if reason:
+        item["reason"] = reason
+    storage.sessions_metadata_table.put_item(Item=item)
+
+
+@pytest.mark.asyncio
+async def test_feedback_window_reads_both_polarities_content_free_and_time_bounded(storage):
+    _seed(storage)
+    _seed_thumb(storage, 1, -1, "2026-09-02T00:00:00Z", reason="wrong")
+    _seed_thumb(storage, 2, 1, "2026-09-03T00:00:00Z")
+    _seed_thumb(storage, 3, -1, "2026-08-01T00:00:00Z")   # before the window
+    _seed_thumb(storage, 4, -1, "2026-10-01T00:00:00Z")   # after the window
+
+    rows = await storage.get_feedback_in_window(start="2026-09-01T00:00:00Z", end="2026-09-30T00:00:00Z")
+
+    assert sorted(r["messageId"] for r in rows) == [1, 2]
+    assert {r["value"] for r in rows} == {-1, 1}
+    # No user id reaches an aggregate surface, and no content of any kind.
+    assert all(content_bearing_paths(r) == [] for r in rows)
+    assert all("userId" not in r and "displayText" not in r for r in rows)
+    assert [r for r in rows if r["value"] == -1][0]["reason"] == "wrong"
+
+
+@pytest.mark.asyncio
+async def test_feedback_window_is_empty_when_nothing_falls_in_it(storage):
+    _seed(storage)
+    _seed_thumb(storage, 1, -1, "2026-08-01T00:00:00Z")
+    assert await storage.get_feedback_in_window(start="2026-09-01T00:00:00Z", end="2026-09-30T00:00:00Z") == []

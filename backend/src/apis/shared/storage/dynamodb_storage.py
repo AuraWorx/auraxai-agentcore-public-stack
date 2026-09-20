@@ -337,6 +337,122 @@ class DynamoDBStorage(MetadataStorage):
         except ClientError as e:
             raise Exception(f"Failed to get session cost records: {e}")
 
+    async def get_session_feedback_rows(
+        self,
+        session_id: str,
+    ) -> List[Dict[str, Any]]:
+        """All ``F#`` message-feedback rows for a session, any user — admin
+        scope, content-free by projection (``FEEDBACK_ROW_PROJECTION``).
+        Each row: ``messageId`` (the assistant message's index, the same key
+        the ``C#`` row carries), ``value`` ±1, optional ``reason`` code,
+        ``updatedAt``. Empty when the session has no thumbs.
+        """
+        from boto3.dynamodb.conditions import Key
+        from apis.shared.observability.content_policy import (
+            FEEDBACK_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FEEDBACK_ROW_PROJECTION)
+        try:
+            items: List[Dict[str, Any]] = []
+            last_evaluated_key = None
+            while True:
+                query_kwargs = {
+                    "IndexName": "SessionLookupIndex",
+                    "KeyConditionExpression": (
+                        Key("GSI_PK").eq(f"SESSION#{session_id}")
+                        & Key("GSI_SK").begins_with("F#")
+                    ),
+                    "ProjectionExpression": projection,
+                    "ExpressionAttributeNames": names,
+                }
+                if last_evaluated_key:
+                    query_kwargs["ExclusiveStartKey"] = last_evaluated_key
+                response = self.sessions_metadata_table.query(**query_kwargs)
+                items.extend(response.get("Items", []))
+                last_evaluated_key = response.get("LastEvaluatedKey")
+                if not last_evaluated_key:
+                    break
+        except ClientError as e:
+            raise Exception(f"Failed to get session feedback rows: {e}")
+
+        return [strip_content(self._convert_decimal_to_float(item)) for item in items]
+
+    async def get_recent_down_thumbs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Newest-first down-thumb rows across the fleet — the eval sampler's
+        queue as an admin sees it: content-free by projection, no user id."""
+        from boto3.dynamodb.conditions import Key
+        from apis.shared.observability.content_policy import (
+            FEEDBACK_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FEEDBACK_ROW_PROJECTION)
+        try:
+            response = self.sessions_metadata_table.query(
+                IndexName="UserTimestampIndex",
+                KeyConditionExpression=Key("GSI1PK").eq("FEEDBACK#down"),
+                ScanIndexForward=False,
+                Limit=max(1, min(int(limit), 200)),
+                ProjectionExpression=projection,
+                ExpressionAttributeNames=names,
+            )
+        except ClientError as e:
+            raise Exception(f"Failed to list recent down-thumbs: {e}")
+        return [strip_content(self._convert_decimal_to_float(item)) for item in response.get("Items", [])]
+
+    async def get_feedback_in_window(
+        self,
+        start: str,
+        end: str,
+        limit: int = 2000,
+    ) -> List[Dict[str, Any]]:
+        """Every explicit thumb, both polarities, in an ISO time window —
+        content-free by projection (no user id: the fleet view is aggregates
+        only, per response-feedback spec §8 rule 1).
+
+        Returns at most ``limit`` rows per polarity; the caller reports
+        truncation rather than silently under-counting.
+        """
+        from boto3.dynamodb.conditions import Key
+        from apis.shared.observability.content_policy import (
+            FEEDBACK_ROW_PROJECTION,
+            build_projection,
+            strip_content,
+        )
+
+        projection, names = build_projection(FEEDBACK_ROW_PROJECTION)
+        rows: List[Dict[str, Any]] = []
+        for partition in ("FEEDBACK#down", "FEEDBACK#up"):
+            collected: List[Dict[str, Any]] = []
+            last_key = None
+            try:
+                while len(collected) < limit:
+                    kwargs: Dict[str, Any] = {
+                        "IndexName": "UserTimestampIndex",
+                        "KeyConditionExpression": (
+                            Key("GSI1PK").eq(partition) & Key("GSI1SK").between(start, end)
+                        ),
+                        "ScanIndexForward": True,
+                        "Limit": min(500, limit - len(collected)),
+                        "ProjectionExpression": projection,
+                        "ExpressionAttributeNames": names,
+                    }
+                    if last_key:
+                        kwargs["ExclusiveStartKey"] = last_key
+                    response = self.sessions_metadata_table.query(**kwargs)
+                    collected.extend(response.get("Items", []))
+                    last_key = response.get("LastEvaluatedKey")
+                    if not last_key:
+                        break
+            except ClientError as e:
+                raise Exception(f"Failed to query feedback window: {e}")
+            rows.extend(collected[:limit])
+        return [strip_content(self._convert_decimal_to_float(item)) for item in rows]
+
     async def get_session_diagnostic_row(
         self,
         session_id: str,
@@ -825,10 +941,19 @@ class DynamoDBStorage(MetadataStorage):
         self,
         user_id: str,
         active_since: Optional[str] = None,
+        include_deleted: bool = False,
     ) -> List[Dict[str, Any]]:
         """One user's session rows, content-free, with everything a diagnostic
         list needs: cost/cache rollups, context, model, enabled tool ids, agent
         binding, compaction coordinates and the behavioral counters.
+
+        ``include_deleted=True`` keeps soft-deleted rows (``deleted`` /
+        ``status="deleted"``). A delete is a tombstone, not a refund: the
+        session's ``C#`` rows and its share of the user's period total survive
+        it, so an audit that hides these rows cannot account for the user's
+        spend — one prod user showed a single $3.77 conversation against
+        $20.32 of period cost. The default stays exclusive for callers that
+        list what the user can still open.
 
         Same bounded base-table query as :meth:`get_user_session_costs`; the
         difference is the projection (``SESSION_ROW_PROJECTION``) and the
@@ -848,6 +973,7 @@ class DynamoDBStorage(MetadataStorage):
             active_since=active_since,
             projection=projection,
             names=names,
+            include_deleted=include_deleted,
         )
         return [self._content_free_session_row(item) for item in items]
 
@@ -857,13 +983,15 @@ class DynamoDBStorage(MetadataStorage):
         active_since: Optional[str],
         projection: str,
         names: Optional[Dict[str, str]],
+        include_deleted: bool = False,
     ) -> List[Dict[str, Any]]:
         """Shared body of the two per-user session readers.
 
         ``PK = USER#<id>``, ``SK begins_with S#`` — matches both the static
         (``S#<id>``) and legacy (``S#ACTIVE#…``) schemes and no other row
-        family. Paginates, converts Decimals, drops soft-deleted rows, and
-        applies ``active_since`` client-side (``lastMessageAt`` is not a key).
+        family. Paginates, converts Decimals, drops soft-deleted rows unless
+        ``include_deleted``, and applies ``active_since`` client-side
+        (``lastMessageAt`` is not a key).
         """
         from boto3.dynamodb.conditions import Key
 
@@ -890,7 +1018,7 @@ class DynamoDBStorage(MetadataStorage):
             results = []
             for item in items:
                 item_float = self._convert_decimal_to_float(item)
-                if item_float.get("deleted"):
+                if item_float.get("deleted") and not include_deleted:
                     continue
                 if active_since:
                     last_message_at = item_float.get("lastMessageAt") or ""

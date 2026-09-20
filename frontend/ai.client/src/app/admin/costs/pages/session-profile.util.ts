@@ -2,8 +2,10 @@ import {
   CacheStatus,
   ContextTrajectoryPoint,
   DiagnosisSeverity,
+  FeedbackProfile,
   SessionCostAnatomy,
   SessionProfile,
+  TurnClass,
 } from '../models';
 
 /**
@@ -206,4 +208,76 @@ export function buildDiagnosticJson(
     null,
     2,
   );
+}
+
+// ── feedback ────────────────────────────────────────────────────────────────
+
+export const TURN_CLASS_LABELS: Record<TurnClass, string> = {
+  full: 'full',
+  digestOnly: 'digest',
+  retrieved: 'retrieved',
+  none: 'no docs',
+};
+
+const TURN_CLASS_ORDER: TurnClass[] = ['full', 'digestOnly', 'retrieved', 'none'];
+
+/** Down-thumb rate as a percentage, or null with nothing to rate. */
+export function downRate(counts: { up: number; down: number }): number | null {
+  const n = counts.up + counts.down;
+  return n > 0 ? Math.round((counts.down / n) * 100) : null;
+}
+
+/**
+ * One line of down-thumb rate per turn class, with n per class
+ * (`full 50% of 4 · digest 0% of 2`). Classes with no thumbs are skipped;
+ * null when the turn class is not tracked or nothing was thumbed.
+ */
+/** `2 retried · $0.35 rework`, or null when nothing was retried. */
+export function feedbackRetryLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const retried = feedback?.retried ?? 0;
+  if (retried === 0) return null;
+  const parts = [`${retried} retried`];
+  if (feedback?.reworkUsd != null) parts.push(`$${feedback.reworkUsd.toFixed(2)} rework`);
+  return parts.join(' · ');
+}
+
+/** `3 copied · 1 continued` — implicit signals, kept off the thumbs line. */
+export function feedbackImplicitLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const implicit = feedback?.implicit;
+  if (!implicit) return null;
+  const parts: string[] = [];
+  if (implicit.copied > 0) parts.push(`${implicit.copied} copied`);
+  if (implicit.continued > 0) parts.push(`${implicit.continued} continued`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * `judged 3 · Correctness 0.50 · tool failures 1/2 confirmed` — what the eval
+ * sampler concluded. Evaluator names lose their `Builtin.` prefix; null when
+ * nothing was judged.
+ */
+export function feedbackEvaluationsLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const ev = feedback?.evaluations;
+  if (!ev || ev.judged === 0) return null;
+  const parts = [`judged ${ev.judged}`];
+  for (const [name, agg] of Object.entries(ev.byEvaluator ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    parts.push(`${name.replace(/^Builtin\./, '')} ${agg.mean.toFixed(2)}`);
+  }
+  if (ev.toolFailuresReported > 0) {
+    parts.push(`tool failures ${ev.toolFailuresCorroborated}/${ev.toolFailuresReported} confirmed`);
+  }
+  return parts.join(' · ');
+}
+
+export function feedbackByTurnClassLine(feedback: FeedbackProfile | null | undefined): string | null {
+  const by = feedback?.byTurnClass;
+  if (!by) return null;
+  const parts = TURN_CLASS_ORDER.flatMap((klass) => {
+    const counts = by[klass];
+    if (!counts) return [];
+    const n = counts.up + counts.down;
+    if (n === 0) return [];
+    return [`${TURN_CLASS_LABELS[klass]} ${downRate(counts)}% of ${n}`];
+  });
+  return parts.length > 0 ? parts.join(' · ') : null;
 }

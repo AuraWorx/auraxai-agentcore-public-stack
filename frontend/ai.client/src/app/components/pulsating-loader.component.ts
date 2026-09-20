@@ -87,24 +87,76 @@ import { isPlatformBrowser } from '@angular/common';
       }
 
       /*
-       * 7px, opacity-only. The previous indicator was a 12px dot inside a 36px
-       * expanding ring, which drew more attention than the sentence next to it.
+       * A 7px core with a halo emanating from it.
+       *
+       * The halo is the expanding ring this indicator used to have and lost:
+       * it is what made the dot read as something happening rather than
+       * something blinking. What it does NOT get back is the old scale — that
+       * ring was 36px around a 12px dot and out-shouted the sentence beside
+       * it. At 7px with a 13px halo it holds the same motion inside a
+       * footprint that stays subordinate to the text.
+       *
+       * The element itself paints nothing; it is a 7px positioning box that
+       * carries the colour as a colour property, and both layers draw in
+       * currentColor. That is what keeps them in sync — the dark and notice
+       * variants each set one property instead of three.
+       *
+       * (No backticks anywhere in this block: the stylesheet lives inside the
+       * component's inline template literal, so one would end the template
+       * and the build fails on the decorator instead of on the comment.)
+       *
+       * The two layers are pseudo-elements rather than one animated box
+       * because they must scale independently: a halo nested inside a
+       * breathing core would multiply the two transforms and wobble.
        */
       .pulse-dot {
+        position: relative;
         width: 7px;
         height: 7px;
-        border-radius: 9999px;
         flex: none;
-        background-color: var(--color-secondary-500);
-        animation: loader-pulse 1.3s ease-in-out infinite;
-      }
-
-      .pulse-dot.is-notice {
-        background-color: var(--color-state-warning-500);
+        color: var(--color-secondary-500);
       }
 
       :host-context(.dark) .pulse-dot {
-        background-color: var(--color-secondary-400);
+        color: var(--color-secondary-400);
+      }
+
+      /*
+       * After the dark rule, and repeated under it, on purpose. These carry
+       * equal specificity, so source order decides — and with the dark rule
+       * last, a retry in dark mode painted the routine colour and the amber
+       * warning never appeared at all.
+       */
+      .pulse-dot.is-notice,
+      :host-context(.dark) .pulse-dot.is-notice {
+        color: var(--color-state-warning-500);
+      }
+
+      /* The halo: out from behind the core, fading as it goes. */
+      .pulse-dot::before {
+        content: '';
+        position: absolute;
+        inset: -3px;
+        border-radius: 9999px;
+        background-color: currentColor;
+        animation: loader-ring 1.25s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+      }
+
+      /*
+       * The core: a scale breathe rather than a fade. Opacity alone read as
+       * blinking; at this size a change in mass reads as alive. It keeps full
+       * opacity throughout so the dot never disappears mid-cycle, and the
+       * offset start keeps it out of phase with the halo.
+       */
+      .pulse-dot::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: 9999px;
+        background-color: currentColor;
+        box-shadow: 0 0 6px color-mix(in srgb, currentColor 45%, transparent);
+        animation: loader-core 1.25s cubic-bezier(0.455, 0.03, 0.515, 0.955) -0.4s
+          infinite;
       }
 
       .sep {
@@ -165,14 +217,24 @@ import { isPlatformBrowser } from '@angular/common';
         color: var(--color-state-warning-400);
       }
 
-      @keyframes loader-pulse {
+      @keyframes loader-ring {
+        0% {
+          transform: scale(0.35);
+          opacity: 0.5;
+        }
+        70%,
+        100% {
+          transform: scale(1.35);
+          opacity: 0;
+        }
+      }
+
+      @keyframes loader-core {
         0%,
         100% {
-          opacity: 0.35;
           transform: scale(0.8);
         }
         50% {
-          opacity: 1;
           transform: scale(1);
         }
       }
@@ -198,7 +260,13 @@ import { isPlatformBrowser } from '@angular/common';
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .pulse-dot {
+        /* The halo is motion and nothing else, so it goes entirely rather
+           than freezing mid-expansion as a stray outer circle. */
+        .pulse-dot::before {
+          display: none;
+        }
+
+        .pulse-dot::after {
           animation: none;
           opacity: 0.8;
         }

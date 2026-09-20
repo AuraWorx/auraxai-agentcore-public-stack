@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   buildDiagnosticJson,
   cleanCeiling,
+  downRate,
+  feedbackByTurnClassLine,
+  feedbackImplicitLine,
+  feedbackEvaluationsLine,
+  feedbackRetryLine,
   formatBytes,
   formatEvidenceValue,
   formatTokensShort,
@@ -20,6 +25,71 @@ function point(callIndex: number, contextTokens: number, cacheStatus: ContextTra
 }
 
 describe('session-profile.util', () => {
+  describe('feedback', () => {
+    it('downRate is a whole percentage, null with nothing to rate', () => {
+      expect(downRate({ up: 0, down: 0 })).toBeNull();
+      expect(downRate({ up: 3, down: 1 })).toBe(25);
+      expect(downRate({ up: 0, down: 2 })).toBe(100);
+    });
+
+    it('feedbackByTurnClassLine reports rate and n per class, skipping empty classes', () => {
+      const line = feedbackByTurnClassLine({
+        up: 3,
+        down: 2,
+        byTurnClass: {
+          full: { up: 1, down: 1 },
+          digestOnly: { up: 2, down: 0 },
+          retrieved: { up: 0, down: 0 },
+          none: { up: 0, down: 1 },
+        },
+      });
+      expect(line).toBe('full 50% of 2 · digest 0% of 2 · no docs 100% of 1');
+    });
+
+    it('feedbackRetryLine names retries and prices rework only when known', () => {
+      expect(feedbackRetryLine({ up: 0, down: 1 })).toBeNull();
+      expect(feedbackRetryLine({ up: 0, down: 1, retried: 1 })).toBe('1 retried');
+      expect(feedbackRetryLine({ up: 0, down: 2, retried: 2, reworkUsd: 0.351 })).toBe('2 retried · $0.35 rework');
+    });
+
+    it('feedbackImplicitLine names implicit signals apart from the thumbs', () => {
+      expect(feedbackImplicitLine({ up: 1, down: 0 })).toBeNull();
+      expect(feedbackImplicitLine({ up: 1, down: 0, implicit: null })).toBeNull();
+      expect(feedbackImplicitLine({ up: 1, down: 0, implicit: { copied: 0, continued: 0 } })).toBeNull();
+      expect(feedbackImplicitLine({ up: 0, down: 0, implicit: { copied: 3, continued: 1 } })).toBe('3 copied · 1 continued');
+    });
+
+    it('feedbackEvaluationsLine reports judged means and corroboration, null when nothing judged', () => {
+      expect(feedbackEvaluationsLine({ up: 0, down: 2 })).toBeNull();
+      expect(feedbackEvaluationsLine({ up: 0, down: 2, evaluations: null })).toBeNull();
+      expect(
+        feedbackEvaluationsLine({
+          up: 0,
+          down: 3,
+          evaluations: {
+            judged: 3,
+            byEvaluator: { 'Builtin.Faithfulness': { n: 1, mean: 0.5 }, 'Builtin.Correctness': { n: 2, mean: 0.25 } },
+            toolFailuresReported: 2,
+            toolFailuresCorroborated: 1,
+          },
+        }),
+      ).toBe('judged 3 · Correctness 0.25 · Faithfulness 0.50 · tool failures 1/2 confirmed');
+    });
+
+    it('feedbackByTurnClassLine is null when the turn class is not tracked', () => {
+      expect(feedbackByTurnClassLine({ up: 1, down: 1, byTurnClass: null })).toBeNull();
+      expect(feedbackByTurnClassLine({ up: 1, down: 1 })).toBeNull();
+      expect(feedbackByTurnClassLine(undefined)).toBeNull();
+      expect(
+        feedbackByTurnClassLine({
+          up: 0,
+          down: 0,
+          byTurnClass: { full: { up: 0, down: 0 }, digestOnly: { up: 0, down: 0 }, retrieved: { up: 0, down: 0 }, none: { up: 0, down: 0 } },
+        }),
+      ).toBeNull();
+    });
+  });
+
   describe('cleanCeiling', () => {
     it('rounds up to a 1/2/2.5/5/10 step of the magnitude', () => {
       expect(cleanCeiling(0)).toBe(1);

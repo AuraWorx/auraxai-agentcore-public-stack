@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ChatStateService } from './chat-state.service';
 import { ChatHttpService } from './chat-http.service';
 import { MessageMapService } from '../session/message-map.service';
+import { MessageFeedbackService } from '../session/message-feedback.service';
 import { SessionService } from '../session/session.service';
 import { UserService } from '../../../auth/user.service';
 import { ModelService } from '../model/model.service';
@@ -21,10 +22,23 @@ import {
   UserQuestionResponse,
   UserQuestionService,
 } from '../../../services/user-question/user-question.service';
+import {
+  BrowserLoginResponse,
+  BrowserLoginService,
+} from '../../../services/browser-login/browser-login.service';
 import { ErrorService } from '../../../services/error/error.service';
 import { SystemPromptsService } from '../../../services/system-prompts/system-prompts.service';
 import { isPreviewSession } from '../../../shared/constants/session.constants';
 import { HttpErrorResponse } from '@angular/common/http';
+
+/**
+ * How long a send will wait for the tool/skill lists before giving up and
+ * assembling the request from whatever has loaded. Long enough to cover a
+ * normal `/tools/` + `/skills/` round trip on a cold page, short enough that a
+ * hung request is a slightly stale prefix rather than a composer that appears
+ * to have swallowed the message.
+ */
+const SELECTION_SOURCE_TIMEOUT_MS = 4000;
 
 export interface ContentFile {
   fileName: string;
@@ -41,6 +55,7 @@ export class ChatRequestService implements OnDestroy {
   private chatHttpService = inject(ChatHttpService);
   private chatStateService = inject(ChatStateService);
   private messageMapService = inject(MessageMapService);
+  private messageFeedbackService = inject(MessageFeedbackService);
   private sessionService = inject(SessionService);
   private userService = inject(UserService);
   private modelService = inject(ModelService);
@@ -50,6 +65,7 @@ export class ChatRequestService implements OnDestroy {
   private oauthConsentService = inject(OAuthConsentService);
   private toolApprovalService = inject(ToolApprovalService);
   private userQuestionService = inject(UserQuestionService);
+  private browserLoginService = inject(BrowserLoginService);
   private steering = inject(SteeringService);
   private errorService = inject(ErrorService);
   private systemPromptsService = inject(SystemPromptsService);
@@ -66,12 +82,16 @@ export class ChatRequestService implements OnDestroy {
     this.userQuestionService.setResumeHandler((interruptId, response, context) =>
       this.resumeFromUserQuestion(interruptId, response, context?.sessionId),
     );
+    this.browserLoginService.setResumeHandler((interruptId, response, context) =>
+      this.resumeFromBrowserLogin(interruptId, response, context?.sessionId),
+    );
   }
 
   ngOnDestroy(): void {
     this.oauthConsentService.setResumeHandler(null);
     this.toolApprovalService.setResumeHandler(null);
     this.userQuestionService.setResumeHandler(null);
+    this.browserLoginService.setResumeHandler(null);
   }
 
   async submitChatRequest(
@@ -124,12 +144,23 @@ export class ChatRequestService implements OnDestroy {
     const fileAttachments = this.getFileAttachments(fileUploadIds);
 
     // Create and add user message with file attachments
-    this.messageMapService.addUserMessage(sessionId, userInput, fileAttachments);
+    const userMessage = this.messageMapService.addUserMessage(sessionId, userInput, fileAttachments);
+    // If this send is the retry a down-thumb asked for, link it to the thumb
+    // (an index on the feedback row — never the text).
+    this.messageFeedbackService.consumePendingRetry(sessionId, userMessage);
 
     // Start streaming for this conversation
     this.messageMapService.startStreaming(sessionId);
 
     try {
+      // Wait for the tool/skill selections to settle before assembling the
+      // request. On the first turn of a freshly loaded page these lists may
+      // still be in flight, and a turn built from an empty list discloses no
+      // skills and no tools — then the next turn discloses the real ones and
+      // rewrites the whole cacheable prefix at the cache-write premium. See
+      // `awaitSelectionSources`.
+      await this.awaitSelectionSources();
+
       // Build and send request with file upload IDs and assistant ID.
       // Built inside the try so a synchronous failure (e.g. no model
       // selected) still clears this session's loading state.
@@ -215,7 +246,8 @@ export class ChatRequestService implements OnDestroy {
     this.chatStateService.setChatLoading(sessionId, true);
 
     const fileAttachments = this.getFileAttachments(fileUploadIds);
-    this.messageMapService.addUserMessage(sessionId, message, fileAttachments);
+    const userMessage = this.messageMapService.addUserMessage(sessionId, message, fileAttachments);
+    this.messageFeedbackService.consumePendingRetry(sessionId, userMessage);
     this.messageMapService.startStreaming(sessionId);
 
     // NOTE: Field name is 'rag_assistant_id' to avoid collision with AWS Bedrock
@@ -278,6 +310,11 @@ export class ChatRequestService implements OnDestroy {
     this.chatStateService.setChatLoading(sessionId, true);
 
     try {
+      // Same gate as a normal send: a continuation must rebuild the SAME agent
+      // shape as the turn it continues, which means the same tool and skill
+      // selections.
+      await this.awaitSelectionSources();
+
       // Reuse the normal request shape so the backend rebuilds the same
       // model/tools/assistant agent, but with an empty message and the
       // continuation flag. No addUserMessage call → no user bubble. Built
@@ -311,6 +348,52 @@ export class ChatRequestService implements OnDestroy {
       queryParams,
       queryParamsHandling: 'merge',
     });
+  }
+
+  /**
+   * Wait for the tool and skill selections to be loaded before a request is
+   * assembled from them.
+   *
+   * WHY: both lists arrive asynchronously — `ToolService` fetches in its
+   * constructor, `SkillService` lazily on the first composer focus — and until
+   * they land `getEnabledToolIds()` / `getEnabledSkillIds()` answer with an
+   * empty array. That is indistinguishable from "the user turned everything
+   * off", so a message sent a second or two after page load went out with no
+   * skills and a short tool list, and the *next* message went out with the real
+   * ones. Both `toolConfig` and the system prompt changed between turn 1 and
+   * turn 2, so turn 2 missed the prompt cache entirely and re-wrote a ~15k-token
+   * prefix at the cache-write premium — for nothing the user did.
+   *
+   * The wait is bounded and never fails the send. A slow or broken `/tools/` or
+   * `/skills/` response falls back to exactly the previous behaviour (assemble
+   * from whatever is loaded) rather than holding the user's message hostage to
+   * a request that may never return. Once loaded this resolves synchronously in
+   * the microtask sense, so it costs nothing on turn 2 and after.
+   *
+   * It runs AFTER the optimistic UI work (the user's bubble, the streaming
+   * state, the route change) so nothing the user sees is delayed by it.
+   */
+  private async awaitSelectionSources(): Promise<void> {
+    const settled = Promise.all([
+      this.toolService.ensureLoaded(),
+      this.skillService.ensureLoaded(),
+    ]);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, SELECTION_SOURCE_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([settled.then(() => undefined), bound]);
+    } catch {
+      // `ensureLoaded` is documented not to reject; a send must not fail here
+      // even if that ever changes.
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   private buildChatRequestObject(
@@ -584,6 +667,59 @@ export class ChatRequestService implements OnDestroy {
         this.errorService.addError(
           'Question expired',
           'The agent paused too long ago to resume this turn automatically. Please send your message again.',
+        );
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Resume a turn the user paused to sign in to a site the agent could not
+   * reach (`docs/specs/authenticated-web-assessment.md`).
+   *
+   * Identical in shape to {@link resumeFromUserQuestion} — same
+   * `interrupt_responses` envelope, same non-null-response requirement, since
+   * both are tool-raised Strands interrupts. The response is
+   * `{ completed: true }` or `{ skipped: true }`; `BrowserLoginService`
+   * guarantees an object, because a null would re-raise the interrupt forever.
+   *
+   * The expired case is worth its own message: unlike a stale question, a
+   * lapsed sign-in means the backend already released the browser and let the
+   * session become reapable, so "send it again" is genuinely the only way
+   * forward — there is no authenticated session left to hand back.
+   */
+  private async resumeFromBrowserLogin(
+    interruptId: string,
+    response: BrowserLoginResponse,
+    sessionId?: string,
+  ): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    this.messageMapService.beginContinuationStreaming(sessionId);
+    this.chatStateService.setChatLoading(sessionId, true);
+
+    const resumeRequest: Record<string, unknown> = {
+      session_id: sessionId,
+      message: '',
+      interrupt_responses: [{ interruptId, response }],
+    };
+
+    this.attachCarriedSteering(resumeRequest, sessionId);
+
+    try {
+      await this.chatHttpService.sendChatRequest(resumeRequest);
+      await this.reconcileAfterResume(sessionId);
+    } catch (error) {
+      this.chatStateService.setChatLoading(sessionId, false);
+      this.messageMapService.endStreaming(sessionId);
+
+      if (this.isExpiredInterruptError(error)) {
+        this.errorService.addError(
+          'Sign-in expired',
+          'The browser session ended before the sign-in finished. Please send your message again to start a new one.',
         );
         return;
       }

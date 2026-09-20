@@ -58,6 +58,21 @@ OWNER_ACCESS = granted(ASSISTANT_ID, "user-parity", "owner")
 CITATION_EXCERPT_CHARS = 500
 
 
+@pytest.fixture(autouse=True)
+def _no_live_cloudwatch():
+    """Never publish metrics from a test.
+
+    ``kb_backend.metrics._publish`` builds ``boto3.client("cloudwatch")`` and
+    its ``except`` is documented as "observability must not break retrieval" —
+    so a live call failed silently and the test still passed. See the off-box
+    socket guard in conftest.
+    """
+    from unittest.mock import patch as _patch
+
+    with _patch("apis.shared.kb_backend.metrics._publish"):
+        yield
+
+
 class FakeManagedBackend:
     """Protocol-conforming stand-in for the managed backend (task 8.3).
 
