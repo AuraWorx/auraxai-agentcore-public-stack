@@ -1000,36 +1000,42 @@ export function loadConfig(scope: cdk.App): AppConfig {
         : scope.node.tryGetContext('artifacts')?.shareInboxEnabled ?? true,
     },
     browser: {
-      // Seeded with the LMS; extended after the CISO review. Comma-separated
-      // in the env var. An explicitly empty CDK_BROWSER_URL_BLOCKLIST='' is
-      // honoured as "block nothing" rather than falling back to the default,
-      // so an environment can opt out deliberately — but note that leaves the
-      // RBAC grant as the only control (spec Security 3).
+      // Hostnames Chromium refuses to navigate to during a browser session.
+      // This is a security control: it is what stops a human in a browser
+      // takeover navigating to a system the agent must not act inside.
+      //
+      // **Deliberately empty by default.** The contents are a per-deployment
+      // policy decision, not a property of this stack — the hosts that matter
+      // to one institution mean nothing to another — so this follows the
+      // `domainName` / `corsOrigins` convention: fork-neutral in the repo,
+      // supplied per environment by the `CDK_BROWSER_URL_BLOCKLIST` GitHub
+      // Actions variable that `platform.yml` forwards. Deployments that
+      // carried the old hardcoded seed MUST set that variable; a deploy whose
+      // list comes out empty while the browser tool is grantable says so in
+      // the deploy log (see the warning below).
+      //
+      // Comma-separated in the env var. Empty/unset falls through to context
+      // and then to `[]` — the house empty-string rule, because an unset
+      // GitHub Actions variable arrives as '' and must not be distinguishable
+      // from "not configured". "Block nothing" is the default, so opting out
+      // needs no sentinel; note it leaves the RBAC grant as the only control
+      // (spec Security 3).
+      //
+      // ⚠️ Chromium's URLBlocklist matches on HOST, not on the service behind
+      // it, so a site is only as blocked as its hostname list is complete.
+      // When adding an entry, enumerate the service's aliases first — vendor
+      // host, vanity CNAME, regional and mobile hostnames — and prefer the
+      // registrable domain (`instructure.com`) over one instance, so `.test.`
+      // and `.beta.` variants are covered rather than left as side doors.
+      //
+      // ⚠️ Blocking a vendor's *sign-in* host is usually wrong: an
+      // institutional login page is exactly what an accessibility or VPAT
+      // review needs to reach, which is the use case this feature exists for.
+      // Block where it LEADS, not the doorway.
       urlBlocklist:
-        process.env.CDK_BROWSER_URL_BLOCKLIST !== undefined
-          ? process.env.CDK_BROWSER_URL_BLOCKLIST.split(',')
-              .map((h) => h.trim())
-              .filter(Boolean)
-          : scope.node.tryGetContext('browser')?.urlBlocklist ?? [
-              // Broadened from the single `boisestatecanvas.instructure.com`
-              // host: this covers instructure.com AND its subdomains, so the
-              // `.test.` and `.beta.` Canvas instances are included rather
-              // than being unlisted side doors.
-              //
-              // ⚠️ Chromium's URLBlocklist matches on HOST, not on the service
-              // behind it, so a site is only as blocked as its hostname list
-              // is complete. When adding an entry, enumerate the service's
-              // aliases first — vendor host, vanity CNAME, regional and
-              // mobile hostnames.
-              //
-              // Deliberately NOT blocked: `canvas.boisestate.edu`, the
-              // institutional sign-in/discovery page. It is not where work is
-              // submitted, and blocking it would break the feature's primary
-              // purpose — a login page is exactly the kind of page faculty
-              // need to reach for an accessibility or VPAT review. What must
-              // stay blocked is where it LEADS, which this entry covers.
-              'instructure.com',
-            ],
+        parseListEnv(process.env.CDK_BROWSER_URL_BLOCKLIST)
+        ?? scope.node.tryGetContext('browser')?.urlBlocklist
+        ?? [],
     },
     mcpSandbox: {
       certificateArn: process.env.CDK_MCP_SANDBOX_CERTIFICATE_ARN || scope.node.tryGetContext('mcpSandbox')?.certificateArn,
@@ -1242,10 +1248,49 @@ export function loadConfig(scope: cdk.App): AppConfig {
     + ` agentCoreAppLogs=${config.observability.agentCoreApplicationLogsEnabled}`
   );
 
+  // Printed because this list is a security control supplied entirely from
+  // outside the repo: a deploy that ships an empty one has to say so, or a
+  // forgotten `CDK_BROWSER_URL_BLOCKLIST` variable is indistinguishable in
+  // the log from a deliberate "block nothing".
+  if (config.browser.urlBlocklist.length > 0) {
+    console.log(
+      `   Browser URL blocklist (${config.browser.urlBlocklist.length}): `
+      + config.browser.urlBlocklist.join(', ')
+    );
+  } else {
+    console.warn(
+      '   ⚠️  Browser URL blocklist is EMPTY — browser sessions can reach any'
+      + ' host. Set the CDK_BROWSER_URL_BLOCKLIST variable if this environment'
+      + ' is meant to block one. RBAC on browse_web / request_user_login is'
+      + ' then the only control.'
+    );
+  }
+
   // Validate configuration
   validateConfig(config);
 
   return config;
+}
+
+/**
+ * Parse a comma-separated list environment variable.
+ *
+ * Returns undefined for a missing OR empty value so that nullish coalescing
+ * (??) falls through to context defaults — the house empty-string rule. An
+ * unset GitHub Actions variable is forwarded as '', and treating that as an
+ * explicit "empty list" would let a forgotten variable silently override a
+ * configured default.
+ *
+ * @param value The environment variable value to parse
+ * @returns Trimmed, non-empty entries, or undefined if unset/empty
+ */
+export function parseListEnv(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
+
+  const entries = value.split(',').map((s) => s.trim()).filter(Boolean);
+  return entries.length > 0 ? entries : undefined;
 }
 
 /**
