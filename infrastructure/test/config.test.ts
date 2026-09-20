@@ -209,8 +209,21 @@ describe('RAG Ingestion Configuration', () => {
     test('seeds the LMS when unset', () => {
       delete process.env[BLOCKLIST_KEY];
 
-      expect(loadConfig(app).browser.urlBlocklist).toContain(
-        'boisestatecanvas.instructure.com',
+      // `instructure.com` covers the host and its subdomains, so the
+      // boisestatecanvas/.test/.beta instances are all included.
+      expect(loadConfig(app).browser.urlBlocklist).toContain('instructure.com');
+    });
+
+    test('does not block the institutional sign-in page', () => {
+      delete process.env[BLOCKLIST_KEY];
+
+      // The seed must not swallow `canvas.boisestate.edu`. It is a sign-in /
+      // discovery page, not the LMS, and reaching a login page is exactly
+      // what an accessibility or VPAT review needs to do — the use case this
+      // whole feature exists for. Blocking where it LEADS is the control;
+      // blocking the doorway would break the feature to no benefit.
+      expect(loadConfig(app).browser.urlBlocklist).not.toContain(
+        'canvas.boisestate.edu',
       );
     });
 

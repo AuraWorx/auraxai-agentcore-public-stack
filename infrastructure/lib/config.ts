@@ -1011,7 +1011,24 @@ export function loadConfig(scope: cdk.App): AppConfig {
               .map((h) => h.trim())
               .filter(Boolean)
           : scope.node.tryGetContext('browser')?.urlBlocklist ?? [
-              'boisestatecanvas.instructure.com',
+              // Broadened from the single `boisestatecanvas.instructure.com`
+              // host: this covers instructure.com AND its subdomains, so the
+              // `.test.` and `.beta.` Canvas instances are included rather
+              // than being unlisted side doors.
+              //
+              // ⚠️ Chromium's URLBlocklist matches on HOST, not on the service
+              // behind it, so a site is only as blocked as its hostname list
+              // is complete. When adding an entry, enumerate the service's
+              // aliases first — vendor host, vanity CNAME, regional and
+              // mobile hostnames.
+              //
+              // Deliberately NOT blocked: `canvas.boisestate.edu`, the
+              // institutional sign-in/discovery page. It is not where work is
+              // submitted, and blocking it would break the feature's primary
+              // purpose — a login page is exactly the kind of page faculty
+              // need to reach for an accessibility or VPAT review. What must
+              // stay blocked is where it LEADS, which this entry covers.
+              'instructure.com',
             ],
     },
     mcpSandbox: {
