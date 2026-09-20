@@ -196,38 +196,27 @@ describe('RAG Ingestion Configuration', () => {
 
   describe('Browser URL blocklist (spec D6)', () => {
     // This list is a security control: it is what stops a human in a browser
-    // takeover navigating to the LMS and having an agent act as them. The
-    // cases below pin the three behaviours that matter — the seed is present,
-    // an override replaces it, and an explicitly empty value is honoured
-    // rather than silently falling back to the seed.
+    // takeover navigating to a system the agent must not act inside. It is
+    // supplied entirely from outside the repo (the stack ships fork-neutral),
+    // so the cases below pin the three behaviours that matter — empty by
+    // default, an override populates it, and an unset GitHub Actions variable
+    // (which arrives as '') is NOT mistaken for a deliberate empty list.
     const BLOCKLIST_KEY = 'CDK_BROWSER_URL_BLOCKLIST';
 
     afterEach(() => {
       delete process.env[BLOCKLIST_KEY];
     });
 
-    test('seeds the LMS when unset', () => {
+    test('is empty when unset — no institution-specific hosts are baked in', () => {
       delete process.env[BLOCKLIST_KEY];
 
-      // `instructure.com` covers the host and its subdomains, so the
-      // boisestatecanvas/.test/.beta instances are all included.
-      expect(loadConfig(app).browser.urlBlocklist).toContain('instructure.com');
+      // The old build seeded `instructure.com` here. That is BSU's LMS policy,
+      // not a property of this stack, and a fork inherited it with no
+      // breadcrumb. It now lives in the per-environment variable.
+      expect(loadConfig(app).browser.urlBlocklist).toEqual([]);
     });
 
-    test('does not block the institutional sign-in page', () => {
-      delete process.env[BLOCKLIST_KEY];
-
-      // The seed must not swallow `canvas.boisestate.edu`. It is a sign-in /
-      // discovery page, not the LMS, and reaching a login page is exactly
-      // what an accessibility or VPAT review needs to do — the use case this
-      // whole feature exists for. Blocking where it LEADS is the control;
-      // blocking the doorway would break the feature to no benefit.
-      expect(loadConfig(app).browser.urlBlocklist).not.toContain(
-        'canvas.boisestate.edu',
-      );
-    });
-
-    test('an override replaces the seed and is trimmed', () => {
+    test('an override populates it and is trimmed', () => {
       process.env[BLOCKLIST_KEY] = 'one.example.com, two.example.com';
 
       expect(loadConfig(app).browser.urlBlocklist).toEqual([
@@ -236,13 +225,30 @@ describe('RAG Ingestion Configuration', () => {
       ]);
     });
 
-    test('an explicitly empty value means block nothing, not fall back', () => {
-      // An environment must be able to opt out deliberately. Treating '' as
-      // "unset" would silently re-arm a control the operator turned off — the
-      // inverse of the usual silent-arming hazard, and just as surprising.
+    test('an empty variable falls through to context, not to an empty list', () => {
+      // An unset GitHub Actions variable is forwarded as ''. If that were read
+      // as an explicit "block nothing" it would silently override a configured
+      // context default — a forgotten variable would disable the control and
+      // look identical in the log to a deliberate opt-out.
+      app.node.setContext('browser', {
+        urlBlocklist: ['from.context.example.com'],
+      });
       process.env[BLOCKLIST_KEY] = '';
 
-      expect(loadConfig(app).browser.urlBlocklist).toEqual([]);
+      expect(loadConfig(app).browser.urlBlocklist).toEqual([
+        'from.context.example.com',
+      ]);
+    });
+
+    test('a variable of only separators and spaces is treated as unset', () => {
+      app.node.setContext('browser', {
+        urlBlocklist: ['from.context.example.com'],
+      });
+      process.env[BLOCKLIST_KEY] = ' , , ';
+
+      expect(loadConfig(app).browser.urlBlocklist).toEqual([
+        'from.context.example.com',
+      ]);
     });
   });
 
