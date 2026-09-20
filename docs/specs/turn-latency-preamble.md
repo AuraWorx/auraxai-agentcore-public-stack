@@ -1,9 +1,17 @@
 # Turn latency: inside the preamble
 
-**Status:** PR-1 + PR-1b SHIPPED (#1184) and **VALIDATED on dev 2026-09-19** —
-the measurement ran and is recorded below. PR-2 is now justified by data rather
-than by a code reading, and its expected saving is **~4x larger** than this spec
-originally estimated. PR-3+ still open.
+**Status:** COMPLETE for the warm path. Five PRs shipped, merged, deployed and
+validated on dev (#1184, #1191, #1193, #1198, #1201):
+
+| | Baseline | Now |
+|---|---:|---:|
+| Warm preamble | 455ms | **22-37ms** (-95%) |
+| Warm pre-stream window | 591-656ms | **128-189ms** (-75%) |
+| Cold `agent_build` | ~2950ms, opaque | 3286ms, **fully attributed** |
+
+The cold path is untouched by design and is where everything left lives. The
+decomposition in PR-4 found its owner, and it is not what this spec assumed —
+see **PR-5** for the one thing worth doing next.
 **Follow-up to:** `docs/specs/agent-state-feedback.md` — its PR-3 measured the
 pre-stream window into four stages and then declined to narrate three of them.
 This spec opens the one that was left closed.
@@ -650,7 +658,112 @@ Expected: `session_state` 17-21ms -> ~2-5ms, with smaller shavings on
 `ownership` and `quota`. Combined with PR-2b the warm preamble should reach
 **~80ms, from the 455ms this spec started at**.
 
-## PR-4 — `asyncio.to_thread` the blocking DynamoDB calls (NOT STARTED)
+## PR-4 — decompose the agent build (SHIPPED #1201, VALIDATED on dev)
+
+With the warm preamble at 22-37ms, `agent_build` became the largest number in
+the prelude by an order of magnitude: **~3300ms cold** against 1-49ms warm, and
+nothing said which part of it that was. Seven sub-stages — `prompt`,
+`registry`, `session_mgr`, `tools`, `hooks`, `plugins`, `finalize` — plus
+`agent_build.rest`, grouped by the same mechanism PR-1 built so
+`groups.agent_build` reproduces the pre-split series.
+
+### The answer, measured on a cold turn (2026-09-19)
+
+`agent_build` = 3286ms of a 4131ms prelude:
+
+| Sub-stage | ms | share |
+|---|---:|---:|
+| **`tools`** | **2039** | **62%** |
+| `session_mgr` | 830 | 25% |
+| `finalize` | 194 | 6% |
+| `prompt` | 160 | 5% |
+| `registry` | 50 | 2% |
+| `plugins` | 13 | — |
+| `hooks` | 0 | — |
+
+**`agent_build.tools` is the single largest number in the whole turn** — four
+times what the preamble cost at its worst, and larger than everything this spec
+has fixed so far, combined.
+
+`session_mgr` at 830ms is the other real number. That is
+`SessionFactory.create_session_manager`, i.e. conversation restore from
+AgentCore Memory, which had never been timed at all.
+
+### What it does and does NOT vindicate
+
+This spec's standing hypothesis was the serial MCP `tools/list` pre-flight, and
+the pre-flight does live inside `agent_build.tools`. But the hypothesis cannot
+be right about the **fix**, for a reason the measurement makes plain:
+
+**dev loads exactly one external MCP server, and this stage still costs
+2039ms.** Parallelising across servers cannot help when there is one server. So
+the proposed `asyncio.gather` was wrong twice over — wrong mechanism (see
+below) *and* wrong target shape.
+
+`_build_filtered_tools()` also does registry filtering, gateway integration and
+local tool assembly, so how the 2039ms splits between the MCP round trip and
+everything else is **not yet known**. Given the correction recorded under PR-3,
+that gap is not something to fill by reasoning.
+
+### The `gather` fix would have been a no-op
+
+Recorded because it nearly got built. `MCPClient.load_tools()` is `async def`
+with **no await in its hot path**: `start()` blocks on
+`_init_future.result()`, and `_list_all_tools_sync()` blocks on
+`_invoke_on_background_thread(...).result()`. Every coroutine blocks the loop
+before it yields, so `asyncio.gather` over the servers runs them strictly
+sequentially. Same shape as the starved-timer bug `agent-state-feedback` PR-3
+already paid for. A real fix needs `asyncio.to_thread` per server *then*
+gather — and the **merge** must stay deterministic even when the fetch is not,
+because tool order reaches `toolConfig`, which is the prompt-cache prefix.
+
+### A contextvar, deliberately unlike PR-2
+
+PR-2 threaded its snapshot explicitly and rejected an implicit memo; this does
+the opposite. The asymmetry is the point: there, implicit state going wrong
+meant stale session data in production (the bug CLAUDE.md names, shipped twice
+here); here it means a timing number is mis-attributed — nothing the user sees,
+nothing persisted, nothing reaching the model. Against that, the explicit route
+costs a kwarg threaded through a type registry and three agent classes with
+mismatched constructor signatures. See
+`apis/shared/observability/build_stages.py`.
+
+Noted there too: contextvars do not cross into a `ThreadPoolExecutor`, and the
+MCP load path crosses one, so a future caller marking from inside it would
+silently record nothing.
+
+## PR-5 — split `agent_build.tools` (NOT STARTED — the one thing worth doing next)
+
+2039ms, 62% of the cold build, and undifferentiated. Split it into the MCP
+pre-flight, gateway integration, and local tool assembly, exactly as PR-1 split
+the preamble and PR-4 split the build.
+
+This is the third time the pattern would be applied and the first two both
+overturned an assumption, so the ordering is not negotiable: **measure, then
+decide whether a fix is worth building.** Specifically, do not assume the 2s is
+the MCP network round trip — on a one-server session it may equally be a
+synchronous SDK handshake, TLS setup, or tool-registry work nobody has looked
+at.
+
+Second target after that: `agent_build.session_mgr` at 830ms (AgentCore Memory
+restore, never timed).
+
+## Declined / overtaken — `asyncio.to_thread` for the DynamoDB calls
+
+Originally PR-3 in this spec, then PR-4, now **not recommended without new
+evidence**. Two measurements removed its rationale:
+
+- PR-2 took seven of the eight blocking reads off the hot path, so the
+  remaining event-loop exposure is one query; and
+- PR-3 showed the dominant cost was never IO wait at all — it was **CPU**
+  (boto3 client construction). Moving a 6ms query to a thread buys close to
+  nothing, and the thread hop is not free.
+
+It also remains unmeasurable without a load test, since its win is throughput
+under concurrency and dev has effectively none. If it is revisited, it needs
+the `tests/load` harness and its own justification, not this spec's.
+
+### The original argument, kept for the record
 
 Independent of PR-2 and independent of the measurement: whatever the reads cost,
 doing them on the event loop is wrong under concurrency, and the codebase already
