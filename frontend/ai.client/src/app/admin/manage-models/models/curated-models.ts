@@ -12,33 +12,52 @@ import { ManagedModelFormData, ModelProvider, SupportedParams } from './managed-
  *
  *   docs.aws.amazon.com/bedrock/latest/userguide/model-card-<provider>-<model>.html
  *
- * Check it first. The OpenAI-family rates are absent from the Price List API
- * entirely — those models bill through AWS Marketplace, which no pricing API
- * covers — and reading that absence as "unpublished" put three rows into the
- * dev catalog at GovCloud prices, over-charging by 20%.
+ * Check it first — the cards carry context windows, caching support,
+ * parameter tables and cutoffs, none of which any pricing API publishes.
  *
- * **Which source is authoritative depends on the vendor.** The per-model AWS
- * model cards above are authoritative for **Claude, Nova and the
- * OpenAI/Mantle family**; the Price List API is authoritative for **xAI,
- * Google and AgentCore**.
+ * **But corroborate the RATES against the Price List API.** As of 2026-09-21
+ * it carries almost everything, and a rate worth shipping should agree in
+ * both. There are two offer files, and picking the wrong one is the trap:
  *
- * ⚠️ Do NOT re-derive Claude rates from the Price List API. A full
- * enumeration of the `AmazonBedrock` offer file (run twice, a week apart,
- * across a republish) returns **10 Claude SKUs, none newer than Claude 3**,
- * and no us-west-2 SKU at all for Haiku 4.5, Sonnet 4.6, Fable 5.1, GPT-5.4
- * or Nova Micro. An earlier revision of this comment claimed the API "does
- * carry them" and told you to re-verify there; it does not, and a lookup that
- * comes back empty reads exactly like a model that is merely renamed.
- *
- * For the vendors the API does carry, re-verify with:
- *
+ *   # Claude, Cohere, Palmyra, TwelveLabs, Luma, Stability  (372 SKUs)
  *   aws pricing get-products --region us-east-1 \
  *     --service-code AmazonBedrockFoundationModels \
  *     --filters Type=TERM_MATCH,Field=regionCode,Value=us-west-2
  *
+ *   # Nova, xAI, Google, DeepSeek, Qwen, Moonshot             (1052 SKUs)
+ *   aws pricing get-products --region us-east-1 \
+ *     --service-code AmazonBedrock \
+ *     --filters Type=TERM_MATCH,Field=regionCode,Value=us-west-2
+ *
+ * ⚠️ An earlier revision of this comment said the API returns "10 Claude
+ * SKUs, none newer than Claude 3". **That is no longer true**, and the lesson
+ * is the failure mode rather than the fact: a query against the wrong offer
+ * file, or one filtering on the now-removed `model` attribute, returns zero
+ * and reads exactly like an unpublished model. Re-verified 2026-09-21 — every
+ * Claude row below is present and matches its card to the cent (Haiku 4.5
+ * $1.10/$5.50 Regional, $1.00/$5.00 Global; Sonnet 4.6 $3.30/$16.50; Opus 4.7
+ * $5.50/$27.50; Sonnet 5 $2.00/$10.00 Global; Fable 5.1 $10/$50 Global with a
+ * $0.25 cache read that independently confirms its 0.025x multiplier).
+ *
+ * The product schema now exposes only regionCode, usagetype, location,
+ * servicename and operation — there is no `model` and no `tokenType`. Match on
+ * `servicename` in the FoundationModels file ("Claude Haiku 4.5 (Amazon
+ * Bedrock Edition)") and on `usagetype` in the AmazonBedrock one
+ * ("USW2-moonshotai.kimi-k3-mantle-input-tokens-standard").
+ *
  * Newer models publish `*_tokens_standard` usagetypes; older ones publish
- * `*TokenCount`. A query written for one shape silently returns nothing for
- * the other — match both, or a model looks unpriced when it is merely renamed.
+ * `*TokenCount`. Both shapes are live TODAY in the same file — Sonnet 5 and
+ * Opus 4.7 use the first, Haiku 4.5 and Sonnet 4.6 the second — so a query
+ * written for one silently returns nothing for the other. Match both.
+ *
+ * The one real gap: the **hosted OpenAI family** (`openai.gpt-5.4`,
+ * `us.openai.gpt-5.6-*`, `us.openai.gpt-6-astra`) is absent from BOTH offer
+ * files, so its cards remain the only source. Reading that absence as
+ * "unpublished" once put three rows into the dev catalog at GovCloud prices,
+ * over-charging by 20%. Note the old explanation for it — "those models bill
+ * through AWS Marketplace, which no pricing API covers" — is wrong: Claude's
+ * rows are `MP:` Marketplace usagetypes and are covered. Only `gpt-oss`, the
+ * open-weight family, appears; the hosted GPT models genuinely do not.
  */
 export interface CuratedModel {
   /** Stable key for tracking + tests. Not persisted on the model itself. */
