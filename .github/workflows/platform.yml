@@ -19,6 +19,10 @@ on:
       - 'scripts/platform/**'
       # fetch-dcv-sdk.sh runs in THIS workflow, before synth.
       - 'scripts/build/**'
+      # recover-evicted-deploy.sh runs in THIS workflow. A change to the
+      # guard that re-dispatches an evicted peer deploy must itself be
+      # exercised by a real run.
+      - 'scripts/ci/**'
       - '.github/workflows/platform.yml'
 
 permissions:
@@ -30,15 +34,68 @@ env:
 
 # Shared "deploy-<ref>" group with backend.yml so a CFN deploy and the
 # API-driven backend code deploys never mutate the same ECS service /
-# AgentCore Runtime / Lambda concurrently — they queue instead.
+# AgentCore Runtime / Lambda concurrently.
 # cancel-in-progress: false avoids leaving CloudFormation in
 # ROLLBACK_IN_PROGRESS / UPDATE_ROLLBACK_FAILED after a mid-deploy cancel.
-# Enforced by tests/supply_chain/test_concurrency_config.py.
+#
+# ⚠️ This group does NOT queue. It is a latch with a queue depth of one:
+# "any existing pending job or workflow in the same concurrency group will
+# be canceled and the new queued job or workflow will take its place." A
+# third run entering an occupied group therefore KILLS the run that was
+# waiting, with zero jobs executed and a `cancelled` conclusion that looks
+# exactly like a human cancel. One merge is enough — a commit touching both
+# infrastructure/ and backend/ starts two runs that compete with each other
+# and with the previous merge's still-running deploy.
+#
+# Losing a pending run is harmless when a LATER run of the SAME workflow
+# supersedes it, and silently skips a CDK deploy when the evictor is
+# backend.yml. The `recover-evicted-peer` job below closes that gap; do not
+# remove it while this group is shared.
+# Enforced by backend/tests/supply_chain/test_concurrency_config.py.
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # Recover a peer deploy that GitHub silently evicted from the shared
+  # "deploy-<ref>" concurrency group when THIS run claimed the pending slot.
+  # A concurrency group is a latch with a queue depth of ONE, not a queue:
+  # "any existing pending job or workflow in the same concurrency group will
+  # be canceled and the new queued job or workflow will take its place." So a
+  # third run entering an occupied group kills whichever run was waiting,
+  # before it executes a single job, leaving a `cancelled` conclusion that is
+  # indistinguishable from a human pressing Cancel.
+  #
+  # That is harmless when the evicted run is superseded by a LATER run of the
+  # SAME workflow (both deploy the tree at HEAD, and git is cumulative). It is
+  # destructive across workflows: a Backend Deploy run does not run
+  # `cdk deploy`, so when it evicts a pending Platform Stack run the
+  # infrastructure change is simply never applied and CI stays green.
+  #
+  # No `needs`, so the recovery dispatch goes out at the top of the run rather
+  # than behind the deploy it is unrelated to. The re-dispatched run queues
+  # behind this one, so the concurrency guarantee is preserved.
+  # See scripts/ci/recover-evicted-deploy.sh.
+  # Enforced by backend/tests/supply_chain/test_concurrency_config.py.
+  recover-evicted-peer:
+    name: Recover evicted peer deploy
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+      # `gh workflow run` re-dispatches the peer workflow.
+      actions: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect and recover an evicted Backend Deploy run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/recover-evicted-deploy.sh backend.yml
+
   test-infra:
     name: Test infrastructure (jest)
     permissions:
