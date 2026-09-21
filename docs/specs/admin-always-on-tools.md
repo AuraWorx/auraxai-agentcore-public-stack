@@ -753,19 +753,60 @@ numbers (86–248ms) are a **different population** — organic traffic, differe
 container warmth, many unrelated merges since — so that delta is not
 attributable to this feature and was not treated as such.
 
-### 11.3 What was NOT validated live, and why
+### 11.3 D4 validated live, both sides
+
+Five throwaway Agents on dev (since deleted), same cache oracle, each arm with
+its own control.
+
+**An Agent that binds tools is exempt.** Three Agents with identical
+instructions, differing only in bindings:
+
+| Agent | `tool` bindings | `cacheStatus` |
+|---|---|---|
+| Alpha | `[calculator]` | `first_write` |
+| Beta | `[calculator]` — **control** | **`hit`** |
+| Gamma | `[calculator, create_visualization]` | `first_write` |
+
+Beta hitting Alpha is what makes the result readable: it proves two Agents with
+identical bindings share a prefix, so Agent identity does not perturb it and
+the oracle is valid here. Gamma then *missing* Alpha proves Alpha's `toolConfig`
+held **only** `calculator` — had the union been applied to a bound Agent, Alpha
+would equal Gamma and Gamma would have hit.
+
+Without the Beta control this test would have been vacuous: "no hit" could
+equally have meant "Agents never share prefixes", read as a pass.
+
+**An Agent with no tool bindings does receive the union.** One Agent, no
+bindings, and — importantly — a **unique instruction string**, because the
+first attempt used the shared instructions and both arms returned `hit`, which
+is *ambiguous*: `cacheStatus` says a prefix matched, not which one, and the
+unbound Agent's resolved set (`{calculator, create_visualization}`) is exactly
+Gamma's bound set. Re-run in isolation:
+
+| turn | `enabled_tools` sent | `cacheStatus` |
+|---|---|---|
+| A | `['calculator']` | `first_write` |
+| B | `['calculator', 'create_visualization']` | **`hit`** |
+| C | `['calculator', 'browse_web']` — control | `first_write` |
+
+B hitting A proves A's `toolConfig` already contained the pinned tool the
+client never sent. C missing confirms the oracle still discriminates.
+
+⚠️ **Method note worth keeping:** a bare `hit` is not evidence on its own. It
+names no prefix, so any test using it needs both a positive control (something
+that *must* hit) and isolation from unrelated sessions that could share a
+prefix. The first run of this test produced two hits and looked like a pass.
+
+### 11.4 What was NOT validated live, and why
 
 - **The negative RBAC side.** "A user whose roles do not grant the tool is
   unaffected" could not be reproduced: the test account holds `system_admin`,
   whose grant is `*`. There is no role available to it that *lacks* the tool.
   Covered by unit tests (`test_always_on_resolution.py`) and by the wildcard
   path being exercised live, but not by a second live identity.
-- **Both sides of the D4 boundary.** Validating "an Agent that binds tools is
-  exempt" against "an Agent with no bindings is not" needs two purpose-built
-  Agents on dev; deferred rather than asserted.
 - **Voice.** The token-rebuilt `User` path (D5) has unit coverage only.
 
-### 11.4 Bug found and fixed
+### 11.5 Bug found and fixed
 
 Real rendering surfaced what specs and unit tests did not: the whole-server
 confirmation read **"I understand this pins all 1 tools."** Fixed — and the
@@ -773,7 +814,13 @@ acknowledgement no longer gates a single-tool server at all, because the gate
 exists to prevent "I meant one tool and pinned thirty", and one tool is not
 that.
 
-### 11.5 Dev state left behind
+Verified live on dev after deploy, both directions: `hello_world` (1 tool) is
+ungated and saves freely, while `campus_directory` (3 tools) still blocks save
+until acknowledged and now reads *"I understand this pins all 3 of this
+server's tools."* The no-granting-role warning and the cost copy both survived
+the change.
+
+### 11.6 Dev state left behind
 
 `create_visualization` remains pinned on dev, as requested. Reverting is one
 change of the three-way control on `/admin/tools/edit/create_visualization`.
