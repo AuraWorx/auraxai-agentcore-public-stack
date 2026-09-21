@@ -6,6 +6,7 @@ binds its own tools is exempt; an Agent that binds none is not (see §7, D4)
 **Refs:** `_apply_attachment_tool_autoenable` (`inference_api/chat/routes.py`) is
 the pattern this follows; `docs/specs/turn-latency-preamble.md` is the latency
 budget it must not spend.
+**Compatibility:** deploying this with no tool flagged must be a no-op — §10.
 
 ## Problem
 
@@ -95,7 +96,9 @@ always_on: bool = Field(
 ```
 
 Persisted as `alwaysOn` on the DynamoDB item; absent on existing rows reads
-back `False`, so no backfill.
+back `False`, so no backfill. Backward compatibility is a stated requirement
+of this feature rather than a hoped-for property — see §10, which also records
+the cleanup this encoding defers.
 
 ### 2.2 Why a boolean and not a three-state enum
 
@@ -422,6 +425,11 @@ validator, `ToolCreateRequest`/`ToolUpdateRequest`, admin routes, admin form
 three-way control + token-size readout + no-granting-role warning, list-page
 chip. Ships as inert data.
 
+Carries the test that asserts §10's no-op property: with no tool marked
+`alwaysOn`, the effective `enabled_tools` is the *same object* the caller
+passed (identity, not equality — `_with_auto_enabled_tools` guarantees it), and
+a catalog row without the attribute round-trips to `always_on=False`.
+
 **PR-2 — Enforcement.**
 `freshness.get_always_on_tool_ids` third slot, `always_on_tool_ids(grant_set)`,
 `_apply_admin_always_on_tools` at the `_apply_attachment_tool_autoenable` seam
@@ -518,3 +526,120 @@ once and then ships stale code under an unchanged content-hash tag.
   same catalog; the per-tool GetItem fan-out could collapse into the snapshot
   that §4.1 makes unconditional. Opportunistic, unrelated to this feature's
   correctness, and would shave a real per-turn cost.
+
+## 10. Backward compatibility, and the cleanup it defers
+
+Backward compatibility is a **requirement of this feature, not a property we
+hope it has**. It is cheap to get here and expensive to retrofit, so it is
+stated as an acceptance criterion:
+
+> **Deploying every PR in §8 to an environment where no tool is marked
+> `alwaysOn` must be a no-op.** Byte-identical `toolConfig`, identical agent
+> cache keys, identical SSE stream, no new DynamoDB writes, no change to the
+> tool picker. Behaviour changes only once an admin flags a tool.
+
+That property is what makes this safe to ship dark and turn on deliberately
+(§8, PR-4), and it should be asserted by a test, not assumed.
+
+### 10.1 Surface by surface
+
+**Catalog rows.** `alwaysOn` absent reads back `False`, via the same
+`item.get("alwaysOn", False)` shape `enabledByDefault` already uses
+(`models.py:836`). No backfill, no dual-read, no migration. A row written by
+new code and read by old code carries one extra attribute that old code
+ignores.
+
+**`MCPToolEntry`.** `_parse_mcp_tools` already tolerates three stored shapes
+(entry dict, legacy `List[str]`, bare string). The new flag follows
+`needs_approval` exactly: `bool(data.get("alwaysOn", False))`.
+
+**Admin API.** `ToolCreateRequest` / `ToolUpdateRequest` gain
+`Optional[bool] = None`. ⚠️ The update route dumps with
+`model_dump(exclude_unset=True)` (`admin/tools/routes.py`), which is what makes
+omission mean *"leave it alone"* rather than *"set it to False"*. An older
+admin client that never sends the field must not silently clear it. **Do not
+"simplify" that to a plain `model_dump()`** — this is the one place partial-
+update semantics are load-bearing for compatibility.
+
+**`GET /tools` → SPA.** `UserToolAccess.alwaysOn` is purely additive, and the
+SPA and backend deploy independently (`frontend-deploy.yml` vs `backend.yml`),
+so both skew directions must be safe — and are:
+
+- old SPA bundle + new backend → unknown field ignored, today's toggle;
+- new SPA bundle + old backend → `undefined` → falsy → today's toggle.
+
+Neither direction renders a lock the other end cannot honour, which is the
+failure mode worth protecting against (a lock the backend does not enforce is
+worse than no lock at all).
+
+**`enabled_tools` on the wire.** Shape unchanged. `_with_auto_enabled_tools`
+returns **the same object** when there is nothing to add, so with no always-on
+tools configured the list is not merely equal to today's but identical —
+`None` stays `None`, and the agent cache key, the freshness hash and the
+serialized `toolConfig` are untouched. This is why the no-op claim above is
+structural rather than incidental.
+
+**Agent cache key.** No new element. §4's design adds no dimension to
+`_create_cache_key`; the union changes the *content* of `enabled_tools` when
+active and nothing at all when inactive.
+
+**Feature flag.** `ADMIN_ALWAYS_ON_TOOLS_ENABLED` is default-on with a kill
+switch (unset or empty ⇒ on, house style). Default-on is safe here precisely
+*because* the feature is inert without catalog data. The switch exists for the
+case where tools have already been flagged and something is wrong: it reverts
+to today's behaviour without an admin having to edit DynamoDB rows under
+pressure.
+
+**Scheduled runs and voice.** No payload change and no Lambda image change
+(D5).
+
+### 10.2 What is deliberately NOT backward compatible
+
+Two behaviour changes are intended, and both are gated behind an admin flagging
+a tool — neither fires on deploy:
+
+- a user whose picker is entirely off now receives the always-on set rather
+  than a tool-less agent (§5);
+- template-derived Agents with no tool bindings gain the pinned tools (D4,
+  PR-4).
+
+These belong in the release notes. "Backward compatible on deploy, behaviour
+change on enablement" is the honest summary.
+
+### 10.3 The debt this takes on, and how to retire it
+
+**The two-boolean encoding is a compatibility shim, not the shape we would
+choose greenfield.** §2.2 keeps `enabled_by_default` + `always_on` with a
+normalizing validator specifically to avoid migrating every catalog row, every
+request/response model, four SPA models and the seeder. That is the right
+trade *now*, and it is still debt: two booleans that must agree is the same
+derived-field drift pattern `allowedAppRoles` already demonstrates in this
+codebase.
+
+⚠️ **Until the cleanup lands, the normalizing validator is load-bearing. Do not
+delete it as redundant** — it is the only thing preventing
+`enabledByDefault: false` + `alwaysOn: true`, and it must run on read as well
+as write so a hand-written DynamoDB item cannot produce the invalid pair
+either.
+
+**Retirement plan.** Fold into the next change that already has to touch every
+`TOOL#` row (a seeder rewrite, or a new required catalog field) rather than
+spending a PR on it alone:
+
+1. Introduce a single `toolEnablement` enum — `user_choice` / `default_on` /
+   `always_on`.
+2. Backfill `TOOL#` rows. Remember the seeder is the **only** writer of those
+   rows, so it has to move in the same change or it will write the old shape
+   back.
+3. Drop the normalizing validator and both booleans from `ToolDefinition`,
+   `ToolCreateRequest`, `ToolUpdateRequest` and `UserToolAccess`.
+4. Collapse the admin form's *derived* three-way control into a real one bound
+   to the enum, and update the four SPA models.
+5. The invalid combination becomes unrepresentable rather than merely
+   normalized — which is the whole point of doing it.
+
+A second, smaller cleanup: once §9's "close the enforcement boundary" follow-up
+lands (intersecting `enabled_tools` with the caller's grant set on the default
+path), the RBAC filter inside always-on resolution becomes redundant with the
+general one. Collapse them then, not before — two gates that agree are cheap,
+and removing the specific one first would leave a window with neither.
