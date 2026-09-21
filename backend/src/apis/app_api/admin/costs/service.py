@@ -12,6 +12,10 @@ from typing import Any, Dict, Optional, List
 
 from apis.shared.sessions.models import FEEDBACK_REASONS
 from apis.shared.storage.dynamodb_storage import DynamoDBStorage
+from apis.shared.observability.prefix_tokens import (
+    prefix_split_is_plausible,
+    prompt_tokens_from_usage,
+)
 from .diagnoses import (
     CHARS_PER_TOKEN,
     Diagnosis,
@@ -329,11 +333,22 @@ def _call_ledger(record: Dict[str, Any], previous_removed: Optional[int]) -> _Ca
     raw_prefix = record.get("prefixTokens")
     if isinstance(raw_prefix, dict):
         try:
-            ledger.prefix_tokens = PrefixTokens(
-                system=int(raw_prefix.get("system") or 0),
-                tools=int(raw_prefix.get("tools") or 0),
-            )
+            system_tokens = int(raw_prefix.get("system") or 0)
+            tool_tokens = int(raw_prefix.get("tools") or 0)
         except (TypeError, ValueError):
+            system_tokens = tool_tokens = -1
+        # `tools` is a residual between two estimators, so a disagreement
+        # between them lands wholly in it. Rows written before the write-side
+        # guard shipped can claim a static prefix larger than the whole prompt
+        # the provider billed — prod session 7f5f207f reported tools=223,782
+        # against a 55,783-token prompt. Those are dropped here so the page
+        # reads "not tracked" (which it already renders) instead of a number a
+        # reader would size a tool budget from. Nothing is backfilled.
+        if prefix_split_is_plausible(
+            system_tokens, tool_tokens, prompt_tokens_from_usage(record.get("tokenUsage"))
+        ):
+            ledger.prefix_tokens = PrefixTokens(system=system_tokens, tools=tool_tokens)
+        else:
             ledger.prefix_tokens = None
     removed = _as_int(record.get("windowRemovedMessages"))
     if removed is not None:

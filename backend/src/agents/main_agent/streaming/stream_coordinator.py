@@ -16,6 +16,7 @@ from agents.main_agent.session.hooks.prefix_fingerprint import (
     reset_prefix_fingerprints,
 )
 from agents.main_agent.session.hooks.context_attribution import get_prefix_token_split
+from apis.shared.observability.prefix_tokens import prompt_tokens_from_usage
 from apis.shared.feature_flags import (
     agent_status_live_drain_enabled,
     cost_diagnostics_enabled,
@@ -3435,7 +3436,17 @@ class StreamCoordinator:
                     if reads:
                         metadata_kwargs["documentReads"] = reads
                 if strands_agent is not None and cost_diagnostics_enabled():
-                    prefix_tokens = get_prefix_token_split(strands_agent)
+                    # Reconciled against the prompt the provider actually
+                    # billed: `toolTokens` is a residual between two
+                    # estimators, and a split that claims more than the whole
+                    # prompt is stale or corrupt, so it is dropped rather than
+                    # stored as a fact (apis.shared.observability.prefix_tokens).
+                    prefix_tokens = get_prefix_token_split(
+                        strands_agent,
+                        prompt_tokens=prompt_tokens_from_usage(
+                            accumulated_metadata.get("usage")
+                        ),
+                    )
                     if prefix_tokens:
                         metadata_kwargs["prefixTokens"] = prefix_tokens
                     # The attachment footprint of the live context: inline
