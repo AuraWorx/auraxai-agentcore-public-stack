@@ -151,6 +151,32 @@ def _warn_on_missing_inference_profile(model_id: str) -> None:
 # without re-running `scripts/probe_gpt56_cache_rates.py --mode both
 # --grow-history` and beating the implicit arm.
 #
+# ⛔ THE SECOND-BREAKPOINT IDEA ABOVE WAS TESTED AND LOSES. Measured on Kimi
+# K3 (2026-09-21, dev-ai, unique prefix per arm, 7.7k static prefix, 5 turns
+# with a tool-result blob appended each turn, US CRIS rates):
+#
+#                              read    write  uncached   5-turn $
+#   one breakpoint (ships)    30,740    7,685    11,610    0.08016
+#   + end-of-history bp       30,740   19,155       140    0.08962   +11.8%
+#
+# The second breakpoint re-WRITES the whole growing history every turn
+# (1,147 -> 2,294 -> 3,441 -> 4,588) and never reads it back — cache reads stay
+# pinned at the static prefix in both arms. Marking a boundary whose content
+# changes every turn just moves history from the $3.30 input rate to the $4.125
+# write rate: 1.25x worse, by construction rather than by accident.
+#
+# Two mechanics worth knowing before anyone tries a variant:
+#   - A breakpoint is REJECTED on an assistant `output_text` block —
+#     "prompt_cache_breakpoint must be attached to a content block that renders
+#     cacheable prompt content". It has to ride user/developer input content.
+#   - Lookup did not do longest-prefix matching. Turn N+1's history contains
+#     turn N's as a prefix, yet nothing from the earlier entry was read back.
+#
+# Not tested: a breakpoint PINNED at a fixed history offset for several turns
+# (stable content, so it could actually be read). That is the only variant of
+# this idea still open, and it caches a fixed early chunk while the tail keeps
+# growing uncached — so the ceiling on it is small.
+#
 # Opt-in: only the literal string "true" enables it.
 #
 # ⚠️ Deliberately NOT wired into the CDK Runtime construct.
