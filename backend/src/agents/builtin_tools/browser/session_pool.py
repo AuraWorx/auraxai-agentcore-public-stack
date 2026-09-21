@@ -277,6 +277,13 @@ async def acquire(agent: Any) -> _LiveSession:
         if entry:
             session_id = entry.get("sessionId")
             live = _live.get(session_id) if session_id else None
+            if live is not None and live.user_controlled():
+                # A human is driving. The service has DISABLED the automation
+                # stream, so our socket is dead *by design* — reconnecting
+                # would fail and then start a second browser, orphaning the
+                # one the user is signing into. Hand the pinned session back
+                # and let the caller's command fail, which is the point.
+                return live
             if live is not None and not live.cdp.closed:
                 live.last_used = time.monotonic()
                 return live
@@ -471,9 +478,38 @@ async def release_control(agent: Any) -> bool:
             "browser: release_control failed for %s; pin dropped locally anyway",
             session_id, exc_info=True,
         )
+        await _close_socket(session_id)
         return False
     logger.info("browser: took session %s back from the user", session_id)
+    # Re-enabling the stream does not revive the socket that disabling it
+    # killed: the service closed our CDP connection when the human took over,
+    # and this one is a corpse. Drop it so the next `acquire` reconnects to
+    # the *same* remote browser — which is the whole point, since that browser
+    # is where the user's login now lives. The remote session is untouched.
+    await _close_socket(session_id)
     return True
+
+
+async def _close_socket(session_id: str) -> None:
+    """Close this session's CDP socket, leaving the remote browser alive.
+
+    Deliberately not `_teardown`: that stops the remote session too, which
+    after a sign-in would throw away the authenticated browser we just got
+    back. The socket is disposable; the session is not — `acquire` sees a
+    closed socket and reconnects to the same browser.
+
+    The pool entry stays, and that is not an accident: dropping it would make
+    a second `release_control` look like a handback from another container and
+    re-issue the remote call, turning an idempotent no-op into an API round
+    trip on every re-entry.
+    """
+    live = _live.get(session_id)
+    if live is None:
+        return
+    try:
+        await live.cdp.close()
+    except Exception:  # noqa: BLE001 - the socket is already dead
+        logger.debug("browser: cdp close failed during control handback", exc_info=True)
 
 
 def has_session(agent: Any) -> bool:

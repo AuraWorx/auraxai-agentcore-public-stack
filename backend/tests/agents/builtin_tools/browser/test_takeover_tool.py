@@ -83,6 +83,7 @@ class FakeClient:
         self.stream.append("ENABLED")
 
     def stop(self) -> bool:
+        self.stream.append("STOPPED")
         return True
 
 
@@ -232,6 +233,113 @@ class TestTakeAndReleaseControl:
         # Pin dropped anyway: keeping it on the strength of a failed API call
         # is how an abandoned browser bills to its TTL.
         assert pooled.user_controlled() is False
+
+
+class TestSocketSurvivesTheHandback:
+    """The bug this class exists for, seen in prod 2026-09-20.
+
+    Disabling the automation stream makes the service close our CDP socket
+    ("Disconnected by admin"). Re-enabling the stream does not revive it, so
+    the handback has to unpool the dead socket — otherwise every later
+    `browse_web` fails for the rest of the conversation, which is exactly what
+    happened: sign-in succeeded, the stream came back ENABLED, and four
+    straight browse calls still failed on the corpse.
+    """
+
+    @pytest.mark.asyncio
+    async def test_handback_closes_the_dead_socket(self, pooled) -> None:
+        agent = FakeAgent()
+        await session_pool.take_control(agent)
+
+        assert await session_pool.release_control(agent) is True
+
+        # Closed, so the next `acquire` reconnects instead of reusing it —
+        # but still pooled, so a second handback stays a local no-op.
+        assert pooled.cdp.closed is True
+        assert "bs-1" in session_pool._live
+
+    @pytest.mark.asyncio
+    async def test_next_acquire_reconnects_to_the_same_browser(
+        self, pooled, monkeypatch
+    ) -> None:
+        agent = FakeAgent()
+        await session_pool.take_control(agent)
+        await session_pool.release_control(agent)
+
+        monkeypatch.undo()  # the real `acquire`, not the fixture's stub
+        session_pool._write_state(
+            agent, {"sessionId": "bs-1", "identifier": "browser-abc"}
+        )
+        reconnected = session_pool._LiveSession(
+            session_id="bs-1",
+            identifier="browser-abc",
+            client=pooled.client,
+            cdp=FakeCdp(),  # type: ignore[arg-type]
+        )
+
+        async def _reconnect(entry: Dict[str, Any]):
+            assert entry["sessionId"] == "bs-1"  # the SAME browser: the login
+            session_pool._live["bs-1"] = reconnected
+            return reconnected
+
+        async def _never(*_a: Any, **_k: Any):
+            raise AssertionError("started a second browser after the handback")
+
+        monkeypatch.setattr(session_pool, "_try_reconnect", _reconnect)
+        monkeypatch.setattr(session_pool, "_start_remote_session", _never)
+
+        assert await session_pool.acquire(agent) is reconnected
+
+    @pytest.mark.asyncio
+    async def test_handback_does_not_stop_the_remote_browser(self, pooled) -> None:
+        agent = FakeAgent()
+        await session_pool.take_control(agent)
+
+        await session_pool.release_control(agent)
+
+        # Stopping it would throw away the browser the user just signed into.
+        assert pooled.client.stream == ["DISABLED", "ENABLED"]
+
+    @pytest.mark.asyncio
+    async def test_socket_is_closed_even_when_the_stream_flip_fails(
+        self, pooled, monkeypatch
+    ) -> None:
+        agent = FakeAgent()
+        await session_pool.take_control(agent)
+
+        def _refuse() -> None:
+            raise RuntimeError("UpdateBrowserStream refused")
+
+        monkeypatch.setattr(pooled.client, "release_control", _refuse)
+
+        assert await session_pool.release_control(agent) is False
+        # The socket is dead whether or not the flip landed, so it must not be
+        # handed out again; `acquire` will try to reconnect and report honestly
+        # if the stream really is still DISABLED.
+        assert pooled.cdp.closed is True
+
+    @pytest.mark.asyncio
+    async def test_acquire_does_not_start_a_second_browser_mid_login(
+        self, pooled, monkeypatch
+    ) -> None:
+        # The real `acquire`, not the fixture's stub: the point is what it does
+        # with a pooled session whose socket the service has already killed.
+        monkeypatch.undo()
+        agent = FakeAgent()
+        session_pool._write_state(
+            agent, {"sessionId": "bs-1", "identifier": "browser-abc"}
+        )
+        pooled.control_state = "user"
+        pooled.control_deadline = time.monotonic() + 300
+        pooled.cdp.closed = True  # the handover killed it
+
+        async def _never(*_a: Any, **_k: Any):
+            raise AssertionError("started a second browser mid-login")
+
+        monkeypatch.setattr(session_pool, "_start_remote_session", _never)
+        monkeypatch.setattr(session_pool, "_try_reconnect", _never)
+
+        assert await session_pool.acquire(agent) is pooled
 
 
 class TestReaperPinning:
