@@ -679,3 +679,101 @@ lands (intersecting `enabled_tools` with the caller's grant set on the default
 path), the RBAC filter inside always-on resolution becomes redundant with the
 general one. Collapse them then, not before — two gates that agree are cheap,
 and removing the specific one first would leave a window with neither.
+
+## 11. Dev validation (PR-4), 2026-09-21
+
+Validated on `dev.boisestate.ai` against `9c04c3d9` (PR-1 + PR-2 + PR-3), with
+`create_visualization` ("Charts & Graphs") pinned for real.
+
+### 11.1 What passed
+
+**The catalog and admin surface.** All 27 dev catalog rows carried **no**
+`alwaysOn` attribute before the change and the admin API returned `false` — the
+§10.1 compat read, confirmed against production data rather than a fixture. The
+three-way control derived correctly in every case (`calculator` → on-by-default,
+`create_visualization` → off-by-default). The no-granting-role warning
+*discriminates*: silent for `create_visualization` (granted by `faculty`),
+fired for `hello_world` (granted by nobody).
+
+**The normalizing validator fired in production.** `create_visualization` was
+`enabledByDefault: false`; selecting "Always on" stored `alwaysOn: true` **and**
+`enabledByDefault: true`. §2.2's mechanism, working on a real write.
+
+**Enforcement, proven by the prompt cache rather than by asking the model.**
+Three sessions, same user, same model, same system prompt, differing only in the
+`enabled_tools` sent:
+
+| session | `enabled_tools` sent | `cacheStatus` |
+|---|---|---|
+| A | `['calculator']` | `first_write` |
+| B | `['calculator', 'create_visualization']` | **`hit`** (matched A) |
+| C | `['calculator', 'browse_web']` | `first_write` |
+
+Caching is exact-prefix-match on `toolConfig`, so B could only hit A's prefix if
+both turns carried identical tool lists — i.e. the backend unioned the pinned
+tool into A despite the client omitting it. C is the control that proves the
+oracle discriminates rather than always reporting a hit. **A model asked to
+list its own tools would have been a hypothesis; this is evidence.**
+
+**D6, in the scenario it was designed for.** A single `PUT /tools/preferences`
+carrying `{create_visualization: false, calculator: false}` — the realistic
+whole-map SPA payload — returned **200**, left the pinned tool enabled, and
+**still saved the `calculator` change**. Had D6 been implemented as a 400, one
+pinned tool would have blocked an unrelated toggle.
+
+**The pin overrides a stored opt-out without erasing it.** The test account had
+`userEnabled: false` for this tool from earlier use. After pinning:
+`alwaysOn: true, is_enabled: true, userEnabled: false` — preference kept, not
+honoured.
+
+**The picker lock.** Exactly **1 of 27** switches disabled, `aria-disabled="true"`,
+accessible name *"Charts & Graphs is required by your organization and cannot be
+turned off"*, and the reason rendered on the card at full opacity.
+
+### 11.2 The §4.5 latency gate: PASSES
+
+Dev ambient traffic could not answer this — four hours of it yielded ~15
+samples before the change and **one** after, and a single datapoint inside the
+prior range is not a measurement. Turns were generated instead, 10 per arm,
+identical shape, through the same `/chat/stream` endpoint the SPA uses.
+
+| arm | toolset | n | min | avg | max |
+|---|---|---:|---:|---:|---:|
+| nothing pinned | 7 tools | 20 | 254 | **275.8** | 309 |
+| `create_visualization` pinned | 8 tools | 11 | 262 | **278.9** | 304 |
+
+**+3.1ms on a ~276ms stage (~1.1%), with fully overlapping ranges.** Below
+run-to-run variance — the unpinned arm alone spanned 254–309. No measurable
+regression.
+
+⚠️ Read the arms precisely: the pinned arm carries **one more tool schema** as
+well as the resolution, so this is the real-world cost of pinning a small local
+tool, not the cost of the resolution in isolation. And the pre-PR-2 ambient
+numbers (86–248ms) are a **different population** — organic traffic, different
+container warmth, many unrelated merges since — so that delta is not
+attributable to this feature and was not treated as such.
+
+### 11.3 What was NOT validated live, and why
+
+- **The negative RBAC side.** "A user whose roles do not grant the tool is
+  unaffected" could not be reproduced: the test account holds `system_admin`,
+  whose grant is `*`. There is no role available to it that *lacks* the tool.
+  Covered by unit tests (`test_always_on_resolution.py`) and by the wildcard
+  path being exercised live, but not by a second live identity.
+- **Both sides of the D4 boundary.** Validating "an Agent that binds tools is
+  exempt" against "an Agent with no bindings is not" needs two purpose-built
+  Agents on dev; deferred rather than asserted.
+- **Voice.** The token-rebuilt `User` path (D5) has unit coverage only.
+
+### 11.4 Bug found and fixed
+
+Real rendering surfaced what specs and unit tests did not: the whole-server
+confirmation read **"I understand this pins all 1 tools."** Fixed — and the
+acknowledgement no longer gates a single-tool server at all, because the gate
+exists to prevent "I meant one tool and pinned thirty", and one tool is not
+that.
+
+### 11.5 Dev state left behind
+
+`create_visualization` remains pinned on dev, as requested. Reverting is one
+change of the three-way control on `/admin/tools/edit/create_visualization`.
