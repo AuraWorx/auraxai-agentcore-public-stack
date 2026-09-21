@@ -162,6 +162,26 @@ describe('ToolFormPage — always-on enablement', () => {
       expect(cmp.needsAlwaysOnServerAck()).toBe(false);
     });
 
+    it('does not gate a single-tool server', async () => {
+      // The gate prevents "I meant one tool and pinned thirty". One tool is
+      // not that, and gating it rendered "I understand this pins all 1 tools".
+      const cmp = makeComponent();
+      await cmp.ngOnInit();
+      makeServerForm(cmp, 1);
+      cmp.form.patchValue({ toolEnablement: 'always_on' });
+      expect(cmp.alwaysOnServerToolCount()).toBe(1);
+      expect(cmp.needsAlwaysOnServerAck()).toBe(false);
+    });
+
+    it('still saves a single-tool server without an acknowledgement', async () => {
+      const cmp = makeComponent();
+      await cmp.ngOnInit();
+      makeServerForm(cmp, 1);
+      cmp.form.patchValue({ toolEnablement: 'always_on' });
+      await cmp.onSubmit();
+      expect(adminToolService.createTool).toHaveBeenCalledTimes(1);
+    });
+
     it('names how many tools would be pinned', async () => {
       const cmp = makeComponent();
       await cmp.ngOnInit();

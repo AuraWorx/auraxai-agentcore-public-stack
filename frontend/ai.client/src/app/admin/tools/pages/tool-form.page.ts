@@ -1000,7 +1000,7 @@ import {
                     </p>
                   }
 
-                  @if (alwaysOnServerToolCount() > 0) {
+                  @if (alwaysOnServerToolCount() > 1) {
                     <div class="mt-3 rounded-2xl border border-state-warning-200 bg-state-warning-50 p-3 dark:border-state-warning-800 dark:bg-state-warning-900/20">
                       <p class="text-xs/5 text-state-warning-800 dark:text-state-warning-200">
                         This pins <strong>all {{ alwaysOnServerToolCount() }} tools</strong>
@@ -1009,6 +1009,11 @@ import {
                         &ldquo;{{ defaultOnLabel }}&rdquo; and mark individual
                         tools always-on in the server's tool list instead.
                       </p>
+                      <p class="mt-1 text-xs/5 text-state-warning-700 dark:text-state-warning-300">
+                        Each pinned tool's schema is sent to the model on every
+                        turn of every conversation, for every user whose roles
+                        grant this server.
+                      </p>
                       <label class="mt-2 flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -1016,7 +1021,8 @@ import {
                           class="size-4 rounded border-gray-300 text-primary-600 focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800"
                         />
                         <span class="text-xs/5 font-medium text-state-warning-800 dark:text-state-warning-200">
-                          I understand this pins all {{ alwaysOnServerToolCount() }} tools.
+                          I understand this pins all {{ alwaysOnServerToolCount() }} of
+                          this server's tools.
                         </span>
                       </label>
                     </div>
@@ -1234,10 +1240,18 @@ export class ToolFormPage implements OnInit {
     return this.mcpToolsArray.length + this.gwToolsArray.length;
   }
 
-  /** Blocks save until the admin confirms what pinning a whole server does. */
+  /**
+   * Blocks save until the admin confirms what pinning a whole server does.
+   *
+   * Only for a server with MORE THAN ONE tool. The gate exists to prevent
+   * "I meant to pin one tool and pinned thirty"; a single-tool server holds no
+   * such surprise, and gating it produced a confirmation that read
+   * "I understand this pins all 1 tools" — noise plus a grammar bug, for a
+   * decision the admin had already made explicitly.
+   */
   needsAlwaysOnServerAck(): boolean {
     return (
-      this.alwaysOnServerToolCount() > 0 &&
+      this.alwaysOnServerToolCount() > 1 &&
       this.form.get('acknowledgeAlwaysOnServer')?.value !== true
     );
   }
