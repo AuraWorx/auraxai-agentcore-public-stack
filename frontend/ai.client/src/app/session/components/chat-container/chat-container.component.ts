@@ -150,6 +150,15 @@ export class ChatContainerComponent {
   sessionId = input<string | null>(null);
 
   // Optional inputs
+
+  /**
+   * Conversation key for composer draft persistence, forwarded to
+   * `app-chat-input` untouched. Null (the default) means this placement
+   * remembers nothing — see the input's own note for why it is not
+   * `sessionId`.
+   */
+  draftKey = input<string | null>(null);
+
   assistant = input<Assistant | null>(null);
 
   /**
