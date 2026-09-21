@@ -646,11 +646,52 @@ export class AgentFormPage implements OnInit, OnDestroy {
    * it is what `collect_tool_name_filters` means by whole-server anyway.
    */
   toggleTool(ref: string): void {
+    // A retiring tool can be turned OFF but not ON. The chip is disabled in that
+    // direction, so this is the keyboard/programmatic backstop behind it — the
+    // same shape as the `alwaysOn` guard in ToolService.toggleTool, and the same
+    // reason. Deselecting stays open precisely because that is the action we are
+    // asking authors to take (docs/specs/mcp-server-retirement.md §7).
+    if (!this.isToolSelected(ref) && this.isToolRetiringByRef(ref)) return;
     this.selectedToolRefs.update((set) =>
       this.isToolSelected(ref) ? withoutServer(set, ref) : toggle(set, ref),
     );
     this.bindingsDirty.set(true);
   }
+
+  /**
+   * An administrator has marked this tool non-`active` — it is on its way out and
+   * must not be bound to anything new. Presentation only: the palette still lists
+   * it, `can_access_tool` still admits it, and an Agent that already binds it
+   * keeps running unchanged. See docs/specs/mcp-server-retirement.md §1 for why
+   * this is a picker concern and never a grant one.
+   *
+   * An older backend omits `meta.status`, which reads as `undefined` and leaves
+   * every tool selectable — i.e. today's behaviour.
+   */
+  isToolRetiring(item: BindableItem): boolean {
+    const status = item.meta?.['status'];
+    return typeof status === 'string' && status !== 'active';
+  }
+
+  /** {@link isToolRetiring} keyed by ref, for the guard inside {@link toggleTool}. */
+  private isToolRetiringByRef(ref: string): boolean {
+    const item = this.tools().find((t) => t.ref === ref);
+    return item ? this.isToolRetiring(item) : false;
+  }
+
+  /**
+   * Labels of the retiring tools this agent still binds, for the section notice.
+   *
+   * The chip's own `retiring` badge is easy to miss on a form with twenty chips,
+   * and the action we need from the author (remove it, and resubmit if published)
+   * does not fit on a chip. Empty for every agent that binds none, so the notice
+   * does not exist for the overwhelmingly common case.
+   */
+  readonly retiringSelectedTools = computed(() =>
+    this.tools()
+      .filter((t) => this.isToolRetiring(t) && this.isToolSelected(t.ref))
+      .map((t) => t.label),
+  );
   isToolSelected(ref: string): boolean {
     for (const selected of this.selectedToolRefs()) {
       if (baseToolId(selected) === ref) return true;

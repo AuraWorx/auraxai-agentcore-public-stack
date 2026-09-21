@@ -83,6 +83,20 @@ export interface Tool {
 }
 
 /**
+ * An administrator has marked this tool non-`active` — it is being retired and
+ * must not be newly enabled. Existing selections are untouched: the backend
+ * still grants it, still builds its client, and an Agent that binds it still
+ * runs. This is a picker rule, never an access decision
+ * (docs/specs/mcp-server-retirement.md §7).
+ *
+ * Absent/unknown `status` reads as active, so an older backend leaves every
+ * tool freely togglable — i.e. today's behaviour.
+ */
+export function isRetiring(tool: Pick<Tool, 'status'>): boolean {
+  return typeof tool.status === 'string' && tool.status !== 'active';
+}
+
+/**
  * Response from GET /tools
  */
 export interface ToolsResponse {
@@ -324,6 +338,11 @@ export class ToolService {
     // the control disabled; this is the guard behind it, for the keyboard and
     // programmatic paths that never see a disabled attribute.
     if (tool.alwaysOn) return;
+    // Retiring: an administrator has marked it non-`active`. It can be turned
+    // OFF but not ON, so a user who already has it keeps it while nobody new
+    // picks it up. Same backstop role as the guard above — the UI disables the
+    // control in that one direction. See docs/specs/mcp-server-retirement.md §7.
+    if (isRetiring(tool) && !tool.isEnabled) return;
 
     const subs = tool.serverTools ?? [];
     const newState = !tool.isEnabled;
@@ -402,6 +421,12 @@ export class ToolService {
     if (!tool || !sub) return;
     // Pinned individually, or by the whole server being pinned.
     if (sub.alwaysOn || tool.alwaysOn) return;
+    // Retiring, and the server is entirely off: turning one of its tools on
+    // would be adopting the server. Gated on the SERVER's state, not the
+    // sub-tool's, because access — and retirement — are properties of the
+    // server (`can_access_tool` keys on the base id). Narrowing a server the
+    // user already has stays open.
+    if (isRetiring(tool) && !tool.isEnabled) return;
 
     const newState = !sub.enabled;
 

@@ -1,8 +1,7 @@
 # Retiring an MCP server
 
-**Status:** Runbook. Stages 0, 2, 3 and 4 work with today's code. Stage 1 needs
-the small change in §7 to do anything at all — today `status` has no readers on
-any path that matters.
+**Status:** Runbook, and every stage works with today's code. §7 shipped, which
+is what gives `status` its first readers — before it, Stage 1 was cosmetic.
 **Scope:** A `TOOL#<id>` catalog row with `protocol: mcp_external` or `mcp`
 (AgentCore Gateway), that one or more Agents already bind. Retiring a *built-in*
 tool differs in one place only — §9.
@@ -24,10 +23,11 @@ published Agent cannot be fixed by its author alone (§5d).
 step, not the first, and each fails in a different ugly way (§1).
 
 The good news is that no new grant-layer primitive is needed. `ToolStatus`
-already has the word (`DEPRECATED`); what is missing is a *reader* on the two
-pickers. §7 is that reader — one backend field plus two SPA guards — and
-it involves **no divergence between listing and enforcement**, which matters
-because this repo has a standing rule against exactly that (§4).
+already had the word (`DEPRECATED`); what was missing was a *reader* on the
+pickers. §7 is that reader — one backend field plus a guard on each surface that
+can newly adopt a tool — and it involves **no divergence between listing and
+enforcement**, which matters because this repo has a standing rule against
+exactly that (§4).
 
 ---
 
@@ -70,7 +70,7 @@ off *before* the row, never after.
 
 ---
 
-## 2. `ToolStatus` today: vocabulary with no readers
+## 2. `ToolStatus`: vocabulary that had no readers
 
 `ToolStatus` (ACTIVE / DEPRECATED / DISABLED / COMING_SOON,
 [`tools/models.py:124`](../../backend/src/apis/shared/tools/models.py#L124)) is
@@ -91,13 +91,17 @@ Verified empirically, here is every place it is read:
 
 Two consequences worth stating before anyone's first move:
 
-1. **`status: disabled` does nothing.** Neither access, nor listing, nor the
-   runtime reads it. So `DELETE /api/admin/tools/{id}` without `hard=true`
-   (`soft_delete_tool`, which sets `status: DISABLED`) is, with respect to
-   everything a user can observe, **a no-op**. It will be someone's instinct.
-   It retires nothing.
-2. The word we need already exists. `DEPRECATED` needs readers, not a new enum
-   value. §7 adds two.
+1. **`status` gated nothing before §7**, which is the state the table above
+   describes. It still gates nothing on the *access* or *runtime* paths and
+   never will — §4 is emphatic about that — but as of §7 the pickers read it.
+2. So `DELETE /api/admin/tools/{id}` without `hard=true` (`soft_delete_tool`,
+   which sets `status: DISABLED`) is no longer a no-op: it now performs Stage 1's
+   third step as a side effect. It still does **not** revoke anything, so it is
+   safe — but it is not the "remove the tool" an admin reaching for Delete
+   probably means, and it is not reversible through the Delete button. Flip
+   `status` back to `active` on the tool form to undo it.
+3. The word we needed already existed. `DEPRECATED` needed readers, not a new
+   enum value, and §7 adds them.
 
 ---
 
@@ -303,9 +307,9 @@ Three changes, none of which touches a grant or the row's existence:
    entry. `PUT /api/admin/tools/{id}`, or the admin tool form.
 2. **De-template.** Remove every `{"kind":"tool","ref":"<id>…"}` binding from
    admin agent templates.
-3. **Set `status: deprecated`** on the row — and ship §7 so that means
-   something. Until §7 lands, this step is cosmetic and Stage 1 buys only (1)
-   and (2).
+3. **Set `status: deprecated`** on the row. §7 is what makes this bite: every
+   surface that can newly adopt a tool starts refusing it, while every surface
+   that already has it is untouched.
 
 What does **not** change: `grantedTools`, `isPublic`, the row, the Gateway
 target. `can_access_tool` returns exactly what it returned yesterday, so
@@ -406,49 +410,104 @@ and auth configuration are simply gone.
 
 ---
 
-## 7. The change Stage 1 needs
+## 7. The change Stage 1 needs (shipped)
 
 Small, additive, and involves no grant-layer divergence.
 
-**Backend** — one field, in `bindable_catalog._list_tools`:
+### The rule, stated once
 
-```python
-meta={
-    "category": t.category,
-    "protocol": t.protocol,
-    "status": t.status,          # ← new; UserToolAccess already carries it
-    "requiresOauthProvider": t.requires_oauth_provider,
-    "serverTools": [...],
-},
+> A non-`active` tool can be turned **off** but not **on**.
+
+That asymmetry is the exact mirror of `alwaysOn`, which is on and cannot be
+turned off, and both guards sit side by side in the same functions. Getting the
+direction wrong in either half breaks the plan: block both directions and every
+user who already has the tool is stranded with it; block neither and Stage 1
+buys nothing.
+
+Retirement is a property of the **server**, never of one of its tools —
+`can_access_tool` keys on the base id — so a retiring server that is off cannot
+be adopted one sub-tool at a time, while narrowing a server someone already has
+stays open.
+
+### Backend — one field
+
+`bindable_catalog._list_tools` now carries `status` on each `kind: "tool"` item's
+`meta`. `BindableItem.meta` is a free-form `Dict[str, Any]`, so this breaks no
+contract, and a `str`-Enum serialises as `"deprecated"` rather than an enum
+member — which the SPA's `!== 'active'` comparison depends on.
+
+`GET /tools/` already returned `status` on every `UserToolAccess`, so the chat
+picker needed no backend change at all.
+
+**Nothing is filtered out.** `binding_validation._validate_tool` reads the same
+`get_user_accessible_tools` as the palette, so dropping a retiring tool from
+that list would 403 an author editing an Agent that keeps the binding — for a
+tool that Agent can still run. §4 is the long form of this.
+
+### SPA — one guard per surface that can newly adopt a tool
+
+`isRetiring(tool)` in `services/tool/tool.service.ts` is the single predicate.
+Absent or unknown `status` reads as active, so an older backend leaves every
+picker exactly as it is today.
+
+| Surface | Guard |
+|---|---|
+| Agent Designer (`agent-form.page`) | `isToolRetiring(item)` from `meta.status`; `toggleTool` refuses to select an unselected retiring ref; the chip is `disabled` in that one direction and carries a `retiring` badge |
+| Customize → Tools (`customize-tools.page`, `customize-card.component`) | `retiring` input on the card: the switch is disabled **only while already off**; `onToggle` is the backstop behind it |
+| Customize → Tools → detail (`customize-tool-detail.page`) | `isRetireLocked(tool)` on the master switch *and* on every sub-tool switch |
+| New scheduled run (`schedule-form.page`) | `isToolRetiring(toolId)` on the checkbox. A schedule's `enabledTools` is a snapshot, so adding one here books it into a run that may fire months from now |
+| `ToolService.toggleTool` / `toggleServerTool` | The service-level backstop all of the above sit on, for the keyboard and programmatic paths that never see a `disabled` attribute |
+
+**Nothing is hidden from a list.** An author who opens an Agent binding a
+retiring server must *see* the binding — a ref that silently vanished from the
+picker while remaining in the record is how a "why did my Agent break?" ticket
+gets written three weeks later. The Agent Designer additionally renders a
+section notice naming the retiring tools this agent still binds, because the
+action we need (remove it, and resubmit if published) does not fit on a chip.
+
+None of this is a security boundary — a crafted `PUT /agents/{id}` can still add
+the binding. That is fine: the threat model is *accidental new adoption*, not a
+determined author. The boundary stays in `can_access_tool`, and it moves only in
+Stage 3.
+
+### Compatibility on deploy — measured, not assumed
+
+§7 gives `status` readers, so it is **not** inert against rows that are already
+non-`active`. Measured against the live catalogs on 2026-09-21:
+
+| Environment | Catalog | Effect of deploying §7 |
+|---|---|---|
+| **prod** (`boisestateai-v2-app-roles`) | 33 tools, **all `active`** | **Strict no-op.** Nothing changes for any user |
+| **dev** (`dev-boisestateai-v2-app-roles`) | 25 `active`, 2 `disabled` — `pe12_probe_mcp` (`isPublic: true`) and `sk_hello_approval` | Those two stop being addable in every picker |
+
+Both dev rows are probe servers, so that is the intended outcome rather than a
+regression — but it is worth knowing it happens, and `pe12_probe_mcp` is a
+textbook §3: `disabled` *and* `isPublic`, i.e. granted to every authenticated
+user by a flag that `status` never overrode and still does not.
+
+Re-run the check before deploying to any other environment:
+
+```bash
+aws dynamodb scan --table-name "$APP_ROLES_TABLE" --region us-west-2 \
+  --filter-expression "begins_with(PK, :p) AND SK = :sk" \
+  --expression-attribute-values '{":p":{"S":"TOOL#"},":sk":{"S":"METADATA"}}' \
+  --projection-expression "toolId,#s,isPublic" \
+  --expression-attribute-names '{"#s":"status"}' --output json \
+| jq -r '.Items[] | select(.status.S != "active") | "\(.status.S)\t\(.toolId.S)"'
 ```
 
-`BindableItem.meta` is a free-form `Dict[str, Any]`, so this breaks no
-contract. `GET /tools/` already returns `status` on every `UserToolAccess`
-([`tools/service.py:160`](../../backend/src/apis/app_api/tools/service.py#L160)),
-so the chat picker needs no backend change at all.
+Any row it prints is one whose pickers change on deploy. Flip it back to
+`active` on the admin tool form if that is not what you want.
 
-**SPA** — two guards, both "refuse to *add*, never remove":
+### What was deliberately left alone
 
-1. Agent Designer tool picker: a `status !== 'active'` entry renders with a
-   "Being retired" badge and is not selectable **unless it is already in
-   `bindings`**, in which case it renders selected, with the badge, and a
-   tooltip pointing at the retirement notice.
-2. Plain-chat tool picker: same rule against `Tool.status`.
+`get_user_accessible_tools`, `_tool_grant_set`, `get_public_tool_ids` and
+`_validate_tool` are all untouched. `test_public_tool_grants.py` and the rule it
+guards are intact.
 
-**Do not** filter these out of the list. An author who opens an Agent that binds
-a retiring server must *see* the binding — a ref that silently vanished from the
-picker while remaining in the record is how a "why did my Agent break?" ticket
-gets written three weeks later.
-
-**Do not** touch `get_user_accessible_tools`, `_tool_grant_set`,
-`get_public_tool_ids` or `_validate_tool`. Everything in this section is
-presentation. `test_public_tool_grants.py` and its rule stay intact.
-
-Worth adding while there: `reconcileToolRefs` already flags non-`active` refs on
-template prefill and still applies them — the right behaviour, and free
-precedent for the badge copy.
-
----
+`reconcileToolRefs` already flagged non-`active` refs on template prefill and
+still applied them — the right behaviour, and the precedent the badge copy
+follows.
 
 ## 8. What to tell Agent authors
 
@@ -515,9 +574,10 @@ catalogued tool without a seed row is a defect.
    `CAPABILITIES` row behind, and `delete_capabilities` has no callers. The
    grant leftovers are what make "just delete it" produce §1's silent-failure
    state.
-4. **`soft_delete_tool` is a no-op** with respect to everything observable
-   (§2). It should either do something or be removed; today it reads like a
-   safety feature and is not one.
+4. **`soft_delete_tool` now has a side effect it does not advertise.** Since §7
+   it performs Stage 1's status change, which is useful but is not what "Delete"
+   reads as, and the Delete button cannot undo it (§2). The admin tool page
+   should say what soft-delete now does.
 5. **Deprecated bindings are invisible to admins.** There is no view answering
    "which Agents bind a non-`active` tool?", which is the report Stage 2 is
    actually managed from.
