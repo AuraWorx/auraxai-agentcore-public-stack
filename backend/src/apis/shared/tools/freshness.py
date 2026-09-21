@@ -22,6 +22,14 @@ catalog:
    into a caller's role grant so the access *checks* honour the same
    flag the tool *picker* already does (see the module note there).
 
+4. **Always-on-tool-ids snapshot** (`get_always_on_tool_ids`). The ids
+   an admin has pinned — bare catalog ids for a whole tool, and scoped
+   `base::name` ids for individual tools of an MCP server. Rides the
+   same catalog read as (2) and (3) precisely so that resolving the
+   pinned set on the chat path costs no DynamoDB round trip: it is the
+   latency budget in docs/specs/admin-always-on-tools.md §4.1, and a
+   separate cache here would spend exactly what that section refuses to.
+
 Reads are TTL-cached so the per-turn overhead is bounded to at most
 one DynamoDB read per cache key per TTL window, per process. Admin
 routes call `invalidate(tool_id)` after a write so same-process
@@ -37,7 +45,7 @@ import logging
 import time
 from typing import Dict, FrozenSet, List, Optional, Tuple
 from apis.shared.timestamps import to_iso
-from apis.shared.tools.scoped_ids import base_tool_ids
+from apis.shared.tools.scoped_ids import SCOPE_DELIMITER, base_tool_ids
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +64,14 @@ _all_tool_ids_cache: List[Optional[Tuple[FrozenSet[str], float]]] = [None]
 # same shape and lifecycle as `_all_tool_ids_cache` above.
 _public_tool_ids_cache: List[Optional[Tuple[FrozenSet[str], float]]] = [None]
 
+# Single-slot snapshot of (frozen_set_of_always_on_ids, monotonic_fetched_at).
+# Unlike the two above this holds a MIX of bare catalog ids and scoped
+# `base::name` ids, because always-on is settable on a whole tool and on one
+# tool of an MCP server (spec §2.3). Scoped ids must be carried verbatim from
+# here to `enabled_tools` — collapsing one to its base restores the whole
+# server, which is the bug scoping exists to prevent.
+_always_on_tool_ids_cache: List[Optional[Tuple[FrozenSet[str], float]]] = [None]
+
 _TTL_SECONDS = 10.0
 
 
@@ -63,6 +79,7 @@ def _reset_for_tests() -> None:
     _cache.clear()
     _all_tool_ids_cache[0] = None
     _public_tool_ids_cache[0] = None
+    _always_on_tool_ids_cache[0] = None
 
 
 async def _fetch_updated_at(tool_id: str) -> Optional[str]:
@@ -156,15 +173,64 @@ async def get_public_tool_ids() -> FrozenSet[str]:
     return await _get_snapshot(_public_tool_ids_cache, "public")
 
 
+async def get_always_on_tool_ids() -> FrozenSet[str]:
+    """Return the admin-pinned tool ids, TTL-cached per process.
+
+    A mix of bare catalog ids (the whole tool is pinned) and scoped
+    `base::name` ids (one tool of an MCP server is pinned). **Enables,
+    never grants** — the caller must still filter these against its own
+    grant set; this function only answers "what did an admin pin?".
+
+    Derived from the same `list_tools()` read that fills the all-ids and
+    public-ids snapshots, so resolving the pinned set on a chat turn adds
+    no DynamoDB round trip and no extra `from_dynamo_item` parse — one
+    generator expression over a list already in memory. That is the whole
+    latency argument for this feature (spec §4.1); resolving it with a
+    `get_tool` per id instead is the shape that would spend the turn's
+    budget.
+
+    Same never-raise contract as `get_all_tool_ids`.
+    """
+    return await _get_snapshot(_always_on_tool_ids_cache, "always-on")
+
+
+def _always_on_ids_for(tool) -> List[str]:
+    """The pinned ids one catalog row contributes.
+
+    A tool flagged `always_on` contributes its bare id. Independently, any
+    curated MCP entry flagged `always_on` contributes a scoped id — so a
+    server can pin two of its thirty tools without pinning the server.
+
+    Both can apply at once. That is harmless rather than contradictory:
+    `collect_tool_name_filters` lets a bare id win over scoped ids for the
+    same base, so the server stays whole and the scoped ids are redundant
+    rather than narrowing.
+    """
+    ids: List[str] = []
+    if getattr(tool, "always_on", False):
+        ids.append(tool.tool_id)
+    # `getattr` rather than attribute access throughout: this runs inside
+    # `_get_snapshot`, which fills ALL THREE slots from one pass. An
+    # AttributeError on one odd row would abort the whole refresh and leave
+    # `get_public_tool_ids` empty too — and that set feeds RBAC's public-tool
+    # union, so a malformed catalog row would quietly narrow every access
+    # check. The blast radius is the reason for the defensiveness, not tidiness.
+    cfg = getattr(tool, "mcp_config", None) or getattr(tool, "mcp_gateway_config", None)
+    for entry in (getattr(cfg, "tools", None) or []):
+        if getattr(entry, "always_on", False):
+            ids.append(f"{tool.tool_id}{SCOPE_DELIMITER}{entry.name}")
+    return ids
+
+
 async def _get_snapshot(
     slot: List[Optional[Tuple[FrozenSet[str], float]]], which: str
 ) -> FrozenSet[str]:
-    """Serve one id snapshot, refreshing both from a single catalog read.
+    """Serve one id snapshot, refreshing all three from a single catalog read.
 
-    `list_tools()` already carries the `isPublic` flag, so one read fills
-    the all-ids and public-ids slots together — half the DynamoDB traffic
-    of two independent caches, and the two sets can never disagree about
-    the catalog they were derived from.
+    `list_tools()` already carries `isPublic` and `alwaysOn`, so one read
+    fills the all-ids, public-ids and always-on slots together — a third
+    of the DynamoDB traffic of three independent caches, and the sets can
+    never disagree about the catalog they were derived from.
     """
     now = time.monotonic()
     cached = slot[0]
@@ -185,16 +251,27 @@ async def _get_snapshot(
         frozenset(t.tool_id for t in tools if t.is_public),
         now,
     )
+    always_on_ids: set = set()
+    for t in tools:
+        try:
+            always_on_ids.update(_always_on_ids_for(t))
+        except Exception:  # noqa: BLE001 - one odd row must not empty the other two slots
+            logger.warning(
+                "Skipping tool %s while collecting always-on ids",
+                getattr(t, "tool_id", "<unknown>"),
+                exc_info=True,
+            )
+    _always_on_tool_ids_cache[0] = (frozenset(always_on_ids), now)
     return slot[0][0]  # type: ignore[index]
 
 
 def invalidate(tool_id: Optional[str] = None) -> None:
     """Drop an entry (or the whole cache) from the TTL store.
 
-    Always clears both id snapshots too, since any create/delete shifts
-    them — and an `isPublic` toggle on an existing tool shifts the public
-    one without touching the id set (an admin write is the only reason to
-    invalidate anyway).
+    Always clears all three id snapshots too, since any create/delete
+    shifts them — and toggling `isPublic` or `alwaysOn` on an existing tool
+    shifts one of them without touching the id set (an admin write is the
+    only reason to invalidate anyway).
 
     Call this from admin write paths so changes are visible in the same
     process on the very next turn, without waiting for the TTL to lapse.
@@ -205,3 +282,4 @@ def invalidate(tool_id: Optional[str] = None) -> None:
         _cache.pop(tool_id, None)
     _all_tool_ids_cache[0] = None
     _public_tool_ids_cache[0] = None
+    _always_on_tool_ids_cache[0] = None

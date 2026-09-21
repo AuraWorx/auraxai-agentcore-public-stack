@@ -122,6 +122,28 @@ def attachment_tool_autoenable_enabled() -> bool:
     return os.environ.get("ATTACHMENT_TOOL_AUTOENABLE_ENABLED", "").strip().lower() != "false"
 
 
+def admin_always_on_tools_enabled() -> bool:
+    """Whether tools an admin flagged ``alwaysOn`` are unioned into every
+    turn's effective toolset for the users whose roles grant them — gated on
+    the caller's RBAC grant, so it enables, never grants. **Default ON with a
+    kill switch** (house style): unset or empty resolves to enabled; only the
+    literal ``"false"`` disables.
+
+    Default-on is safe because the feature is **inert without catalog data**:
+    with no tool flagged, the resolved set is empty and
+    ``_with_auto_enabled_tools`` returns the caller's own list object
+    unchanged (docs/specs/admin-always-on-tools.md §10). The switch exists for
+    the case where tools have already been flagged and something is wrong — it
+    reverts to the previous behaviour without an admin editing DynamoDB rows
+    under pressure.
+
+    Why: ``enabledByDefault`` is an initial condition, not a policy. The first
+    time a user toggles a tool off, their stored preference overrides it
+    forever — so a tool the organization depends on had no way to *stay* on.
+    """
+    return os.environ.get("ADMIN_ALWAYS_ON_TOOLS_ENABLED", "").strip().lower() != "false"
+
+
 def agents_enabled() -> bool:
     """Whether the Agent Designer surface is enabled for this environment.
 
