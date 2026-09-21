@@ -143,6 +143,31 @@ FALLBACK_CONTENT_TYPE: Final[str] = "application/octet-stream"
 #              session. ``frame-ancestors 'none'`` keeps it out of frames.
 #   no-store — these are per-user private files behind a session cookie;
 #              nothing on the path (CloudFront included) should retain them.
+#
+# Which of these the browser actually receives depends on how the response is
+# reached, and BOTH paths are real:
+#
+#   Direct ALB / local dev — the ALB is `internetFacing: true`, and a
+#     localhost:4200 SPA talks to the dev backend directly. There is no edge
+#     policy on this path, so this dict IS the browser's only CSP and
+#     ``sandbox`` is the live control it claims to be.
+#
+#   Behind CloudFront — the `/api/*` behavior's `ApiResponseHeadersPolicy`
+#     (infrastructure/lib/constructs/spa/spa-distribution-construct.ts) sets
+#     its CSP with `override: true`, so it REPLACES this header and the
+#     browser sees `default-src 'none'; frame-ancestors 'none'` without
+#     ``; sandbox``. That is deliberate, not a regression: the edge policy is
+#     an origin-wide backstop covering every `/api/*` response — attachment
+#     bodies and the top-level OAuth login navigation included — where a bare
+#     `sandbox` would force an opaque origin for no real gain, because
+#     `default-src 'none'` already blocks every script that an opaque origin
+#     would be protecting the session from. `infrastructure/test/
+#     api-security-headers.test.ts` pins that string and asserts the omission
+#     is intentional, so the two layers cannot drift silently.
+#
+# Do not "fix" the difference by dropping `override: true`: that would turn
+# the edge backstop into a mere default, letting any future route, middleware
+# or error handler define the CSP for the whole origin.
 RESOURCE_SECURITY_HEADERS: Final[Dict[str, str]] = {
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": (
