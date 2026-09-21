@@ -5,6 +5,13 @@ Items added by `kaizen-research`, consumed by `kaizen-review-prep`.
 ## Open
 <!-- Newest at top. -->
 
+### [2026-09-21] The two verification rules that did NOT ship with the POC-loop retirement
+- **Source**: residue of the [2026-09-04] entry, resolved 2026-09-21 with only part (a) shipped. Kept as its own entry so the remainder does not vanish with its parent.
+- **Surface**: skills — `.claude/skills/kaizen-research/SKILL.md` (the internal-audit section), `.claude/skills/kaizen-review-prep/SKILL.md` (queue resolution rules).
+- **Effort × Impact**: S × M
+- **Subtracts**: yes — two classes of unreproducible claim.
+- **Status**: open — **(b)** every internal-audit number must be produced by a command **quoted in the doc**; three reproduction failures in two cycles (the 2026-08-28 Price List API result, "zero CI failures in the window" when there was one, `@angular/core 21.2.17` against a tree reading `21.2.19`) against one section that already quotes its method — the version-pin table — and is the most reliable in the doc. A rate/price/capability figure destined for code needs two independent sources or an explicit `⚠️ single-source` marker. **(c)** never resolve a *flaky* entry on a consecutive-green count — only on a root-cause fix or an explicit "accepted flake, N/month" note. ⚠️ Same authorship constraint as its parent: these are skill-file edits, so they need Phil in the session.
+
 ### [2026-09-21] Re-enable context attribution on the OpenAI surfaces once a native token count is served
 - **Source**: measured while validating Kimi K3 (PR #1212). `ContextAttributionHook` derives `toolTokens` as `projected_input_tokens - count_tokens(system + messages, no tools)`. Those are the same estimator **only on Bedrock Converse**, where `BedrockModel` implements a native CountTokens. On `bedrock-responses` / `mantle` the model is an `OpenAIResponsesModel`, whose `count_tokens` consults the native endpoint only when `use_native_token_count` is set — and **that endpoint is not served on bedrock-runtime's OpenAI surface**: enabling it makes `count_tokens` return `None` (measured against `us.moonshotai.kimi-k3`, us-west-2, 2026-09-21; Strands returns None rather than raising, so it would poison the arithmetic silently). Unset, it falls back to chars/4.
 - **The evidence it was wrong, not merely coarse**: one live Kimi K3 session reported `prefixTokens.tools` of **13,967** then **7,145** on consecutive turns with a byte-identical `toolConfigHash` (`8f6647f7f7`) — a 2x swing on the number whose entire job is saying what fills the window. Forcing *both* sides through `count_tokens` makes the residual exactly stable (5,882 short conversation, 5,882 long, **+0 drift**), which confirms the cause is the estimator mismatch and not the tools.
@@ -134,15 +141,6 @@ Items added by `kaizen-research`, consumed by `kaizen-review-prep`.
 - **Effort × Impact**: M × H
 - **Subtracts**: no — it is the condition under which both stacks' defaults may stay on. Justified because without it the deepest, earliest cut the cost arc has ever shipped is defended by **dollars alone** ($73.70 vs $102.64 on a 20-session replay), with quality asserted rather than measured.
 - **Status**: open — **this is the pattern, not either stack individually.** Two specs, written weeks apart, each chose the strongest possible gate wording and each shipped with defaults live and the harness unbuilt: `COMPACTION_CEILING_RATIO = 0.5` / `HARD_CEILING_RATIO = 0.7` are live in dev now, and the offload epic is default-on. `develop` auto-deploys to dev, so "before it reaches prod" is the only window still open, and it closes at the next release. **The asymmetry is the point**: `CLAUDE.md`'s cost tenet says plainly that *"when cost and answer quality genuinely conflict, quality wins"* — which is unfalsifiable while every cost change is measured and no quality change is. ⚠️ Score **A→B and B→C separately** (evaluation spec §4.2 / thresholds §5): PRs 1–3 of the offload epic are a *correctness* fix where quality should go **up**, and only PR-4 is the cost trade, so a strip-fix win can mask an offload regression. ⚠️ The **honest fallback is recording the waiver**, not silence: a gate documented as waived tells the next reader what happened; a gate merely unrun reads as passed. Note #1142/#1145 just shipped the `F#` down-thumb rows, so the cheap first version of this is a **comparison between turn classes**, not a new harness — per response-feedback spec §9 a comparison between arms, never a quality score.
-
-### [2026-09-18] Fix the kaizen pipeline spacing — this week's review ran without a research doc
-- **Source**: direct observation by `kaizen-review-prep` 2026-09-18, from the scheduled-task run records.
-- **Surface**: scheduled tasks (outside the repo) — `kaizen-research` (`0 6 * * 5`, jitter 164s) and `kaizen-review-prep` (`0 8 * * 5`, jitter 467s).
-- **Effort × Impact**: S × M
-- **Subtracts**: yes — a load-bearing timing assumption ("~2 hours later") that lives only in two skill descriptions and is enforced nowhere.
-- **Status**: open — `kaizen-research` started **2026-09-18T13:50Z** against **12:09Z** the week before, and was still `running` 30 minutes into this prep; last week's run took **2h18m**. `kaizen-review-prep` started 14:08Z, an **18-minute** gap instead of two hours, so this review had no current research doc and was built queue-first and outcome-first instead. That is the skill's designed fallback (the queue's `## Open` entries are the primary source and research is one input) and it degraded well — but by accident of design, not by intent. Fix: move review-prep to ~10am MT, or add a preflight that checks for the current week's research doc and states its absence up front. ⚠️ Both schedules are Phil's and live outside the repo, so this is a recommendation, not a repo change.
-
-
 
 ### [2026-09-16] Compaction stack (#1125 → #1128 → #1129 → #1131 → #1132) — run the quality-veto eval BEFORE the new defaults reach prod
 - **Source**: Phil-initiated — `docs/specs/compaction-model-relative-thresholds.md` §5 (the gate the spec sets for itself) + `docs/specs/compaction-over-threshold-cache-spiral.md` §4.3 (the veto eval) + `docs/specs/agentcore-evaluations-spike-findings.md` (what the managed evaluation service already supplies). Stack built 2026-09-15/16; the 2026-09-15 replay of 20 heavy Sonnet 5 sessions priced 100k/25k at **$73.70 vs $102.64 actual** input-side.
@@ -299,13 +297,6 @@ Items added by `kaizen-research`, consumed by `kaizen-review-prep`.
 - **Effort × Impact**: L–M × M–H
 - **Subtracts**: yes — an unenforced deploy-order convention that lives only in `CLAUDE.md` prose, plus one class of red develop build that presents as a flake and self-heals on the next push.
 - **Status**: open — **the only CI failure in the 7-day window, and it was a real one.** `[inference-api] Failed to get-agent-runtime — runtime may not exist yet.` → `exit 3` at 2026-09-01T21:17Z. **Platform Stack** and **Backend Deploy** were both triggered by the same develop push at `21:07:5x` (the #904 merge); Platform Stack succeeded, the runtime step did not — consistent with `get-agent-runtime` being called while CFN was mid-replace on the Runtime resource. Fix: serialize the two workflows, or gate the inference-api job on platform completion, and make the read retry instead of exiting 3. ⚠️ Check against the known GSI deploy-ordering trap first — a shared concurrency group has previously **cancelled** a run rather than queueing it, which is a worse failure than the one being fixed.
-
-### [2026-09-04] Retire the POC-comment feedback mechanism from both kaizen skills; adopt two verification rules
-- **Source**: reviews/2026-09-04.md ▸ Proposal #5 — direct observation (Friction ≥2 ×2, Silence that matters). Supersedes reviews/2026-08-28.md ▸ Proposals #3 and #4b, both Ship-recommended and both unactioned.
-- **Surface**: skills — `.claude/skills/kaizen-research/SKILL.md` and `.claude/skills/kaizen-review-prep/SKILL.md`. No code, no `CLAUDE.md`.
-- **Effort × Impact**: L × M–H
-- **Subtracts**: yes — the largest single subtraction available this cycle, and it simplifies the forum rather than the codebase. Retires (a) the POC-comment loop: the `POC findings` field, the “tested outranks untested” tiebreak, and the one-week-lag philosophy hanging off them — **five cycles, zero comments, tiebreak never fired** — while three items shipped as code in five days through a channel the skills do not describe. Also retires (c) the “resolve on a green streak” rule, still in force because #4b was never adopted, which produced a documented false negative within four days.
-- **Status**: open — three edits. **(a)** Replace the POC-comment loop with the outcome signal that demonstrably works: review-prep reads **merged PRs against the prior review's proposals**. **(b)** Every internal-audit number must be produced by a command **quoted in the doc**. Three reproduction failures in two cycles — the 2026-08-28 Price List API result, “zero CI failures in the window” (there was one), and `@angular/core 21.2.17` (the scanned tree read `21.2.19`) — against one section that already quotes its method (the version-pin table) and is the most reliable in the doc. A rate/price/capability figure destined for code needs two independent sources or an explicit `⚠️ single-source` marker. **(c)** Never resolve a *flaky* entry on a consecutive-green count — only on a root-cause fix or an explicit “accepted flake, N/month” note. **Deliberately does NOT re-propose** the ✅→tracked-issue layer: it failed to land twice and its premise is falsified — verified 2026-09-04 that **no `kaizen` label exists in this repo** and three items shipped anyway. ⚠️ `kaizen-review-prep/SKILL.md` is unmodified since 2026-05-10 across four reviews that each proposed editing it — if this is going to land, it rides the review PR.
 
 ### [2026-09-04] Migrate the MCP Apps host off `initialize` to `server/discover` — FastMCP 4.0 made it real
 - **Source**: research/2026-09-04.md ▸ Top 5 #2 — https://modelcontextprotocol.io/specification/2026-07-28/changelog (SEP-2567/2575) + https://github.com/jlowin/fastmcp/releases (4.0.0, 2026-08-31) + Strands 1.53.0 MCP-client changes. **Supersedes and upgrades the [2026-08-14] entry of the same name** — merge them at review.
@@ -533,16 +524,6 @@ Items added by `kaizen-research`, consumed by `kaizen-review-prep`.
 - **Subtracts**: no — defensive; Opus 4.7 rejects `temperature` on extended-thinking turns
 - **Status**: open — **subsumed by the [2026-07-03] model-settings per-model temperature-suppression guard** (same `to_bedrock_config` chokepoint; Sonnet 5 has the same rejection). Ship as one guard covering both. Reviewed reviews/2026-07-03.md ▸ Proposal #3.
 
-### [2026-05-15] Wire per-tool `duration_ms` into `tool_result` SSE
-- **Source**: research/2026-05-15.md ▸ Top 5 #5 — Claude Code 2.1.141 hook pattern
-- **Surface**: backend (Strands `AfterToolCall` hook) + frontend (`<tool-result>` component — inline timing badge for `> 250ms`)
-- **Effort × Impact**: L-M × M-H
-- **Subtracts**: partial — single hook-driven field replaces any ad-hoc per-tool timing; pre-paves the planned context-attribution prototype
-- **Unlocks**:
-  - Per-tool timing visibility in the UI (which slow tool is the bottleneck on this turn?)
-  - Data substrate for the planned context-attribution prototype — separates tool latency from token cost
-- **Status**: open — surfaced in reviews/2026-05-15.md ▸ Proposal #3 (Ship); no decision logged yet
-
 ### [2026-05-15] Investigate inference-api deploy — new images reach ECR but Runtime isn't rolled (issue #288)
 - **Source**: reviews/2026-05-15.md ▸ Proposal #10 (new from internal friction, issue #288 May 12). Pairs with the 1.6.4 → 1.9.1 bump (same SDK package owns `update_agent_runtime`).
 - **Surface**: cross-cutting — `.github/workflows/deploy-inference-api.yml` + bedrock-agentcore SDK `update_agent_runtime` call shape
@@ -557,13 +538,6 @@ Items added by `kaizen-research`, consumed by `kaizen-review-prep`.
 - **Subtracts**: no — defensive (SSE-disconnect path is hot)
 - **Status**: open — surfaced in reviews/2026-05-15.md ▸ Proposal #8 (Ship); no decision logged yet
 
-### [2026-05-10] Audit `oauth_required` SSE flow against ref-repo's mid-tool-call 401/403 handling
-- **Source**: research/2026-05-10.md ▸ Risks
-- **Surface**: backend
-- **Effort × Impact**: M × H
-- **Subtracts**: no — defensive
-- **Status**: open — deferred 2026-05-10 until 2026-05-24. BFF parade declared done via #297 (May 14), so deferral conditions have cleared a week early; reviews/2026-05-15.md holds to original revisit date to give one stable week.
-
 ### [2026-05-10] Named A2A agent participants in the chat UI
 - **Source**: research/2026-05-10.md ▸ Agentic UI/UX ▸ Linear Agent pattern. Reinforced by research/2026-05-15.md Linear Code Intelligence 5× usage-growth datapoint.
 - **Surface**: frontend (extend message model with `agent_identity`, distinct avatar/name/styling)
@@ -572,6 +546,26 @@ Items added by `kaizen-research`, consumed by `kaizen-review-prep`.
 - **Status**: open — deferred 4 weeks in reviews/2026-05-15.md (revisit 2026-06-12). Earns its keep when an A2A construct lands.
 
 ## Resolved
+
+### [2026-09-04] Retire the POC-comment feedback mechanism from both kaizen skills; adopt two verification rules → RESOLVED — **SHIPPED**, (a) as a permanent decline with the replacement named
+- **Decision**: resolved by outcome. Sixth cycle; the edits landed the only way a process item ever could — with Phil in the session, since the skill forbids unilateral skill-file edits.
+- **Reasoning**: **(a) declined permanently and logged** (`decisions.md` [2026-09-21]) — seven cycles, 0 comments across #926/#1045/#1046, tiebreak never fired, while 6 of 9 proposals converted through merged PRs. Both SKILL.md files now open review-prep with a **scorecard of the prior review's proposals** and require reading **open PR branches** for `docs/kaizen/` entries before ranking — the channel that actually corrected the 2026-09-18 review, via PR #1147's own branch. `POC findings` → `Evidence` (measured / verified on disk / asserted); tiebreak → measured-over-asserted. The two scheduled-task prompts were updated to match. ⚠️ **(b) and (c) did NOT ship** — the quoted-command rule for internal-audit numbers and the "never resolve a flake on a green streak" rule are still only prose in this entry. Re-queued below.
+- **Reviewed in**: reviews/2026-09-18.md ▸ Proposal #4
+
+### [2026-09-18] Fix the kaizen pipeline spacing — this week's review ran without a research doc → RESOLVED — **SHIPPED**, both halves
+- **Decision**: resolved by outcome. The review recommended "move review-prep to ~10am MT, **or** add the preflight"; both were done, because the gap is sized to a runtime that can grow.
+- **Reasoning**: `kaizen-review-prep` moved `0 8 * * 5` → **`0 10 * * 5`**. Next fire 2026-09-25: research 12:12Z, prep 16:05Z — **~3h53m** against the 2h18m worst observed scan, where the old schedule would have given ~1h53m and repeated the failure. The preflight is now in the skill and in the scheduled-task prompt: an absent or still-running research doc must be **stated in the review doc's header**, proceeding queue-first. Both skill descriptions now say ~4 hours instead of ~2.
+- **Reviewed in**: reviews/2026-09-18.md ▸ Proposal #5
+
+### [2026-05-15] Wire per-tool `duration_ms` into `tool_result` SSE → RESOLVED — **DECLINED**, superseded by `agent_status`
+- **Decision**: declined and logged (`decisions.md` [2026-09-21]). Eleventh cycle, five decline recommendations, zero keystrokes.
+- **Reasoning**: `agent_status` ships Strands' own measured `durationMs` on `tool_end`, on a channel that costs nothing against the prompt. The deliberate non-persistence of those durations is a recorded `CLAUDE.md` decision, so a duration on `tool_result` would re-open it by the back door. Re-open only with a concrete consumer needing timings **persisted and replayed** on `GET /messages`.
+- **Reviewed in**: reviews/2026-09-18.md ▸ Carried Over
+
+### [2026-05-10] Audit `oauth_required` SSE flow against ref-repo's mid-tool-call 401/403 handling → RESOLVED — **DECLINED as scoped**
+- **Decision**: declined and logged (`decisions.md` [2026-09-21]). Eighth surfacing, ~17 weeks past its revisit date; reviews/2026-08-14 said it must not carry a fifth review and it carried three more.
+- **Reasoning**: an open-ended audit against a reference repo, with no entry point and no failure ever named, is not a kaizen item. The flow was hardened four times in the interval by work that started from concrete symptoms instead — pre-flight `oauth_required`, vault warm-up before emit, the 424-destroys-409 fix, the MCP-App-call bypass. Name a symptom and it is ordinary bug work; the standing audit is closed.
+- **Reviewed in**: reviews/2026-09-18.md ▸ Carried Over
 
 ### [2026-09-11] Fix the nightly, both halves — anchor the branding specs' paths, and put `--coverage` where PR CI can see it → RESOLVED — **BOTH HALVES SHIPPED**; seven consecutive nightly greens
 - **Decision**: resolved by outcome (a merged PR or a superseding entry), not by a review mark.
