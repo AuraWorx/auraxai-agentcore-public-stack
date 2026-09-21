@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 from apis.shared.security.log_sanitize import scrub_log
 from apis.shared.timestamps import to_iso
 
+from apis.shared.files.content_disposition import build_content_disposition
 from apis.shared.files.models import (
     FileMetadata,
     FileStatus,
@@ -427,7 +428,9 @@ class FileUploadService:
                     "Bucket": self.bucket_name,
                     "Key": file_meta.s3_key,
                     "ResponseContentType": file_meta.mime_type,
-                    "ResponseContentDisposition": f'inline; filename="{file_meta.filename}"',
+                    "ResponseContentDisposition": build_content_disposition(
+                        "inline", file_meta.filename
+                    ),
                 },
                 ExpiresIn=self.preview_url_expiration,
             )
@@ -483,8 +486,8 @@ class FileUploadService:
                     "Bucket": self.bucket_name,
                     "Key": file_meta.s3_key,
                     "ResponseContentType": file_meta.mime_type,
-                    "ResponseContentDisposition": (
-                        f'attachment; filename="{file_meta.filename}"'
+                    "ResponseContentDisposition": build_content_disposition(
+                        "attachment", file_meta.filename
                     ),
                 },
                 ExpiresIn=self.preview_url_expiration,

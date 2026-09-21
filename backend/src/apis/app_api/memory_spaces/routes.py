@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from apis.shared.auth.dependencies import get_current_user_from_session
 from apis.shared.auth.models import User
 from apis.shared.feature_flags import memory_spaces_enabled
+from apis.shared.files.content_disposition import build_content_disposition
 from apis.shared.memory.models import EntryType
 from apis.shared.memory.service import (
     MemorySpaceConcurrencyError,
@@ -261,10 +262,19 @@ def export_space(
 
     root = _safe_component(export.space.name, export.space.space_id)
     spool = _build_export_zip(root, export)
+    # `root` names the folder *inside* the archive, where `_safe_component`'s
+    # job is zip-slip safety. The download filename is a different problem:
+    # Starlette encodes headers as latin-1, so the header is built from the
+    # real space name by the shared helper, which emits an ASCII `filename`
+    # plus an RFC 5987 `filename*` carrying the name verbatim.
     return StreamingResponse(
         _stream_and_close(spool),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{root}.zip"'},
+        headers={
+            "Content-Disposition": build_content_disposition(
+                "attachment", f"{export.space.name or export.space.space_id}.zip"
+            )
+        },
     )
 
 
