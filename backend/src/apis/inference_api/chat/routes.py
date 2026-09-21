@@ -33,6 +33,7 @@ from apis.shared.feature_flags import (
     mid_turn_steering_enabled,
     skills_enabled,
 )
+from apis.shared.files.document_read import is_document_class
 from apis.shared.files.file_resolver import get_file_resolver
 from apis.shared.files.models import (
     INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
@@ -782,18 +783,32 @@ def _remember_document_session(session_id: str) -> None:
 async def _session_has_documents(
     session_id: str,
     user_id: str,
-    turn_upload_ids: list | None = None,
+    turn_has_document: bool = False,
 ) -> bool:
     """Whether ``document_read`` should exist on this turn.
 
-    True when this turn attaches uploads (their metadata rows already exist,
-    so no query is needed), when the session was seen carrying a document
-    earlier in this process, or when the session's upload rows include at
-    least one readable document (PDF, Word, text, markdown, HTML — not
-    spreadsheets, decks or images, which have other paths). Fail-closed on
-    error: a turn without the tool is today's behavior, never a broken turn.
+    True when this turn attached a file the tool can actually read (the
+    caller has already classified it, so no query is needed), when the
+    session was seen carrying a document earlier in this process, or when
+    the session's upload rows include at least one readable document (PDF,
+    Word, text, markdown, HTML — not spreadsheets, decks or images, which
+    have other paths). Fail-closed on error: a turn without the tool is
+    today's behavior, never a broken turn.
+
+    ``turn_has_document`` must be *classified*, not merely "this turn
+    attached something". It used to be the raw ``file_upload_ids`` list, and
+    the difference is the whole bug: an image, a spreadsheet or a deck is an
+    upload id but not a document, so an image-only turn injected a tool whose
+    listing is empty by construction — and, worse, memoized the session as a
+    document session, so every later turn in that process carried it too.
+    Measured in prod over 2026-09-20T22:00..2026-09-21T17:15: 13 of the 29
+    sessions with attachments held no readable document, they accounted for
+    **100%** of the window's avoidable ``toolConfigHash`` rotations, and
+    because the memo is per-process while the DynamoDB query is not, the tool
+    (and therefore the cacheable prefix) flapped A→B→A→B as microVMs
+    recycled. Each flip re-writes the whole prefix at 1.25x input.
     """
-    if turn_upload_ids:
+    if turn_has_document:
         _remember_document_session(session_id)
         return True
     if _DOCUMENT_SESSIONS.get(session_id):
@@ -813,24 +828,52 @@ async def _session_has_documents(
 async def _document_tools_gate(
     session_id: str,
     user_id: str,
-    turn_upload_ids: list | None = None,
+    turn_has_document: bool = False,
 ) -> bool:
     """The single answer to "does this turn carry ``document_read``" — the
     builder and the resume path's cache key both read it, so the two can
-    never disagree (a disagreement orphans a paused agent)."""
+    never disagree (a disagreement orphans a paused agent).
+
+    The resume path calls this with ``turn_has_document=False`` and relies on
+    the answer being reproducible from session state alone. That only holds
+    once the short-circuit is classified: an image-only turn used to answer
+    True on the way in (raw upload ids) and False on resume (the query sees
+    no readable document), so the resumed agent missed the slot the paused
+    turn was cached under.
+    """
     from apis.shared.feature_flags import document_read_enabled
 
     if not document_read_enabled():
         return False
     if not session_id or not user_id:
         return False
-    return await _session_has_documents(session_id, user_id, turn_upload_ids)
+    return await _session_has_documents(session_id, user_id, turn_has_document)
+
+
+def _resolved_files_include_a_document(resolved_files: list | None) -> bool:
+    """Whether this turn's resolved uploads include one ``document_read`` can read.
+
+    The turn-level half of the injection gate. Classification, not presence:
+    images, spreadsheets and presentations all arrive as upload ids and none
+    of them is a document — spreadsheets route through the analysis tools and
+    decks through the PowerPoint tools, and ``document_read``'s own listing
+    filters them out, so injecting it for those turns buys nothing and
+    rotates ``toolConfigHash``.
+
+    Mirrors what ``_session_has_tabular`` already does for the Spreadsheet
+    Analysis auto-enable, which takes ``turn_has_tabular=bool(diverted_tabular)``
+    — a classified signal — rather than "the request carried files".
+    """
+    return any(
+        is_document_class(getattr(rf, "content_type", "") or "", getattr(rf, "filename", "") or "")
+        for rf in (resolved_files or ())
+    )
 
 
 async def _build_document_tools(
     session_id: str,
     user_id: str,
-    turn_upload_ids: list | None = None,
+    turn_has_document: bool = False,
 ) -> list:
     """Context-bound ``document_read`` for a session that has a readable attachment.
 
@@ -840,8 +883,13 @@ async def _build_document_tools(
     ``DOCUMENT_READ_ENABLED=false``. The gate's answer also feeds the agent
     cache key (``has_document_tools``), so an agent cached before the first
     upload is never served without the tool afterwards.
+
+    ``turn_has_document`` is this turn's *classified* answer — see
+    ``_session_has_documents``. Passing "did this turn attach anything"
+    injects the tool for image, spreadsheet and deck attachments, which it
+    cannot read.
     """
-    if not await _document_tools_gate(session_id, user_id, turn_upload_ids):
+    if not await _document_tools_gate(session_id, user_id, turn_has_document):
         return []
 
     from agents.builtin_tools.document_read_tool import make_document_read_tool
@@ -1969,6 +2017,12 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 MAX_FILES_PER_MESSAGE,
             )
 
+    # Whether THIS turn attached something `document_read` can actually read.
+    # Classified here, from the resolved uploads, rather than inferred from
+    # `file_upload_ids` being non-empty: an image, a spreadsheet and a deck
+    # are all upload ids and none of them is a document. Feeds the injection
+    # gate and therefore `toolConfig` — see `_session_has_documents`.
+    turn_has_document = False
     if upload_ids_to_resolve:
         try:
             file_resolver = get_file_resolver()
@@ -1983,6 +2037,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 all_files.append(
                     FileContent(filename=rf.filename, content_type=rf.content_type, bytes=rf.bytes)
                 )
+            turn_has_document = _resolved_files_include_a_document(resolved_files)
             logger.info(f"Resolved {len(resolved_files)} files from upload IDs")
         except Exception:
             logger.warning("Failed to resolve file upload IDs", exc_info=True)
@@ -3112,7 +3167,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
             document_tools = await _build_document_tools(
                 session_id=input_data.session_id,
                 user_id=user_id,
-                turn_upload_ids=input_data.file_upload_ids,
+                turn_has_document=turn_has_document,
             )
             extra_tools = extra_tools + document_tools
 
