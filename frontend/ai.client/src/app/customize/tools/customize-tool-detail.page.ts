@@ -204,7 +204,12 @@ interface PromptRun {
                 >{{ t.isEnabled ? 'On' : 'Off' }}</span
               >
               <span class="block text-xs/5 text-gray-500 dark:text-gray-400">
-                Applies to every conversation, including ones already open.
+                @if (t.alwaysOn) {
+                  Required by your organization — always available in every
+                  conversation.
+                } @else {
+                  Applies to every conversation, including ones already open.
+                }
               </span>
             </div>
             <button
@@ -212,9 +217,11 @@ interface PromptRun {
               role="switch"
               [attr.aria-checked]="t.isEnabled"
               aria-labelledby="tool-detail-state"
-              [disabled]="pending().has(t.toolId)"
+              [attr.aria-disabled]="t.alwaysOn ? 'true' : null"
+              [disabled]="pending().has(t.toolId) || !!t.alwaysOn"
               (click)="onToggle(t)"
-              class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+              [class.opacity-50]="pending().has(t.toolId) && !t.alwaysOn"
+              class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed"
               [class]="t.isEnabled ? 'bg-primary-600 dark:bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'"
             >
               <span
@@ -317,9 +324,16 @@ interface PromptRun {
                           role="switch"
                           [attr.aria-checked]="sub.enabled"
                           [attr.aria-labelledby]="'subtool-' + sub.name"
-                          [disabled]="pending().has(sub.name)"
+                          [attr.aria-disabled]="isSubToolLocked(t, sub) ? 'true' : null"
+                          [attr.title]="
+                            isSubToolLocked(t, sub) ? 'Required by your organization' : null
+                          "
+                          [disabled]="pending().has(sub.name) || isSubToolLocked(t, sub)"
                           (click)="onToggleSubTool(t, sub)"
-                          class="relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          [class.opacity-50]="
+                            pending().has(sub.name) && !isSubToolLocked(t, sub)
+                          "
+                          class="relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed"
                           [class]="sub.enabled ? 'bg-primary-600 dark:bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'"
                         >
                           <span
@@ -788,6 +802,9 @@ export class CustomizeToolDetailPage {
       { label: 'Status', value: t.status },
       { label: 'On by default', value: t.enabledByDefault ? 'yes' : 'no' },
     ];
+    if (t.alwaysOn) {
+      rows.push({ label: 'Always on', value: 'required by your organization' });
+    }
     if (t.requiresOauthProvider) {
       rows.push({ label: 'Requires account', value: t.requiresOauthProvider });
     }
@@ -954,7 +971,16 @@ export class CustomizeToolDetailPage {
     void this.consent.openConsentPopup(provider);
   }
 
+  /** A sub-tool is locked when it is pinned itself, or its server is. */
+  protected isSubToolLocked(tool: Tool, sub: SubToolRow): boolean {
+    return !!sub.alwaysOn || !!tool.alwaysOn;
+  }
+
   protected async onToggle(tool: Tool): Promise<void> {
+    // Backstop behind the disabled switch, for the keyboard and programmatic
+    // paths. Returns before `withPending` so a pinned tool never shows a
+    // saving state for a save that will not happen.
+    if (tool.alwaysOn) return;
     await this.withPending(tool.toolId, tool.displayName, () =>
       // `respectAgentLock: false` — see the class comment.
       this.toolService.toggleTool(tool.toolId, { respectAgentLock: false }),
@@ -962,6 +988,7 @@ export class CustomizeToolDetailPage {
   }
 
   protected async onToggleSubTool(tool: Tool, sub: SubToolRow): Promise<void> {
+    if (this.isSubToolLocked(tool, sub)) return;
     await this.withPending(sub.name, sub.name, () =>
       this.toolService.toggleServerTool(tool.toolId, sub.name, { respectAgentLock: false }),
     );
