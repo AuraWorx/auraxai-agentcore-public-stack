@@ -40,6 +40,8 @@ export interface ServerTool {
   description?: string | null;
   needsApproval?: boolean;
   enabled: boolean;
+  /** An admin pinned this individual tool: always on, not user-togglable. */
+  alwaysOn?: boolean;
 }
 
 /**
@@ -57,6 +59,16 @@ export interface Tool {
   enabledByDefault: boolean;
   userEnabled: boolean | null;
   isEnabled: boolean;
+  /**
+   * An admin pinned this tool: the backend unions it into every turn and the
+   * picker must render it locked. Optional on the wire so an older backend
+   * (which omits it) reads `undefined` -> falsy, i.e. today's unlocked toggle
+   * — see docs/specs/admin-always-on-tools.md §10.1.
+   *
+   * Already scoped to THIS user: the backend only sets it when the caller's
+   * roles grant the tool, because always-on enables and never grants.
+   */
+  alwaysOn?: boolean;
   /**
    * OAuth provider this tool needs the user to connect before it will work,
    * or null/absent when it needs no per-user consent. Mirrors the catalog's
@@ -307,6 +319,11 @@ export class ToolService {
     if ((options?.respectAgentLock ?? true) && this._agentLockedToolIds() !== null) return;
     const tool = this._tools().find(t => t.toolId === toolId);
     if (!tool) return;
+    // Admin-pinned: the backend unions it in regardless, so a toggle here
+    // could only produce a picker that disagrees with the turn. The UI renders
+    // the control disabled; this is the guard behind it, for the keyboard and
+    // programmatic paths that never see a disabled attribute.
+    if (tool.alwaysOn) return;
 
     const subs = tool.serverTools ?? [];
     const newState = !tool.isEnabled;
@@ -316,6 +333,11 @@ export class ToolService {
       // so the new state wins over any lingering per-tool preference.
       const prefs: Record<string, boolean> = { [toolId]: newState };
       for (const s of subs) {
+        // A pinned tool of an otherwise-togglable server stays on when the
+        // user switches the server off. Sending `false` for it would be
+        // dropped by the backend guard anyway (D6) — not sending it keeps the
+        // picker's optimistic state and the saved state in agreement.
+        if (s.alwaysOn) continue;
         prefs[makeScopedToolId(toolId, s.name)] = newState;
       }
       this._tools.update(tools =>
@@ -323,9 +345,14 @@ export class ToolService {
           t.toolId === toolId
             ? {
                 ...t,
-                isEnabled: newState,
+                // A server with a pinned tool is still effectively on: the
+                // row's state is "any tool enabled", and one of them cannot
+                // be turned off.
+                isEnabled: newState || subs.some(s => s.alwaysOn),
                 userEnabled: newState,
-                serverTools: (t.serverTools ?? []).map(s => ({ ...s, enabled: newState })),
+                serverTools: (t.serverTools ?? []).map(s =>
+                  s.alwaysOn ? s : { ...s, enabled: newState }
+                ),
               }
             : t
         )
@@ -373,6 +400,8 @@ export class ToolService {
     const tool = this._tools().find(t => t.toolId === toolId);
     const sub = tool?.serverTools?.find(s => s.name === name);
     if (!tool || !sub) return;
+    // Pinned individually, or by the whole server being pinned.
+    if (sub.alwaysOn || tool.alwaysOn) return;
 
     const newState = !sub.enabled;
 

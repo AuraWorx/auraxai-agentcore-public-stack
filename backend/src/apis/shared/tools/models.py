@@ -945,6 +945,14 @@ class UserToolServerTool(BaseModel):
     description: Optional[str] = None
     needs_approval: bool = Field(default=False, alias="needsApproval")
     enabled: bool = True
+    always_on: bool = Field(
+        default=False,
+        alias="alwaysOn",
+        description=(
+            "An admin pinned this individual tool of the server. `enabled` is "
+            "forced True and the picker must render it locked."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -977,6 +985,17 @@ class UserToolAccess(BaseModel):
         description="List of sources that grant access (e.g., ['public', 'power_user', 'researcher'])",
     )
     enabled_by_default: bool = Field(..., alias="enabledByDefault")
+    always_on: bool = Field(
+        default=False,
+        alias="alwaysOn",
+        description=(
+            "An admin pinned this tool: it is unioned into every turn and the "
+            "user cannot turn it off. `is_enabled` is forced True. Note this is "
+            "the *effective* lock for THIS user — it is only set when the "
+            "caller's roles actually grant the tool, because always-on enables "
+            "and never grants."
+        ),
+    )
 
     # Current user state
     user_enabled: Optional[bool] = Field(
