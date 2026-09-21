@@ -14,8 +14,18 @@ def _coordinator() -> StreamCoordinator:
     return object.__new__(StreamCoordinator)
 
 
-def _usage_metadata():
-    return {"usage": {"inputTokens": 100, "outputTokens": 20, "totalTokens": 120}}
+def _usage_metadata(cache_read=80_000):
+    # The prompt the provider billed has to be able to CONTAIN the split under
+    # test: `prefixTokens` is reconciled against
+    # inputTokens + cacheRead + cacheWrite before it is stored.
+    return {
+        "usage": {
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "totalTokens": 120,
+            "cacheReadInputTokens": cache_read,
+        }
+    }
 
 
 def _wrapper(strands_agent):
@@ -33,14 +43,14 @@ def _wrapper_with_split(system=12_000, tools=48_000):
     return _wrapper(strands_agent)
 
 
-async def _store(monkeypatch, **kwargs):
+async def _store(monkeypatch, cache_read=80_000, **kwargs):
     monkeypatch.delenv("COST_DIAGNOSTICS_ENABLED", raising=False)
     store = AsyncMock()
     with patch("apis.shared.sessions.metadata.store_message_metadata", store), \
          patch("agents.main_agent.streaming.stream_coordinator.get_prefix_fingerprint", return_value=None):
         await _coordinator()._store_message_metadata(
             session_id="s1", user_id="u1", message_id=3,
-            accumulated_metadata=_usage_metadata(),
+            accumulated_metadata=_usage_metadata(cache_read),
             stream_start_time=0.0, stream_end_time=1.0, first_token_time=0.5,
             call_index=0, **kwargs,
         )
@@ -64,6 +74,25 @@ async def test_ledger_and_prefix_split_are_attached(monkeypatch):
     assert extra["prefixTokens"] == {"system": 12_000, "tools": 48_000}
     dumped = stored.model_dump(by_alias=True)
     assert dumped["prefixTokens"]["tools"] == 48_000
+
+
+@pytest.mark.asyncio
+async def test_split_larger_than_the_billed_prompt_is_not_stored(monkeypatch):
+    """`toolTokens` is a residual between two estimators, so it can come back
+    larger than the whole prompt it claims to be part of (prod session
+    7f5f207f: tools=223,782 against a 55,783-token prompt). Storing that makes
+    the admin page assert something arithmetically impossible, so the row
+    carries no `prefixTokens` at all and reads "not tracked"."""
+    stored = await _store(
+        monkeypatch,
+        cache_read=1_000,          # 1,100-token prompt vs a 60,000-token split
+        agent=_wrapper_with_split(),
+        context_ledger={"windowRemovedMessages": 6},
+    )
+    extra = stored.model_extra or {}
+    assert "prefixTokens" not in extra
+    # The rest of the ledger is unaffected — only the split is in doubt.
+    assert extra["windowRemovedMessages"] == 6
 
 
 @pytest.mark.asyncio
