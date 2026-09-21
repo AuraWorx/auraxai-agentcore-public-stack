@@ -12,33 +12,52 @@ import { ManagedModelFormData, ModelProvider, SupportedParams } from './managed-
  *
  *   docs.aws.amazon.com/bedrock/latest/userguide/model-card-<provider>-<model>.html
  *
- * Check it first. The OpenAI-family rates are absent from the Price List API
- * entirely — those models bill through AWS Marketplace, which no pricing API
- * covers — and reading that absence as "unpublished" put three rows into the
- * dev catalog at GovCloud prices, over-charging by 20%.
+ * Check it first — the cards carry context windows, caching support,
+ * parameter tables and cutoffs, none of which any pricing API publishes.
  *
- * **Which source is authoritative depends on the vendor.** The per-model AWS
- * model cards above are authoritative for **Claude, Nova and the
- * OpenAI/Mantle family**; the Price List API is authoritative for **xAI,
- * Google and AgentCore**.
+ * **But corroborate the RATES against the Price List API.** As of 2026-09-21
+ * it carries almost everything, and a rate worth shipping should agree in
+ * both. There are two offer files, and picking the wrong one is the trap:
  *
- * ⚠️ Do NOT re-derive Claude rates from the Price List API. A full
- * enumeration of the `AmazonBedrock` offer file (run twice, a week apart,
- * across a republish) returns **10 Claude SKUs, none newer than Claude 3**,
- * and no us-west-2 SKU at all for Haiku 4.5, Sonnet 4.6, Fable 5.1, GPT-5.4
- * or Nova Micro. An earlier revision of this comment claimed the API "does
- * carry them" and told you to re-verify there; it does not, and a lookup that
- * comes back empty reads exactly like a model that is merely renamed.
- *
- * For the vendors the API does carry, re-verify with:
- *
+ *   # Claude, Cohere, Palmyra, TwelveLabs, Luma, Stability  (372 SKUs)
  *   aws pricing get-products --region us-east-1 \
  *     --service-code AmazonBedrockFoundationModels \
  *     --filters Type=TERM_MATCH,Field=regionCode,Value=us-west-2
  *
+ *   # Nova, xAI, Google, DeepSeek, Qwen, Moonshot             (1052 SKUs)
+ *   aws pricing get-products --region us-east-1 \
+ *     --service-code AmazonBedrock \
+ *     --filters Type=TERM_MATCH,Field=regionCode,Value=us-west-2
+ *
+ * ⚠️ An earlier revision of this comment said the API returns "10 Claude
+ * SKUs, none newer than Claude 3". **That is no longer true**, and the lesson
+ * is the failure mode rather than the fact: a query against the wrong offer
+ * file, or one filtering on the now-removed `model` attribute, returns zero
+ * and reads exactly like an unpublished model. Re-verified 2026-09-21 — every
+ * Claude row below is present and matches its card to the cent (Haiku 4.5
+ * $1.10/$5.50 Regional, $1.00/$5.00 Global; Sonnet 4.6 $3.30/$16.50; Opus 4.7
+ * $5.50/$27.50; Sonnet 5 $2.00/$10.00 Global; Fable 5.1 $10/$50 Global with a
+ * $0.25 cache read that independently confirms its 0.025x multiplier).
+ *
+ * The product schema now exposes only regionCode, usagetype, location,
+ * servicename and operation — there is no `model` and no `tokenType`. Match on
+ * `servicename` in the FoundationModels file ("Claude Haiku 4.5 (Amazon
+ * Bedrock Edition)") and on `usagetype` in the AmazonBedrock one
+ * ("USW2-moonshotai.kimi-k3-mantle-input-tokens-standard").
+ *
  * Newer models publish `*_tokens_standard` usagetypes; older ones publish
- * `*TokenCount`. A query written for one shape silently returns nothing for
- * the other — match both, or a model looks unpriced when it is merely renamed.
+ * `*TokenCount`. Both shapes are live TODAY in the same file — Sonnet 5 and
+ * Opus 4.7 use the first, Haiku 4.5 and Sonnet 4.6 the second — so a query
+ * written for one silently returns nothing for the other. Match both.
+ *
+ * The one real gap: the **hosted OpenAI family** (`openai.gpt-5.4`,
+ * `us.openai.gpt-5.6-*`, `us.openai.gpt-6-astra`) is absent from BOTH offer
+ * files, so its cards remain the only source. Reading that absence as
+ * "unpublished" once put three rows into the dev catalog at GovCloud prices,
+ * over-charging by 20%. Note the old explanation for it — "those models bill
+ * through AWS Marketplace, which no pricing API covers" — is wrong: Claude's
+ * rows are `MP:` Marketplace usagetypes and are covered. Only `gpt-oss`, the
+ * open-weight family, appears; the hosted GPT models genuinely do not.
  */
 export interface CuratedModel {
   /** Stable key for tracking + tests. Not persisted on the model itself. */
@@ -521,6 +540,85 @@ const openaiResponsesParams = (maxOutputTokens: number | null = null): Supported
   },
 });
 
+/**
+ * Moonshot AI's Kimi K3, curated onto `bedrock-responses` rather than `bedrock`.
+ *
+ * It is a `bedrock-runtime` model that Converse can call, so the obvious home
+ * is `CURATED_BEDROCK_MODELS` alongside Claude. Its model card rules that out
+ * on three counts, and names our own framework while doing it:
+ *
+ *   1. **Converse breaks multi-turn.** "a failure (`InternalServerException`)
+ *      when reasoning content from earlier turns is included in a multi-turn
+ *      request, which affects frameworks such as LangChain and Strands Agents
+ *      in their default configurations." That is our agent loop, in its
+ *      default configuration, on turn two.
+ *   2. **Converse gets no explicit caching.** Explicit prompt caching is
+ *      "Responses and Chat Completions APIs only" — a `bedrock` row would
+ *      route over Converse and reach only implicit caching, and our whole
+ *      `cachePoint` contract is Converse-shaped and would place nothing.
+ *   3. **Converse rejects documents.** "rejection of attached document inputs
+ *      such as PDF and HTML." Attachments are ~31% of prod spend; a model that
+ *      silently refuses them is not a general chat default.
+ *
+ * `bedrock-mantle` is not an option either — the card's endpoint table marks it
+ * unsupported, unlike the `openai.*` and `qwen.*` rows in
+ * {@link CURATED_MANTLE_MODELS}.
+ *
+ * That leaves `bedrock-responses`, which is where it belongs anyway: the same
+ * transport, the same per-request bearer mint, and the same implicit caching
+ * the GPT-5.6 family already rides. `supportsCaching: true` is inherited and
+ * correct — Kimi K3 caches implicitly by default with no way to turn it off,
+ * so `false` would zero the cache rates while AWS billed them.
+ *
+ * **Two family defaults are deliberately overridden**, and both are pricing:
+ *
+ * - `maxInputTokens: 1_000_000`. The 272K pin on
+ *   {@link bedrockResponsesDefaults} is load-bearing *for the OpenAI family*,
+ *   which publishes two price cards selected by actual token count. Kimi K3
+ *   publishes ONE table per inference option — there is no second card to fall
+ *   into — so the single flat rate stays arithmetically true across the whole
+ *   1M window, and inheriting 272K would only compact early for no reason.
+ * - `providerName: 'Moonshot AI'`. The family default is `'OpenAI'`, which is
+ *   the transport's origin, not this model's vendor.
+ *
+ * ⚠️ **Cost note on images.** The card: the `detail` parameter that trades
+ * image fidelity for cost "is honored only on the Chat Completions API. On the
+ * Responses API, images are always processed at high detail." This row routes
+ * over Responses (the provider forces `apiMode`), so every image is billed at
+ * high detail with no lever. Text and cached prefixes are unaffected.
+ *
+ * ⚠️ **Caching needs the explicit path on this model, and that is a backend
+ * carve-out, not a field here.** Its card says it "supports implicit
+ * (automatic) prompt caching" by default. Measured clean-room 2026-09-21
+ * (dev-ai, unique prefix per arm, 10.5k prefix, 4 turns) the default bills a
+ * cache WRITE every turn and reads one back never — $0.17338, against $0.13872
+ * for the same turns UNCACHED. Stock caching is 25% worse than no caching.
+ * Full explicit (`prompt_cache_options` + a breakpoint) costs $0.05401, a 69%
+ * saving. `_EXPLICIT_CACHE_REQUIRED_MODELS` in
+ * `apis/shared/models/bedrock_responses.py` forces that path for this model id
+ * regardless of the transport-wide env flag, which stays off for GPT-5.6 where
+ * explicit measured 57% WORSE. The rates below are only correct because of it.
+ *
+ * **`us.` not `global.`, and that is an environment constraint, not a
+ * preference.** Global CRIS is cheaper ($3.00 / $15.00 vs $3.30 / $16.50), but
+ * dev-ai sits under Control Tower SCP `p-r61tynkc`, which explicitly denies
+ * `bedrock:InvokeModel` on EVERY `global.*` profile — verified 2026-09-21
+ * against `global.anthropic.claude-haiku-4-5` and `global.anthropic.claude-sonnet-5`
+ * as well as this model, while the `us.*` sibling of each works. Curating the
+ * Global id would put a model in the picker that 401s on first use in dev. The
+ * prod account is in no organization, so no SCP applies there — if this row is
+ * ever promoted, `global.moonshotai.kimi-k3` at $3.00 / $15.00 is the cheaper
+ * and correct id.
+ *
+ * Rates are the **US CRIS** column: $3.30 / $16.50, cache read $0.33 (0.1x)
+ * and cache write $4.125 (1.25x) — both exactly the derived multipliers, so
+ * {@link ratesWithDerivedCache} carries it without an override. **Two
+ * independent sources agree to the cent**: the model card, and the Price List
+ * API's `AmazonBedrock` offer file (`USW2-moonshotai.kimi-k3-mantle-*-standard`
+ * usagetypes). Note the second one is the `AmazonBedrock` service code, NOT
+ * `AmazonBedrockFoundationModels` — Moonshot, xAI, Google and Nova all live
+ * there, and a query against the other offer file returns nothing for them.
+ */
 export const CURATED_BEDROCK_RESPONSES_MODELS: CuratedModel[] = [
   {
     key: 'gpt-6-astra',
@@ -606,6 +704,69 @@ export const CURATED_BEDROCK_RESPONSES_MODELS: CuratedModel[] = [
       ...ratesWithDerivedCache(0.22, 1.32),
       knowledgeCutoffDate: null,
       supportedParams: openaiResponsesParams(),
+    },
+  },
+  {
+    key: 'kimi-k3',
+    tagline: 'Moonshot AI\'s open-weight frontier model — 1M-token context with native vision.',
+    capabilities: ['Reasoning', 'Vision', 'Long context', 'Prompt caching'],
+    pricingTier: 'regional',
+    template: {
+      ...bedrockResponsesDefaults(),
+      // `us.` because dev's SCP denies every `global.*` profile — see above.
+      modelId: 'us.moonshotai.kimi-k3',
+      modelName: 'Kimi K3',
+      shortDescription: 'Long-context coding and knowledge work',
+      providerName: 'Moonshot AI',
+      // One price table, so the whole 1M window bills at one rate — see the
+      // block comment above for why this override is safe here and is NOT on
+      // the OpenAI siblings.
+      maxInputTokens: 1_000_000,
+      // US CRIS: $3.30 / $16.50, cache read $0.33, cache write $4.125.
+      // Global CRIS would be $3.00 / $15.00 — unreachable under dev's SCP.
+      ...ratesWithDerivedCache(3.3, 16.5),
+      // The card publishes no output cap and no knowledge cutoff. Claim
+      // neither rather than invent one.
+      maxOutputTokens: null,
+      knowledgeCutoffDate: null,
+      // MEASURED against `us.moonshotai.kimi-k3` in us-west-2 on 2026-09-21,
+      // not inherited: `openaiResponsesParams` declares temperature and top_p
+      // unsupported, and on this model temperature is ACCEPTED. Borrowing the
+      // OpenAI spec would have silently stripped a working parameter.
+      supportedParams: {
+        params: {
+          // 400 on 2: "This model accepts 'temperature' between 0 and 1."
+          // (Note the API schema itself allows <= 2 — the 2.1 rejection quotes
+          // the schema bound, the 2.0 rejection quotes the model's. The
+          // model's is the real one.) No default is published, so claim none.
+          temperature: { supported: true, min: 0, max: 1, default: null },
+          // Measured 400 on 0.9: "This model accepts 'top_p' only with the
+          // value 0.95." A parameter whose sole legal value is what you get by
+          // omitting it is not a knob. Declared false so the request never
+          // carries it — `supported: true` would let a picker send 0.7 and
+          // kill the turn with a 400 mid-stream.
+          top_p: { supported: false },
+          // 400 on 1: "Expected a value >= 16, but got 1 instead." The 16 is
+          // measured; the family's usual `min: 1` would be a guaranteed 400.
+          // The card publishes no cap, so declare none.
+          max_tokens: { supported: true, min: 16 },
+          // Enumerated by the endpoint's own 400 on a bogus level: "Supported
+          // values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+          // Same enum as the OpenAI family, arrived at independently.
+          reasoning_effort: {
+            supported: true,
+            allowed: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+            // Pins what the provider already does implicitly, as on the GPT-5.6
+            // rows. Three samples each, reasoning tokens: unset 114/111/95
+            // (mean 107), low 73/93/60 (mean 75), medium 142/108/89 (mean 113).
+            // Unset already sits at medium, so this is cost-neutral, not an
+            // increase — and it stops the provider moving its own default with
+            // our spend following silently. `none` returned 0 reasoning tokens
+            // and is the lever if that exposure is ever unwanted.
+            default: 'medium',
+          },
+        },
+      },
     },
   },
 ];

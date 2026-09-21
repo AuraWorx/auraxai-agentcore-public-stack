@@ -265,7 +265,25 @@ describe('ModelCatalogPage', () => {
     });
   });
 
-  describe('curated bedrock-responses (OpenAI family) entries', () => {
+  describe('curated bedrock-responses entries', () => {
+    // The tab is a TRANSPORT, not a vendor. Three of its invariants below were
+    // written when every entry was an `openai.*` id and are measured facts
+    // about GPT-5.6 specifically — the 272K price boundary and the probed
+    // parameter spec. Kimi K3 shares the transport and none of those facts, so
+    // they are scoped here rather than silently widened to a model they were
+    // never measured against.
+    const OPENAI_FAMILY = CURATED_BEDROCK_RESPONSES_MODELS.filter(m =>
+      m.template.modelId.includes('.openai.'),
+    );
+    const NON_OPENAI = CURATED_BEDROCK_RESPONSES_MODELS.filter(
+      m => !m.template.modelId.includes('.openai.'),
+    );
+
+    it('keeps both families on the tab', () => {
+      expect(OPENAI_FAMILY.length).toBeGreaterThan(0);
+      expect(NON_OPENAI.map(m => m.key)).toEqual(['kimi-k3']);
+    });
+
     it('renders them on their own tab', () => {
       const page = createComponent();
       page.selectTab('bedrock-responses');
@@ -286,13 +304,33 @@ describe('ModelCatalogPage', () => {
       }
     });
 
-    it('pins maxInputTokens to the 272K short-context boundary', () => {
+    it('pins the OpenAI family to the 272K short-context boundary', () => {
       // Load-bearing pricing, not just a cap: above 272K these models bill
       // input at 2x and output at 1.5x, and a CuratedModel holds one flat rate
       // per bucket. Raising this silently opens the second price card.
-      for (const model of CURATED_BEDROCK_RESPONSES_MODELS) {
+      for (const model of OPENAI_FAMILY) {
         expect(`${model.key}:${model.template.maxInputTokens}`).toBe(`${model.key}:272000`);
       }
+    });
+
+    it('lets Kimi K3 use its whole 1M window, because it has one price card', () => {
+      // The 272K pin exists to keep ONE flat rate per bucket true where AWS
+      // publishes TWO cards. Kimi K3's card publishes a single table per
+      // inference option, so there is no second card to fall into and the cap
+      // would only force early compaction at no saving. If Moonshot ever adds
+      // a long-context card, this is the test that has to change first.
+      const kimi = CURATED_BEDROCK_RESPONSES_MODELS.find(m => m.key === 'kimi-k3');
+
+      expect(kimi?.template.maxInputTokens).toBe(1_000_000);
+      expect(kimi?.template.providerName).toBe('Moonshot AI');
+      // US CRIS column: $3.30 / $16.50. Global is cheaper ($3.00 / $15.00) and
+      // is deliberately NOT used: dev sits under Control Tower SCP p-r61tynkc,
+      // which denies bedrock:InvokeModel on every `global.*` profile (verified
+      // against two Claude ids as well as this one). Curating the Global id
+      // would put a model in the picker that 401s on first use.
+      expect(kimi?.template.modelId).toBe('us.moonshotai.kimi-k3');
+      expect(kimi?.template.inputPricePerMillionTokens).toBeCloseTo(3.3, 6);
+      expect(kimi?.template.outputPricePerMillionTokens).toBeCloseTo(16.5, 6);
     });
 
     it('routes over the Responses API, which is the only surface that caches', () => {
@@ -312,7 +350,7 @@ describe('ModelCatalogPage', () => {
       //
       // If a future sibling is added without re-probing, this fails — which is
       // the point.
-      for (const model of CURATED_BEDROCK_RESPONSES_MODELS) {
+      for (const model of OPENAI_FAMILY) {
         const params = model.template.supportedParams?.params;
         expect(params, `${model.key} must declare a measured spec`).toBeTruthy();
 
@@ -338,6 +376,53 @@ describe('ModelCatalogPage', () => {
         expect(params!['reasoning_effort'].allowed).toContain(
           params!['reasoning_effort'].default,
         );
+      }
+    });
+
+    it('gives Kimi K3 its OWN measured spec, not the OpenAI family\'s', () => {
+      // The whole reason this is a separate test: `openaiResponsesParams`
+      // declares `temperature` unsupported, which is a measured fact about
+      // GPT-5.6 and FALSE here — probed 2026-09-21 against
+      // us.moonshotai.kimi-k3 in us-west-2, temperature is accepted. Borrowing
+      // the family spec would have silently stripped a working parameter.
+      const kimi = CURATED_BEDROCK_RESPONSES_MODELS.find(m => m.key === 'kimi-k3');
+      const params = kimi!.template.supportedParams!.params;
+
+      // 400 on 2: "This model accepts 'temperature' between 0 and 1."
+      expect(params['temperature'].supported).toBe(true);
+      expect(params['temperature'].min).toBe(0);
+      expect(params['temperature'].max).toBe(1);
+
+      // 400 on 0.9: "This model accepts 'top_p' only with the value 0.95."
+      // Its sole legal value is what omitting it already gives you, so
+      // declaring it supported would only enable a mid-stream 400.
+      expect(params['top_p'].supported).toBe(false);
+
+      // 400 on 1: "Expected a value >= 16, but got 1 instead." The family's
+      // usual min of 1 would be a guaranteed 400 on this model.
+      expect(params['max_tokens'].supported).toBe(true);
+      expect(params['max_tokens'].min).toBe(16);
+
+      // Same enum as the OpenAI family, but enumerated independently by this
+      // model's own 400 on a bogus level.
+      expect(params['reasoning_effort'].allowed?.join(',')).toBe(
+        'none,low,medium,high,xhigh,max',
+      );
+      expect(params['reasoning_effort'].default).toBe('medium');
+      expect(params['reasoning_effort'].allowed).toContain(
+        params['reasoning_effort'].default,
+      );
+    });
+
+    it('never lets a non-OpenAI entry inherit the OpenAI parameter spec', () => {
+      // A change-detector for the next model added to this transport: the
+      // cheap move is to spread `openaiResponsesParams()` and move on, which
+      // would declare temperature unsupported on a model that accepts it.
+      for (const model of NON_OPENAI) {
+        expect(
+          model.template.supportedParams?.params['temperature'].supported,
+          `${model.key} must declare its OWN temperature support`,
+        ).toBe(true);
       }
     });
 
