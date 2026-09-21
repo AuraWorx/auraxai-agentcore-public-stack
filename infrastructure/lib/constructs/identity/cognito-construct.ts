@@ -24,8 +24,9 @@ export interface CognitoConstructProps {
  *    `AdminCreateUser` + `AdminSetUserPassword`, which are unaffected by
  *    `AllowAdminCreateUserOnly`. An environment can ship with self-signup
  *    off from day one.
- *  - The App API's `disable_self_signup()` at the end of first-boot is not
- *    durable. CDK renders `adminCreateUserConfig` unconditionally, so the
+ *  - No runtime toggle can hold this. The App API used to call
+ *    `disable_self_signup()` at the end of first-boot; it was removed
+ *    because CDK renders `adminCreateUserConfig` unconditionally, so the
  *    next deploy that updates the user pool for any reason pushes this
  *    property back and silently re-opens signup. The config value is the
  *    only setting that holds; a console toggle is likewise transient.
