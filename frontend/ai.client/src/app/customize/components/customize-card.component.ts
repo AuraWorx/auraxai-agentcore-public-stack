@@ -67,16 +67,28 @@ export type CustomizeCardBadge = 'connected' | 'connect' | null;
         <p class="mt-0.5 line-clamp-2 text-xs/5 text-gray-500 dark:text-gray-400">
           {{ description() }}
         </p>
+        @if (locked()) {
+          <p class="mt-1 text-xs/5 font-medium text-gray-600 dark:text-gray-300">
+            {{ lockedReason }}
+          </p>
+        }
       </div>
 
       <button
         type="button"
         role="switch"
         [attr.aria-checked]="enabled()"
-        [attr.aria-label]="(enabled() ? 'Disable ' : 'Enable ') + name()"
-        [disabled]="pending()"
+        [attr.aria-label]="
+          locked()
+            ? name() + ' is required by your organization and cannot be turned off'
+            : (enabled() ? 'Disable ' : 'Enable ') + name()
+        "
+        [attr.aria-disabled]="locked() ? 'true' : null"
+        [attr.title]="locked() ? lockedReason : null"
+        [disabled]="pending() || locked()"
         (click)="toggled.emit()"
-        class="relative z-10 mt-0.5 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+        [class.opacity-50]="pending() && !locked()"
+        class="relative z-10 mt-0.5 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed"
         [class]="enabled() ? 'bg-primary-600 dark:bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'"
       >
         <span
@@ -94,6 +106,16 @@ export class CustomizeCardComponent {
   readonly description = input<string>('');
   readonly monogram = input<string>('?');
   readonly enabled = input<boolean>(false);
+  /**
+   * The switch is on and the user cannot change it — an administrator pinned
+   * this capability. Rendered as policy rather than as a disabled control:
+   * full opacity (a greyed switch reads as "broken" or "loading"), a stated
+   * reason on the card, and the reason in the accessible name, because a
+   * `title` tooltip reaches neither touch users nor a screen reader browsing
+   * statically.
+   */
+  readonly locked = input<boolean>(false);
+  protected readonly lockedReason = 'Required by your organization';
   /** In-flight save: the switch stays visually settled but refuses a second click. */
   readonly pending = input<boolean>(false);
   readonly badge = input<CustomizeCardBadge>(null);

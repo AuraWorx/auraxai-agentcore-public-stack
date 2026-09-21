@@ -19,6 +19,8 @@ interface ToolCard {
   description: string;
   monogram: string;
   enabled: boolean;
+  /** An admin pinned this tool: shown on, not togglable. */
+  locked: boolean;
   badge: CustomizeCardBadge;
   /** Where the card's name drills in to. Encoded: ids are opaque catalog keys. */
   detailLink: string;
@@ -151,6 +153,7 @@ interface ToolCard {
                   [description]="card.description"
                   [monogram]="card.monogram"
                   [enabled]="card.enabled"
+                  [locked]="card.locked"
                   [badge]="card.badge"
                   [detailLink]="card.detailLink"
                   [pending]="pending().has(card.tool.toolId)"
@@ -226,6 +229,7 @@ export class CustomizeToolsPage {
       monogram: monogramFor(tool.displayName),
       // `isEnabled`, never `isToolShownEnabled()` — see the class comment.
       enabled: tool.isEnabled,
+      locked: !!tool.alwaysOn,
       badge: this.badgeFor(tool),
       detailLink: `/customize/tools/${encodeURIComponent(tool.toolId)}`,
     }));
@@ -248,6 +252,11 @@ export class CustomizeToolsPage {
   protected async onToggle(tool: Tool): Promise<void> {
     const id = tool.toolId;
     if (this.pending().has(id)) return;
+    // The switch is disabled, so this is the keyboard/programmatic backstop.
+    // Returning before `pending` keeps a pinned card out of the saving state
+    // entirely — the service would no-op anyway, leaving a spinner with
+    // nothing behind it.
+    if (tool.alwaysOn) return;
 
     this.saveError.set(null);
     this.pending.update(set => new Set(set).add(id));

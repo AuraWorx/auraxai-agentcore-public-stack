@@ -261,6 +261,14 @@ def _no_live_infrastructure_reads(monkeypatch):
         ("apis.inference_api.chat.system_prompt_resolver.get_session_metadata", None),
         ("apis.shared.files.document_read.session_has_documents", False),
         ("apis.shared.files.document_read.session_has_tabular_files", False),
+        # The tool-catalog snapshot behind `freshness.get_always_on_tool_ids`.
+        # The invocation path resolves the admin-pinned tool set every turn, so
+        # it reads the catalog where it previously did not — and the resolver is
+        # fail-open, which is precisely the case this fixture's docstring warns
+        # about: swallowed error, assertion still passes, real socket still
+        # opened. An empty catalog pins nothing, which is the default behaviour
+        # a route test should see.
+        ("apis.shared.tools.repository.ToolCatalogRepository.list_tools", []),
         # Converse path: model routing, the rate-limit window, and the quota
         # override lookup. The 429 test drives quota through `get_quota_checker`,
         # which is a different seam, so stubbing these does not weaken it.

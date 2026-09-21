@@ -60,6 +60,7 @@ from apis.shared.sessions.metadata import (
     ensure_session_metadata_exists,
     load_session_meta,
 )
+from apis.shared.tools.always_on import resolve_always_on_tool_ids
 from apis.shared.tools.injected import (
     ARTIFACT_TOOL_IDS,
     EXCEL_SPREADSHEET_TOOL_IDS,
@@ -1027,6 +1028,43 @@ async def _apply_attachment_tool_autoenable(
     return _with_auto_enabled_tools(enabled_tools, auto_ids)
 
 
+async def _apply_admin_always_on_tools(
+    enabled_tools: list | None,
+    current_user: User,
+    agent_bound_tools: bool = False,
+) -> list | None:
+    """``enabled_tools`` for this turn with the admin-pinned tools unioned in.
+
+    Sits at the same seam as ``_apply_attachment_tool_autoenable`` and for the
+    same reason: every ``get_agent`` caller on the invocation path goes through
+    it, so the main turn and the MCP App dispatch compute the same effective
+    list and therefore the same agent-cache slot.
+
+    ``agent_bound_tools`` is whether an Agent's ``tool`` bindings are driving
+    this turn. **When they are, nothing is pinned.** An Agent that binds tools
+    owns its toolset the way ``modelConfig`` owns the model, and unioning into
+    it would override the author's explicit scoping.
+
+    ⚠️ The exemption is "the Agent binds its own toolset", NOT "the turn ran an
+    Agent". ``_resolve_tools`` returns ``None`` — so ``agent_bound_tools`` is
+    False — for an Agent with no ``tool`` bindings, and such a turn falls
+    through to the user's picker and **does** get the pinned set. That is
+    deliberate: a template-derived Agent starts with empty ``bindings``
+    (``agent_templates/seed.py``), and exempting it would make always-on
+    opt-out-by-construction — anyone could shed a pinned tool with a trivial
+    unbound Agent. See docs/specs/admin-always-on-tools.md §7 D4.
+
+    This is a deliberate divergence from the attachment auto-enable above,
+    which applies to the effective list and so does reach Agent-bound turns:
+    that one serves the *user's* intent (they attached the file), this one
+    serves the *admin's* — and the Agent author is exercising admin intent too.
+    """
+    if agent_bound_tools:
+        return enabled_tools
+    always_on_ids = await resolve_always_on_tool_ids(current_user)
+    return _with_auto_enabled_tools(enabled_tools, always_on_ids)
+
+
 def _estimate_decoded_size(file: "FileContent") -> int:
     """Estimate decoded byte size of a base64-encoded FileContent payload.
 
@@ -1831,9 +1869,15 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 user_id=user_id,
                 auth_token=auth_token,
                 # Same auto-enable seam as the main turn, so a spreadsheet
-                # session's dispatch reads the slot the real turns fill.
-                enabled_tools=await _apply_attachment_tool_autoenable(
-                    input_data.enabled_tools, current_user, input_data.session_id, user_id
+                # session's dispatch reads the slot the real turns fill — and
+                # the same always-on union, or the dispatch would compute a
+                # different effective list and miss into its own agent-cache
+                # slot on every App call.
+                enabled_tools=await _apply_admin_always_on_tools(
+                    await _apply_attachment_tool_autoenable(
+                        input_data.enabled_tools, current_user, input_data.session_id, user_id
+                    ),
+                    current_user,
                 ),
                 model_id=input_data.model_id,
                 system_prompt=input_data.system_prompt,
@@ -1892,9 +1936,15 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 user_id=user_id,
                 auth_token=auth_token,
                 # Same auto-enable seam as the main turn, so a spreadsheet
-                # session's dispatch reads the slot the real turns fill.
-                enabled_tools=await _apply_attachment_tool_autoenable(
-                    input_data.enabled_tools, current_user, input_data.session_id, user_id
+                # session's dispatch reads the slot the real turns fill — and
+                # the same always-on union, or the dispatch would compute a
+                # different effective list and miss into its own agent-cache
+                # slot on every App call.
+                enabled_tools=await _apply_admin_always_on_tools(
+                    await _apply_attachment_tool_autoenable(
+                        input_data.enabled_tools, current_user, input_data.session_id, user_id
+                    ),
+                    current_user,
                 ),
                 model_id=input_data.model_id,
                 system_prompt=input_data.system_prompt,
@@ -3113,6 +3163,19 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 input_data.session_id,
                 user_id,
                 turn_has_tabular=bool(diverted_tabular),
+            )
+
+            # Tools an admin pinned are unioned in for users whose roles grant
+            # them, unless this Agent binds its own toolset (D4). Applied to
+            # the same *effective* list for the same reason as the line above:
+            # one value flows into the cache key, every builder, and the
+            # paused-turn snapshot. The set depends only on the catalog and the
+            # user's roles, so it is constant across a session and does not
+            # flip the key turn to turn.
+            effective_enabled_tools = await _apply_admin_always_on_tools(
+                effective_enabled_tools,
+                current_user,
+                agent_bound_tools=agent_tools_override is not None,
             )
 
             # An Agent's skill bindings replace the request's skills for this turn so

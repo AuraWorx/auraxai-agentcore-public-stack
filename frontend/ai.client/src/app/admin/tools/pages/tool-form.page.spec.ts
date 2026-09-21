@@ -73,7 +73,9 @@ describe('ToolFormPage — Gateway target (protocol=mcp)', () => {
     expect(cfg.credentialType).toBe('none');
     expect(cfg.credentialProviderArn).toBeNull();
     expect(cfg.awsService).toBeNull();
-    expect(cfg.tools).toEqual([{ name: 'get_forecast', needsApproval: true, description: null }]);
+    expect(cfg.tools).toEqual([
+      { name: 'get_forecast', needsApproval: true, alwaysOn: false, description: null },
+    ]);
   });
 
   it('builds an IAM gateway config with aws service', async () => {

@@ -87,6 +87,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from strands.hooks import BeforeModelCallEvent, HookProvider, HookRegistry
 
+from apis.shared.observability.prefix_tokens import prefix_split_is_plausible
+
 logger = logging.getLogger(__name__)
 
 # Stashed on the per-session Strands agent instance.
@@ -226,24 +228,48 @@ def get_context_breakdown(agent: Any) -> Optional[dict]:
     return getattr(agent, _BREAKDOWN_ATTR, None)
 
 
-def get_prefix_token_split(agent: Any) -> Optional[Dict[str, int]]:
+def get_prefix_token_split(
+    agent: Any,
+    prompt_tokens: Optional[int] = None,
+) -> Optional[Dict[str, int]]:
     """The stable ``{"system": n, "tools": n}`` split for this agent, or ``None``.
 
     Persisted on each call's cost row (as ``prefixTokens``) so the static
     prefix a session carries — and which part of it is tool schemas — is a
     stored fact rather than a scan-and-guess. Same numbers the SSE breakdown
     reports; this just reads the cached split without re-counting.
+
+    ``prompt_tokens`` is the turn's real prompt size from provider-reported
+    usage. When given, a split whose ``system + tools`` exceeds it is dropped
+    rather than persisted: the static prefix is a subset of the prompt, so that
+    is arithmetically impossible and means the cached residual is stale or
+    corrupt (see ``apis.shared.observability.prefix_tokens``). Dropping follows
+    the ledger's convention that an absent ``prefixTokens`` reads "not tracked".
+
+    The stale split is deliberately **not** invalidated here. Recomputing costs
+    two CountTokens calls, and if the underlying estimator disagreement is
+    systematic for this session it would pay them on every turn — trading a
+    wrong number for a latency regression. The session simply reports "not
+    tracked" from this point on.
     """
     split = getattr(agent, _SPLIT_ATTR, None)
     if not isinstance(split, dict):
         return None
     try:
-        return {
-            "system": int(split.get("systemTokens") or 0),
-            "tools": int(split.get("toolTokens") or 0),
-        }
+        system_tokens = int(split.get("systemTokens") or 0)
+        tool_tokens = int(split.get("toolTokens") or 0)
     except (TypeError, ValueError):
         return None
+    if not prefix_split_is_plausible(system_tokens, tool_tokens, prompt_tokens):
+        logger.warning(
+            "Prefix split dropped as implausible: system=%d tools=%d exceed "
+            "the turn's %s-token prompt",
+            system_tokens,
+            tool_tokens,
+            prompt_tokens,
+        )
+        return None
+    return {"system": system_tokens, "tools": tool_tokens}
 
 
 def _token_count_is_authoritative(model: Any) -> bool:

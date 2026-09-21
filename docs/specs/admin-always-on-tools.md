@@ -235,6 +235,22 @@ per candidate" property structural instead of incidental.
    `EntityTypeIndex` Query fires at most once a minute. For comparison, the turn
    path *already* pays `get_freshness_hash`, which issues up to one `get_tool`
    GetItem per enabled tool per 10s window.
+
+   ✅ **Confirmed in PR-2, and not by reading the code.** 21 existing route
+   tests began failing the moment the union was wired in — not on an assertion
+   but on `tests/conftest.py`'s off-box socket guard, whose message is the
+   exact hazard: *"a fail-open except block hides the failure but the call
+   still happens."* The resolver's never-raise contract swallowed the error;
+   the socket still opened. That is direct evidence that `/invocations`
+   previously never touched the tool catalog and now does. The fix is one stub
+   in `tests/routes/conftest.py`'s `_no_live_infrastructure_reads` — the
+   fixture that exists for precisely this class of fail-open infrastructure
+   read — not a weakening of the guard.
+
+   The lesson generalizes beyond this feature: **a fail-open dependency is
+   invisible to assertions.** Had that guard not existed, this read would have
+   shipped unnoticed, and the first signal would have been a latency or cost
+   graph rather than a test.
 2. **Always-on ids widen `get_freshness_hash`.** They are in `enabled_tools` by
    the time `get_agent` runs, so they contribute to the freshness digest —
    bounded by the number of always-on tools, TTL-cached, and gathered
@@ -319,6 +335,26 @@ Requirements:
   should say so.
 - The tool list page gains an "Always on" chip so the pinned set is auditable at
   a glance rather than by opening 31 tool forms.
+
+**Status after PR-1.** The tool count, the blocking confirmation and the
+"prefer per-tool over whole-server" steer all shipped, as did the list chip.
+The **token-size readout did not** — deliberately, rather than by oversight.
+
+A tool's serialized schema does not exist anywhere app-api can reach it. It is
+produced at `BaseAgent._build_filtered_tools()` on the inference path, where
+Strands serializes the registry into the Bedrock `toolConfig`; the catalog row
+holds configuration, not a spec, and `ToolCensusHook` records call counts, not
+sizes. Putting a number on the admin form therefore means one of:
+
+1. measure once per tool at census or build time and persist it on the catalog
+   row, so admin reads a stored figure; or
+2. a small admin endpoint that builds the spec for one tool on demand.
+
+(1) is the better shape — it is the same "measure on the path that already has
+the data, read it cheaply elsewhere" move as `toolTokens` — and it is a PR of
+its own. A fabricated or chars/4-estimated number would be worse than the
+plain-language cost statement that shipped instead, because an admin would
+budget against it.
 
 ## 7. Decisions
 
