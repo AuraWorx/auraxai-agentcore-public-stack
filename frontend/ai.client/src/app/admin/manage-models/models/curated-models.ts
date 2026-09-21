@@ -99,6 +99,13 @@ const claude4xDefaults = (): Pick<
   inputModalities: ['TEXT', 'IMAGE'],
   outputModalities: ['TEXT'],
   responseStreamingSupported: true,
+  // ⚠️ 200_000 is correct for Haiku 4.5 ONLY. Every other Claude model we
+  // curate has a 1M window, so a new row that does not override this inherits
+  // a value that is wrong by 5x — and the failure is silent, because
+  // maxInputTokens drives model-relative compaction (it cuts at window *
+  // COMPACTION_CEILING_RATIO) and a plausible number looks like a correct one.
+  // Sonnet 4.6 and Opus 4.7 both shipped this way; fixed 2026-09-21. Check the
+  // AWS model card and declare the window explicitly on every new entry.
   maxInputTokens: 200_000,
   allowedAppRoles: [],
   availableToRoles: [],
@@ -168,6 +175,11 @@ export const CURATED_BEDROCK_MODELS: CuratedModel[] = [
     template: {
       ...claude4xDefaults(),
       modelId: 'us.anthropic.claude-opus-4-7',
+      // 1M per the AWS model card (verified 2026-09-21). WITHOUT this the row
+      // inherits claude4xDefaults()'s 200_000 and model-relative compaction
+      // cuts at 100k instead of 500k — five times earlier than the model
+      // needs, paying a prefix re-write and a summarizer call each time.
+      maxInputTokens: 1_000_000,
       modelName: 'Claude Opus 4.7',
       shortDescription: 'For your toughest challenges',
       maxOutputTokens: 64_000,
@@ -222,6 +234,9 @@ export const CURATED_BEDROCK_MODELS: CuratedModel[] = [
     template: {
       ...claude4xDefaults(),
       modelId: 'us.anthropic.claude-sonnet-4-6',
+      // 1M per the AWS model card (verified 2026-09-21) — same inherited-200k
+      // trap as the Opus 4.7 row above.
+      maxInputTokens: 1_000_000,
       modelName: 'Claude Sonnet 4.6',
       shortDescription: 'Balanced reasoning for everyday work',
       // Superseded by Claude Sonnet 5 in this same catalog.

@@ -818,11 +818,19 @@ class StreamCoordinator:
                             # context used" without an extra round-trip.
                             try:
                                 from apis.shared.costs.pricing_config import get_model_by_model_id
+                                from apis.shared.models.context_window import resolve_context_window
                                 model_record = await get_model_by_model_id(model_id)
-                                if model_record is not None:
-                                    max_input_tokens = getattr(model_record, "max_input_tokens", None)
-                                    if max_input_tokens:
-                                        final_metadata["contextWindow"] = int(max_input_tokens)
+                                max_input_tokens = (
+                                    getattr(model_record, "max_input_tokens", None)
+                                    if model_record is not None
+                                    else None
+                                )
+                                # Same resolver the compaction policy uses, so the
+                                # badge and the cut can never disagree about the
+                                # window (#267).
+                                window, _source = resolve_context_window(model_id, max_input_tokens)
+                                if window:
+                                    final_metadata["contextWindow"] = window
                             except Exception as ctx_err:
                                 logger.debug(f"Skipping contextWindow lookup: {ctx_err}")
 
@@ -2929,10 +2937,18 @@ class StreamCoordinator:
 
     @staticmethod
     async def _resolve_context_window(main_agent_wrapper: Any) -> Optional[int]:
-        """The serving model's ``maxInputTokens`` from the catalog, or ``None``.
+        """The serving model's context window, or ``None``.
 
-        Feeds the model-relative compaction policy. Best-effort: a miss means
-        the policy falls back to the fixed threshold, never an error.
+        Feeds the model-relative compaction policy, which cuts at
+        ``window * COMPACTION_CEILING_RATIO`` — so a wrong value here does not
+        mis-render a badge, it compacts early. The catalog is the source of
+        truth; Strands' table is consulted only when the record carries no
+        ``maxInputTokens``, and a disagreement between the two is logged for a
+        human rather than resolved here (#267 — see
+        ``apis/shared/models/context_window.py`` for why ours must win).
+
+        Best-effort: a miss means the policy falls back to the fixed
+        threshold, never an error.
         """
         model_config = getattr(main_agent_wrapper, "model_config", None)
         model_id = getattr(model_config, "model_id", None)
@@ -2940,10 +2956,12 @@ class StreamCoordinator:
             return None
         try:
             from apis.shared.costs.pricing_config import get_model_by_model_id
+            from apis.shared.models.context_window import resolve_context_window
 
             record = await get_model_by_model_id(model_id)
             value = getattr(record, "max_input_tokens", None) if record is not None else None
-            return int(value) if value else None
+            window, _source = resolve_context_window(model_id, value)
+            return window
         except Exception as e:  # noqa: BLE001 - never let a lookup break the turn
             logger.debug(f"Skipping contextWindow lookup for compaction: {e}")
             return None

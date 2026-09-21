@@ -358,6 +358,47 @@ replay real trajectories under a policy.
 
 ## 5. Quality gate and tuning
 
+> ⛔ **WAIVED 2026-09-21 — the veto below did not run, and the defaults are
+> in production.** Recording it here because a gate merely unrun reads, to the
+> next person, exactly like a gate that passed.
+>
+> **What shipped anyway.** `COMPACTION_CEILING_RATIO = 0.5` / `HARD_CEILING_RATIO
+> = 0.7` and the rest of the model-relative stack (#1125–#1132) reached prod in
+> **1.23.0, 2026-09-20**. The §4.3 long-session eval named below has never
+> existed on disk — `find backend -name "*eval*"` returns only the unrelated
+> `feedback_eval` sampler and vendored site-packages. So the deepest, earliest
+> cut this codebase has ever shipped is defended by **cost alone** ($73.70 vs
+> $102.64 on the 20-session replay), with quality asserted rather than measured.
+>
+> **Why it was waived rather than run.** Two reasons, and only the first was
+> foreseen. (1) No owner: the harness is the one deliverable in this epic that
+> ships no user-visible behaviour, and it lost to every PR that did. (2) The
+> fallback was measured on 2026-09-21 and does not exist either. The cheap
+> substitute — comparing down-thumb rate across arms from the `F#` rows #1142
+> shipped — turns out to have **no substrate**: every `F#` row in prod since
+> 1.23.0 is **13 rows, of which exactly 1 is a thumb**, against
+> `DEFAULT_MINIMUM_N = 20` per arm. At ~0.7 thumbs/day fleet-wide, no arm
+> reaches the floor this quarter. The outcome instrument this spec's §7.2 was
+> counting on is real, correct, and empty.
+>
+> **What this waiver is not.** It is not a finding that the cut is safe. Nobody
+> has looked. The honest statement is that a quality regression from these
+> thresholds would currently be **invisible to us** — there is no harness, and
+> the human signal is three orders of magnitude below its own reporting floor.
+>
+> **What reopens it** — any one, and the waiver is deleted rather than amended:
+> 1. The §4.3 harness gets built (the only path that does not wait on users);
+> 2. Any `turnClass` or `callsSinceCompaction` arm in
+>    `GET /admin/feedback/fleet` clears `minimumN` — check before assuming, the
+>    arm reports `downRate: null` with `belowFloor: true` until it does;
+> 3. A user-reported context-loss incident lands on a compacted session. That
+>    is the expensive way to find out, and it is currently the most likely one.
+>
+> ⚠️ Do **not** reopen this by lowering `FEEDBACK_ARM_MINIMUM_N`. Manufacturing
+> a rate from n=3 produces the fleet-wide "quality score" that response-feedback
+> spec §9 exists to forbid, and it would close this waiver with a number that
+> means nothing.
+
 - **Veto before default change in prod:** the spiral spec §4.3 long-session
   eval (constraint retention / revision continuity / reference lookup) runs
   on PR-1 with the fixed-threshold arm as control. A deeper cut is a bigger
