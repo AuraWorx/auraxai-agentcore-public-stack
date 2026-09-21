@@ -63,6 +63,8 @@ export type ToolStatus = 'active' | 'deprecated' | 'disabled' | 'coming_soon';
 export interface MCPToolEntry {
   name: string;
   needsApproval: boolean;
+  /** Pinned into every turn for users whose roles grant this server (§2.3). */
+  alwaysOn?: boolean;
   description?: string | null;
 }
 
@@ -138,6 +140,13 @@ export interface AdminTool {
   isPublic: boolean;
   allowedAppRoles: string[];
   enabledByDefault: boolean;
+  /**
+   * Pinned into every turn for users whose roles grant it; the user cannot turn
+   * it off. Optional on the wire so an older backend (which omits it) reads
+   * `undefined` -> falsy, i.e. today's behaviour — see
+   * docs/specs/admin-always-on-tools.md §10.1.
+   */
+  alwaysOn?: boolean;
   createdAt: string;
   updatedAt: string;
   createdBy: string | null;
@@ -190,9 +199,40 @@ export interface ToolCreateRequest {
   tokenExchangeAudience?: string | null;
   isPublic?: boolean;
   enabledByDefault?: boolean;
+  alwaysOn?: boolean;
   mcpConfig?: MCPServerConfig;
   a2aConfig?: A2AAgentConfig;
   mcpGatewayConfig?: MCPGatewayConfig;
+}
+
+/**
+ * How a tool's enablement is presented in admin. The stored shape is still two
+ * booleans (`enabledByDefault` + `alwaysOn`) for backward compatibility; this
+ * is the derived three-way the form binds to, which is what makes the invalid
+ * pair (`enabledByDefault: false` + `alwaysOn: true`) unreachable from the UI.
+ * See docs/specs/admin-always-on-tools.md §2.2 — the enum becomes the stored
+ * shape when §10.3's migration lands.
+ */
+export type ToolEnablement = 'user_choice' | 'default_on' | 'always_on';
+
+/** Derive the form's three-way from the two stored booleans. */
+export function toolEnablementOf(tool: {
+  enabledByDefault?: boolean;
+  alwaysOn?: boolean;
+}): ToolEnablement {
+  if (tool.alwaysOn) return 'always_on';
+  return tool.enabledByDefault ? 'default_on' : 'user_choice';
+}
+
+/** Project the form's three-way back onto the two stored booleans. */
+export function toolEnablementFlags(value: ToolEnablement): {
+  enabledByDefault: boolean;
+  alwaysOn: boolean;
+} {
+  return {
+    enabledByDefault: value !== 'user_choice',
+    alwaysOn: value === 'always_on',
+  };
 }
 
 /**
@@ -209,6 +249,7 @@ export interface ToolUpdateRequest {
   tokenExchangeAudience?: string | null;
   isPublic?: boolean;
   enabledByDefault?: boolean;
+  alwaysOn?: boolean;
   mcpConfig?: MCPServerConfig | null;
   a2aConfig?: A2AAgentConfig | null;
   mcpGatewayConfig?: MCPGatewayConfig | null;
@@ -310,6 +351,7 @@ export interface ToolFormData {
   tokenExchangeAudience?: string | null;
   isPublic: boolean;
   enabledByDefault: boolean;
+  alwaysOn: boolean;
   // MCP configuration (for mcp_external protocol)
   mcpServerUrl?: string;
   mcpTransport?: MCPTransport;

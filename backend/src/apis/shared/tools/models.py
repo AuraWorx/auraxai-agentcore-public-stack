@@ -143,6 +143,17 @@ class MCPToolEntry(BaseModel):
         default=False,
         description="If true, the agent must request user confirmation before invoking this tool.",
     )
+    always_on: bool = Field(
+        default=False,
+        description=(
+            "If true, this one tool of the server is pinned into every turn's "
+            "effective toolset for users whose roles grant the server, and the "
+            "user cannot turn it off. Enables, never grants. Prefer this over "
+            "flagging the whole server: an always-on server puts every one of "
+            "its tool schemas in the cacheable toolConfig for the life of every "
+            "session. See docs/specs/admin-always-on-tools.md."
+        ),
+    )
     description: Optional[str] = Field(
         None, description="Optional admin-supplied description for this tool"
     )
@@ -151,6 +162,7 @@ class MCPToolEntry(BaseModel):
         return {
             "name": self.name,
             "needsApproval": self.needs_approval,
+            "alwaysOn": self.always_on,
             "description": self.description,
         }
 
@@ -159,6 +171,9 @@ class MCPToolEntry(BaseModel):
         return cls(
             name=data.get("name", ""),
             needs_approval=bool(data.get("needsApproval", False)),
+            # Absent on every row written before always-on shipped, so it reads
+            # back False and the entry behaves exactly as it did.
+            always_on=bool(data.get("alwaysOn", False)),
             description=data.get("description"),
         )
 
@@ -686,6 +701,35 @@ class ToolDefinition(BaseModel):
         default=False,
         description="If true, tool is enabled when user first accesses it",
     )
+    always_on: bool = Field(
+        default=False,
+        description=(
+            "If true, the tool is pinned into every turn's effective toolset "
+            "for users whose roles grant it, and the user cannot turn it off. "
+            "Enables, never grants: a user whose roles do not carry the tool is "
+            "unaffected. See docs/specs/admin-always-on-tools.md."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _normalize_always_on(self) -> "ToolDefinition":
+        """An always-on tool is necessarily on by default.
+
+        ``enabled_by_default=False`` + ``always_on=True`` is incoherent — the
+        tool is pinned on for everyone, so "off until the user turns it on"
+        describes nothing. The spec chose two booleans over a three-state enum
+        to avoid migrating every catalog row, request model and SPA model
+        (docs/specs/admin-always-on-tools.md §2.2), and this validator is what
+        pays for that choice: it makes the invalid pair unrepresentable.
+
+        ⚠️ **Load-bearing — do not delete as redundant.** It runs on read as
+        well as write (``mode="after"`` fires for ``from_dynamo_item`` too), so
+        a hand-written DynamoDB item cannot produce the invalid pair either.
+        It retires only when the ``toolEnablement`` enum lands (§10.3).
+        """
+        if self.always_on and not self.enabled_by_default:
+            self.enabled_by_default = True
+        return self
 
     # External tool configuration (protocol-specific)
     mcp_config: Optional[MCPServerConfig] = Field(
@@ -770,6 +814,7 @@ class ToolDefinition(BaseModel):
             "tokenExchangeAudience": self.token_exchange_audience,
             "isPublic": self.is_public,
             "enabledByDefault": self.enabled_by_default,
+            "alwaysOn": self.always_on,
             "createdAt": to_iso(self.created_at) if self.created_at else None,
             "updatedAt": to_iso(self.updated_at) if self.updated_at else None,
             "createdBy": self.created_by,
@@ -834,6 +879,9 @@ class ToolDefinition(BaseModel):
             token_exchange_audience=item.get("tokenExchangeAudience"),
             is_public=item.get("isPublic", False),
             enabled_by_default=item.get("enabledByDefault", False),
+            # Absent on every row written before always-on shipped, so it reads
+            # back False and the tool behaves exactly as it did.
+            always_on=item.get("alwaysOn", False),
             mcp_config=mcp_config,
             a2a_config=a2a_config,
             mcp_gateway_config=mcp_gateway_config,
@@ -973,6 +1021,7 @@ class MCPToolEntryPayload(BaseModel):
 
     name: str
     needs_approval: bool = Field(default=False, alias="needsApproval")
+    always_on: bool = Field(default=False, alias="alwaysOn")
     description: Optional[str] = None
 
     model_config = {"populate_by_name": True}
@@ -981,6 +1030,7 @@ class MCPToolEntryPayload(BaseModel):
         return MCPToolEntry(
             name=self.name,
             needs_approval=self.needs_approval,
+            always_on=self.always_on,
             description=self.description,
         )
 
@@ -989,6 +1039,7 @@ class MCPToolEntryPayload(BaseModel):
         return cls(
             name=entry.name,
             needs_approval=entry.needs_approval,
+            always_on=entry.always_on,
             description=entry.description,
         )
 
@@ -1124,6 +1175,7 @@ class ToolCreateRequest(BaseModel):
     token_exchange_audience: Optional[str] = Field(None, alias="tokenExchangeAudience")
     is_public: bool = Field(default=False, alias="isPublic")
     enabled_by_default: bool = Field(default=False, alias="enabledByDefault")
+    always_on: bool = Field(default=False, alias="alwaysOn")
 
     # External tool configurations (optional based on protocol)
     mcp_config: Optional[MCPServerConfigRequest] = Field(None, alias="mcpConfig")
@@ -1150,6 +1202,12 @@ class ToolUpdateRequest(BaseModel):
     token_exchange_audience: Optional[str] = Field(None, alias="tokenExchangeAudience")
     is_public: Optional[bool] = Field(None, alias="isPublic")
     enabled_by_default: Optional[bool] = Field(None, alias="enabledByDefault")
+    # ⚠️ Optional with no default value on the wire: the update route dumps with
+    # `model_dump(exclude_unset=True)`, so an older admin client that never
+    # sends this field leaves the stored value alone rather than clearing it.
+    # That partial-update semantic is load-bearing for backward compatibility
+    # (docs/specs/admin-always-on-tools.md §10.1) — do not "simplify" it.
+    always_on: Optional[bool] = Field(None, alias="alwaysOn")
 
     # External tool configurations (optional based on protocol)
     mcp_config: Optional[MCPServerConfigRequest] = Field(None, alias="mcpConfig")
@@ -1338,6 +1396,7 @@ class AdminToolResponse(BaseModel):
     is_public: bool = Field(..., alias="isPublic")
     allowed_app_roles: List[str] = Field(..., alias="allowedAppRoles")
     enabled_by_default: bool = Field(..., alias="enabledByDefault")
+    always_on: bool = Field(default=False, alias="alwaysOn")
     created_at: str = Field(..., alias="createdAt")
     updated_at: str = Field(..., alias="updatedAt")
     created_by: Optional[str] = Field(None, alias="createdBy")
@@ -1385,6 +1444,7 @@ class AdminToolResponse(BaseModel):
             is_public=tool.is_public,
             allowed_app_roles=allowed_roles or tool.allowed_app_roles,
             enabled_by_default=tool.enabled_by_default,
+            always_on=tool.always_on,
             created_at=to_iso(tool.created_at) if tool.created_at else "",
             updated_at=to_iso(tool.updated_at) if tool.updated_at else "",
             created_by=tool.created_by,
