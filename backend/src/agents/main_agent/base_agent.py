@@ -530,32 +530,37 @@ class BaseAgent(ABC):
             workload_access_token = BedrockAgentCoreContext.get_workload_access_token()
 
             external_integration = get_external_mcp_integration()
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
 
-                async def _load_with_context():
-                    if oauth2_callback_url:
-                        BedrockAgentCoreContext.set_oauth2_callback_url(oauth2_callback_url)
-                    if workload_access_token:
-                        BedrockAgentCoreContext.set_workload_access_token(workload_access_token)
-                    return await external_integration.load_external_tools(
-                        external_mcp_tool_ids,
-                        user_id=self.user_id,
-                        auth_token=self.auth_token,
-                    )
+            async def _load_with_context():
+                if oauth2_callback_url:
+                    BedrockAgentCoreContext.set_oauth2_callback_url(oauth2_callback_url)
+                if workload_access_token:
+                    BedrockAgentCoreContext.set_workload_access_token(workload_access_token)
+                return await external_integration.load_external_tools(
+                    external_mcp_tool_ids,
+                    user_id=self.user_id,
+                    auth_token=self.auth_token,
+                )
+
+            # Probe with ``get_running_loop`` rather than ``get_event_loop``:
+            # on 3.12 the latter RAISES when no loop is running instead of
+            # creating one, so the old ``else: run_until_complete(...)`` arm
+            # was unreachable and the no-loop case escaped as an uncaught
+            # RuntimeError. Both arms now go through ``_load_with_context``
+            # so the captured context is restored either way.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # No loop in this thread — safe to drive one here.
+                external_clients = asyncio.run(_load_with_context())
+            else:
+                # A loop is already running; we cannot block it, so hand the
+                # coroutine to a worker thread with its own fresh loop.
+                import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, _load_with_context())
                     external_clients = future.result()
-            else:
-                external_clients = loop.run_until_complete(
-                    external_integration.load_external_tools(
-                        external_mcp_tool_ids,
-                        user_id=self.user_id,
-                        auth_token=self.auth_token,
-                    )
-                )
 
             for client in external_clients:
                 if client not in local_tools:
