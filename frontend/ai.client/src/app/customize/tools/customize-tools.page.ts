@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import { heroMagnifyingGlass } from '@ng-icons/heroicons/outline';
-import { Tool, ToolService } from '../../services/tool/tool.service';
+import { Tool, ToolService, isRetiring } from '../../services/tool/tool.service';
 import { ConnectorStatusService } from '../../settings/connectors/services/connector-status.service';
 import { splitToolDescription } from '../../shared/utils/tool-description';
 import { monogramFor } from '../../shared/utils/monogram';
@@ -21,6 +21,8 @@ interface ToolCard {
   enabled: boolean;
   /** An admin pinned this tool: shown on, not togglable. */
   locked: boolean;
+  /** An admin is retiring this tool: can be turned off, cannot be turned on. */
+  retiring: boolean;
   badge: CustomizeCardBadge;
   /** Where the card's name drills in to. Encoded: ids are opaque catalog keys. */
   detailLink: string;
@@ -154,6 +156,7 @@ interface ToolCard {
                   [monogram]="card.monogram"
                   [enabled]="card.enabled"
                   [locked]="card.locked"
+                  [retiring]="card.retiring"
                   [badge]="card.badge"
                   [detailLink]="card.detailLink"
                   [pending]="pending().has(card.tool.toolId)"
@@ -230,6 +233,7 @@ export class CustomizeToolsPage {
       // `isEnabled`, never `isToolShownEnabled()` — see the class comment.
       enabled: tool.isEnabled,
       locked: !!tool.alwaysOn,
+      retiring: isRetiring(tool),
       badge: this.badgeFor(tool),
       detailLink: `/customize/tools/${encodeURIComponent(tool.toolId)}`,
     }));
@@ -257,6 +261,10 @@ export class CustomizeToolsPage {
     // entirely — the service would no-op anyway, leaving a spinner with
     // nothing behind it.
     if (tool.alwaysOn) return;
+    // Same backstop for the other asymmetry: a retiring tool that is already off
+    // cannot be turned on. Turning one OFF is the whole point, so it falls
+    // through (docs/specs/mcp-server-retirement.md §7).
+    if (isRetiring(tool) && !tool.isEnabled) return;
 
     this.saveError.set(null);
     this.pending.update(set => new Set(set).add(id));

@@ -13,7 +13,7 @@ import { TooltipDirective } from './components/tooltip/tooltip.directive';
 import { SessionService } from './auth/session.service';
 import { SessionService as SessionListService } from './session/services/session/session.service';
 import { DockedPaneService } from './session/services/docked-pane/docked-pane.service';
-import { isMinimalChromeRoute } from './shared/utils/route-chrome';
+import { isAdminChromeRoute, isMinimalChromeRoute } from './shared/utils/route-chrome';
 import { BrandingService } from '../branding/branding.service';
 
 @Component({
@@ -61,6 +61,19 @@ export class App {
   protected readonly minimalChrome = computed(() => {
     this.navigated();
     return isMinimalChromeRoute(this.router.routerState.snapshot.root);
+  });
+
+  /**
+   * True when the active route is inside the admin console.
+   *
+   * The console keeps the sidenav — the nav inside it is swapped for the
+   * admin one — but drops the centred `max-w-7xl` content box. That cap is a
+   * reading width for prose; a cost table or a role matrix read inside it
+   * while a conversation list it cannot use held 18rem to its left.
+   */
+  protected readonly adminChrome = computed(() => {
+    this.navigated();
+    return isAdminChromeRoute(this.router.routerState.snapshot.root);
   });
 
   /**

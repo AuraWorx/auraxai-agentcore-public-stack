@@ -60,7 +60,7 @@ from apis.shared.sessions.metadata import (
     ensure_session_metadata_exists,
     load_session_meta,
 )
-from apis.shared.tools.always_on import resolve_always_on_tool_ids
+from apis.shared.tools.always_on import resolve_always_on_tool_ids, union_enabled_tools
 from apis.shared.tools.injected import (
     ARTIFACT_TOOL_IDS,
     EXCEL_SPREADSHEET_TOOL_IDS,
@@ -958,17 +958,14 @@ async def _session_has_tabular(
 
 
 def _with_auto_enabled_tools(enabled_tools: list | None, auto_ids: list[str]) -> list | None:
-    """``enabled_tools`` plus ``auto_ids`` not already present, appended in the
-    order given. Returns the same object when there is nothing to add, so a
-    caller that passed ``None`` still passes ``None`` and every consumer of the
-    list (cache key, builders, guidance, ToolFilter) sees one value."""
-    if not auto_ids:
-        return enabled_tools
-    current = list(enabled_tools or [])
-    missing = [tool_id for tool_id in auto_ids if tool_id not in current]
-    if not missing:
-        return enabled_tools
-    return current + missing
+    """``enabled_tools`` plus ``auto_ids`` not already present.
+
+    Thin alias over ``apis.shared.tools.always_on.union_enabled_tools``, which
+    is where the semantics now live so the voice entry point can share them
+    rather than keep a second copy. Kept as a module-local name because every
+    call site and test in this module refers to it.
+    """
+    return union_enabled_tools(enabled_tools, auto_ids)
 
 
 async def _auto_enabled_attachment_tool_ids(

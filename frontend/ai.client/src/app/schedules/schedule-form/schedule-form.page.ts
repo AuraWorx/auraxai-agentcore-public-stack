@@ -14,7 +14,7 @@ import { ScheduleService } from '../services/schedule.service';
 import { RunNowService } from '../services/run-now.service';
 import { AgentService } from '../../agents/services/agent.service';
 import { Agent } from '../../agents/models/agent.model';
-import { ToolService } from '../../services/tool/tool.service';
+import { ToolService, isRetiring } from '../../services/tool/tool.service';
 import {
   CreateScheduleRequest,
   IntervalUnit,
@@ -235,7 +235,22 @@ export class ScheduleFormPage implements OnInit {
     }
   }
 
+  /**
+   * A schedule's `enabledTools` is a snapshot, so adding a retiring tool here
+   * books it into a run that may fire months from now — new adoption by another
+   * door. Turning one off stays open, same asymmetry as the other two pickers
+   * (docs/specs/mcp-server-retirement.md §7).
+   *
+   * Only ever a *narrowing* of what the checkbox offers: the backend re-filters
+   * this list against the caller's grant at run time regardless.
+   */
+  isToolRetiring(toolId: string): boolean {
+    const tool = this.tools().find((t) => t.toolId === toolId);
+    return !!tool && isRetiring(tool) && !this.isToolSelected(toolId);
+  }
+
   toggleTool(toolId: string): void {
+    if (this.isToolRetiring(toolId)) return;
     this.selectedToolIds.update((set) => {
       const next = new Set(set);
       if (next.has(toolId)) {

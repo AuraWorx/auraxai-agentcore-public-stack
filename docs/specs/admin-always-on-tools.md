@@ -695,9 +695,30 @@ three-way control derived correctly in every case (`calculator` → on-by-defaul
 *discriminates*: silent for `create_visualization` (granted by `faculty`),
 fired for `hello_world` (granted by nobody).
 
-**The normalizing validator fired in production.** `create_visualization` was
-`enabledByDefault: false`; selecting "Always on" stored `alwaysOn: true` **and**
-`enabledByDefault: true`. §2.2's mechanism, working on a real write.
+**The stored pair came out coherent.** `create_visualization` was
+`enabledByDefault: false`; after selecting "Always on" the row read
+`alwaysOn: true` **and** `enabledByDefault: true`.
+
+⚠️ **This was first written up as "the normalizing validator fired in
+production". That was wrong, and the correction matters.** The admin form's
+three-way control sends *both* flags, so the form produced that value — the
+validator was never exercised on the write path at all. `ToolDefinition` does
+not set `validate_assignment`, and `repository.update_tool` applies partial
+updates with `setattr`, so a `mode="after"` validator runs at construction and
+never again.
+
+The consequence, found while auditing this claim: a raw
+`PUT {"alwaysOn": true}` that did not also send `enabledByDefault` persisted
+the incoherent pair. Reads normalised it (`from_dynamo_item` constructs
+afresh), so runtime behaviour was correct and nothing misbehaved — which is
+precisely why it survived the original validation. Raw-item consumers
+(backfills, exports, analytics) do not read through the model. Fixed by
+re-validating the patched state in `repository.update_tool` before it is
+serialised; see `tests/shared/test_tool_update_revalidates.py`.
+
+The general lesson: **"the observed value is correct" is not evidence that the
+mechanism you credit produced it.** Two code paths could set that field, and
+the validation only distinguished them once someone asked which one had.
 
 **Enforcement, proven by the prompt cache rather than by asking the model.**
 Three sessions, same user, same model, same system prompt, differing only in the
@@ -804,9 +825,36 @@ prefix. The first run of this test produced two hits and looked like a pass.
   whose grant is `*`. There is no role available to it that *lacks* the tool.
   Covered by unit tests (`test_always_on_resolution.py`) and by the wildcard
   path being exercised live, but not by a second live identity.
-- **Voice.** The token-rebuilt `User` path (D5) has unit coverage only.
+- **Voice.** The token-rebuilt `User` path (D5) has unit coverage only. A
+  follow-up audit did find and fix two real problems in it without a live
+  test: it hand-rolled its own union instead of calling the shared helper
+  (a second set of semantics to keep in step, which is exactly what §1's
+  single-seam argument exists to prevent), and it emitted the connection log
+  *before* the union, so the one line an operator reads when debugging a voice
+  toolset under-reported it by precisely the tools this feature adds.
 
-### 11.5 Bug found and fixed
+### 11.5 Why the negative RBAC side is unverifiable on dev specifically
+
+Not merely inconvenient — structural. Of the four roles on dev, **three carry
+the `*` wildcard**:
+
+| role | wildcard | effective tools | inherits |
+|---|---|---|---|
+| `faculty` | no | 15 | – |
+| `default` | **yes** | 3 | – |
+| `system_admin` | yes | 1 | – |
+| `developer` | **yes** | 2 | `system_admin` |
+
+`default` holding `*` means a user matching no role receives everything, and
+`developer` inherits the wildcard from `system_admin`. `faculty` is the only
+narrow role in the environment. So dev offers essentially no negative coverage
+for **any** access-control feature, not just this one — a "user lacks the
+grant" test needs either a `faculty` login (a second human identity) or a
+purpose-built narrow role. Prod is the better venue: its cohort roles
+(`faculty`/`staff`/`student`/`demo_day`) are genuinely narrow, so the case
+arises naturally there.
+
+### 11.6 Bug found and fixed
 
 Real rendering surfaced what specs and unit tests did not: the whole-server
 confirmation read **"I understand this pins all 1 tools."** Fixed — and the
@@ -820,7 +868,7 @@ until acknowledged and now reads *"I understand this pins all 3 of this
 server's tools."* The no-granting-role warning and the cost copy both survived
 the change.
 
-### 11.6 Dev state left behind
+### 11.7 Dev state left behind
 
 `create_visualization` remains pinned on dev, as requested. Reverting is one
 change of the three-way control on `/admin/tools/edit/create_visualization`.

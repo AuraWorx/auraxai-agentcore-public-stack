@@ -411,6 +411,17 @@
           <p class="mt-0.5 truncate text-xs/5 text-gray-500 dark:text-gray-400">{{ selectedToolSummary() || 'No tools selected.' }}</p>
         }
 
+        <!--
+          Deliberately OUTSIDE the `toolsOpen()` disclosure: the notice is the one thing
+          in this section the author has to act on, and collapsing Tools must not be a way
+          to stop seeing it. See docs/specs/mcp-server-retirement.md §7.
+        -->
+        @if (retiringSelectedTools().length) {
+          <p class="mt-2 rounded-lg bg-state-warning-50 px-3 py-2 text-xs/5 text-state-warning-700 dark:bg-state-warning-900/30 dark:text-state-warning-300">
+            {{ retiringSelectedTools().join(', ') }} {{ retiringSelectedTools().length === 1 ? 'is' : 'are' }} being retired. This agent keeps working for now — please remove {{ retiringSelectedTools().length === 1 ? 'it' : 'them' }} before the retirement date. If this agent is published, resubmit it so the change reaches the people using it.
+          </p>
+        }
+
         @if (toolsOpen()) {
           <div id="agent-tools-panel">
             <!-- Search is what actually scales past thirty, not the scroll box. Everything
@@ -475,12 +486,28 @@
                               type="button"
                               role="switch"
                               [attr.aria-checked]="isToolSelected(t.ref)"
+                              [disabled]="isToolRetiring(t) && !isToolSelected(t.ref)"
                               (click)="toggleTool(t.ref)"
                               (keydown.space)="$event.preventDefault(); toggleTool(t.ref)"
-                              class="flex min-w-0 flex-1 items-start gap-3 rounded-xl py-2.5 pr-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+                              class="flex min-w-0 flex-1 items-start gap-3 rounded-xl py-2.5 pr-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 disabled:cursor-not-allowed disabled:opacity-60"
                             >
                               <span class="min-w-0 flex-1">
-                                <span class="block text-sm/6 font-medium text-gray-900 dark:text-white">{{ t.label }}</span>
+                                <span class="flex items-center gap-1.5">
+                                  <span class="text-sm/6 font-medium text-gray-900 dark:text-white">{{ t.label }}</span>
+                                  <!--
+                                    Retirement is disclosed as visible text, not a tooltip — the
+                                    whole reason this section left chips behind. A retiring tool the
+                                    agent already binds stays selected and stays removable; one it
+                                    does not bind is inert in that one direction only. Neither is an
+                                    access decision (spec §7).
+                                  -->
+                                  @if (isToolRetiring(t)) {
+                                    <span class="shrink-0 rounded-sm bg-state-warning-50 px-1.5 font-mono text-[10px]/5 font-medium text-state-warning-700 dark:bg-state-warning-900/30 dark:text-state-warning-300">retiring</span>
+                                  }
+                                </span>
+                                @if (isToolRetiring(t)) {
+                                  <span class="mt-0.5 block text-xs/5 text-state-warning-700 dark:text-state-warning-300">{{ isToolSelected(t.ref) ? 'Being retired — remove it from this agent when you can.' : 'Being retired and can no longer be added to an agent.' }}</span>
+                                }
                                 @if (t.description) {
                                   <!-- Out of the tooltip: hover-only text is dead on touch
                                        and cannot be scanned at all. -->

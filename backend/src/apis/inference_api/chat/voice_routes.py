@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from apis.shared.sessions.metadata import get_session_metadata, store_session_metadata
+from apis.shared.tools.always_on import union_enabled_tools
 from apis.shared.sessions.models import SessionMetadata
 
 logger = logging.getLogger(__name__)
@@ -405,9 +406,17 @@ async def voice_stream(
         await websocket.close(code=4001, reason="Authentication required")
         return
 
+    # Admin-pinned tools reach voice too (D5). Resolved BEFORE the connection
+    # log below, because that log is the first thing anyone reads when
+    # debugging a voice toolset — emitting it ahead of the union made it
+    # under-report by exactly the tools this feature adds.
+    always_on_ids = await _always_on_tool_ids_for_voice(auth_token, user_id)
+    enabled_tools_list = union_enabled_tools(enabled_tools_list, always_on_ids)
+
     logger.info(
         f"Voice WebSocket connected: session={_sanitize_log(session_id)}, "
         f"user={_sanitize_log(user_id)}, tools={len(enabled_tools_list or [])}, "
+        f"pinned={len(always_on_ids)}, "
         f"auth_token={'present' if auth_token else 'missing'}"
     )
 
@@ -416,15 +425,6 @@ async def voice_stream(
     try:
         # Create VoiceAgent
         VoiceAgent = _get_voice_agent_class()
-        # Admin-pinned tools reach voice too (D5). Appended in the resolver's
-        # fixed sorted order, and a no-op when nothing is pinned — the union
-        # returns the same list object it was handed.
-        always_on_ids = await _always_on_tool_ids_for_voice(auth_token, user_id)
-        if always_on_ids:
-            current = list(enabled_tools_list or [])
-            enabled_tools_list = current + [
-                tool_id for tool_id in always_on_ids if tool_id not in current
-            ]
         voice_agent = VoiceAgent(
             session_id=session_id,
             user_id=user_id,

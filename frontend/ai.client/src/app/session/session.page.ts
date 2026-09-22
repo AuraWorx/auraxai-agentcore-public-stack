@@ -8,6 +8,10 @@ import { MessageMapService } from './services/session/message-map.service';
 import { Message } from './services/models/message.model';
 import { SessionService } from './services/session/session.service';
 import { ScrollPositionService } from './services/session/scroll-position.service';
+import {
+  ComposerDraftStorageService,
+  NEW_CONVERSATION_DRAFT_KEY,
+} from './services/session/composer-draft-storage.service';
 import { ChatStateService } from './services/chat/chat-state.service';
 import { SidenavService } from '../services/sidenav/sidenav.service';
 import { HeaderService } from '../services/header/header.service';
@@ -82,6 +86,7 @@ export class ConversationPage implements OnDestroy {
   private systemPromptsService = inject(SystemPromptsService);
   private greetingProvider = inject(GreetingProvider);
   private scrollPositions = inject(ScrollPositionService);
+  private composerDrafts = inject(ComposerDraftStorageService);
   private agentMentionService = inject(AgentMentionService);
   private toast = inject(ToastService);
   private platformId = inject(PLATFORM_ID);
@@ -141,6 +146,19 @@ export class ConversationPage implements OnDestroy {
   readonly effectiveSessionId = computed(() => {
     return this.sessionId() ?? this.stagedSessionId();
   });
+
+  /**
+   * Which conversation the composer parks its unsent text under.
+   *
+   * The *route* conversation, not {@link effectiveSessionId}: a new
+   * conversation mints a staged id the moment a file is attached, and keying
+   * drafts off that would swap the composer out from under text the user had
+   * already typed. Before the first send every visit to `/` is the same
+   * composer, so they all share one key.
+   */
+  readonly draftKey = computed(
+    () => this.sessionId() ?? NEW_CONVERSATION_DRAFT_KEY,
+  );
 
   // Writable signal that holds the current messages signal reference
   private messagesSignal = signal<Signal<Message[]>>(signal([]));
@@ -405,6 +423,27 @@ export class ConversationPage implements OnDestroy {
       this.lastViewedSessionId = id;
 
       this.sessionId.set(id);
+
+      // A new-conversation draft with attachments names the conversation its
+      // uploads were filed under. Re-adopt it, or the next file attached after
+      // a reload mints a *second* staged id and the send carries upload ids
+      // from a conversation it does not name.
+      //
+      // `addSessionToCache` is not optional here, even though this id was
+      // already staged once: it also marks the id as new, which is what tells
+      // the metadata fetch to skip a conversation the backend has not created
+      // yet. That marker lives in memory and so died with the reload — without
+      // this call the first send lands on "Session not found".
+      if (!id) {
+        const staged = this.composerDrafts.read(NEW_CONVERSATION_DRAFT_KEY).attachmentSessionId;
+        if (staged && this.stagedSessionId() !== staged) {
+          this.stagedSessionId.set(staged);
+          this.sessionService.addSessionToCache(
+            staged,
+            this.userService.currentUser()?.user_id || 'anonymous',
+          );
+        }
+      }
 
       // Cost/context badge and Continue-affordance state is per-session in
       // ChatStateService, and the viewed-session effect above repoints the

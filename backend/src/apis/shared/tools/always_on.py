@@ -23,7 +23,7 @@ governance default must not be able to break a chat turn.
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from apis.shared.auth.models import User
 from apis.shared.tools.freshness import get_always_on_tool_ids
@@ -76,3 +76,26 @@ async def resolve_always_on_tool_ids(user: User) -> List[str]:
             exc_info=True,
         )
         return []
+
+
+def union_enabled_tools(enabled_tools: Optional[list], extra_ids: List[str]) -> Optional[list]:
+    """``enabled_tools`` plus ``extra_ids`` not already present, appended in the
+    order given. Returns the same object when there is nothing to add, so a
+    caller that passed ``None`` still passes ``None`` and every consumer of the
+    list (cache key, builders, guidance, ToolFilter) sees one value.
+
+    Lives here rather than in a route module because more than one entry point
+    unions ids into a turn — the `/invocations` path and the voice WebSocket —
+    and the whole argument for a single seam
+    (docs/specs/admin-always-on-tools.md §1) is defeated if each one grows its
+    own copy. A second implementation is a second set of semantics to keep in
+    step, and the identity behaviour above is exactly the kind of detail that
+    drifts silently.
+    """
+    if not extra_ids:
+        return enabled_tools
+    current = list(enabled_tools or [])
+    missing = [tool_id for tool_id in extra_ids if tool_id not in current]
+    if not missing:
+        return enabled_tools
+    return current + missing
