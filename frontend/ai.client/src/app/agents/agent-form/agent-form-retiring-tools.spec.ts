@@ -61,6 +61,8 @@ const CANVAS_RETIRING = {
   meta: {
     protocol: 'mcp_external',
     status: 'deprecated',
+    retirementNote: 'Replaced by Canvas for Faculty',
+    retiresOn: '2026-10-31',
     serverTools: [{ name: 'list_courses' }, { name: 'list_rubrics' }],
   },
 };
@@ -71,6 +73,15 @@ const CALCULATOR = {
   label: 'Calculator',
   description: 'Arithmetic',
   meta: { protocol: 'direct', status: 'active', serverTools: [] },
+};
+
+/** Retiring, but the admin recorded neither a replacement nor a date. */
+const BARE_RETIRING = {
+  kind: 'tool',
+  ref: 'sk_hello_approval',
+  label: 'SK Hello Approval Test',
+  description: 'Approval probe',
+  meta: { protocol: 'mcp_external', status: 'deprecated', serverTools: [] },
 };
 
 /** An older backend omits `meta.status` entirely. */
@@ -91,7 +102,7 @@ async function mount(bindings: { kind: string; ref: string }[]): Promise<AgentFo
     loadBindable: vi
       .fn()
       .mockImplementation((kind: string) =>
-        Promise.resolve(kind === 'tool' ? [CANVAS_RETIRING, CALCULATOR, LEGACY] : []),
+        Promise.resolve(kind === 'tool' ? [CANVAS_RETIRING, BARE_RETIRING, CALCULATOR, LEGACY] : []),
       ),
     getAgent: vi.fn().mockResolvedValue({
       agentId: 'agt-1',
@@ -236,6 +247,12 @@ describe('AgentFormPage — retiring tools', () => {
     it('reports nothing for the section notice', () => {
       expect(component.retiringSelectedTools()).toEqual([]);
     });
+
+    it('phrases the row line for an unbound tool as "cannot be added"', () => {
+      expect(component.retiringRowText(BARE_RETIRING)).toBe(
+        'Being retired and can no longer be added to an agent.',
+      );
+    });
   });
 
   describe('an agent that already binds the retiring tool', () => {
@@ -248,8 +265,20 @@ describe('AgentFormPage — retiring tools', () => {
       expect(component.isToolSelected('canvas_faculty')).toBe(true);
     });
 
-    it('names it in the section notice so the author knows to act', () => {
-      expect(component.retiringSelectedTools()).toEqual(['Canvas Faculty']);
+    it('names it in the section notice, with the replacement and the date', () => {
+      const rows = component.retiringSelectedTools();
+      expect(rows.map((r) => r.label)).toEqual(['Canvas Faculty']);
+      expect(rows[0].detail).toMatch(/^Replaced by Canvas for Faculty\. It stops working on /);
+    });
+
+    it('carries the same facts on the row\'s visible warning line', () => {
+      // Visible text, not a tooltip — PR #1233 moved this disclosure out of hover
+      // on purpose, and the replacement is the part an author most needs to read.
+      const row = component.retiringRowText(CANVAS_RETIRING);
+      expect(row).toBe(
+        'Being retired — remove it from this agent when you can. ' +
+          'Replaced by Canvas for Faculty. It stops working on October 31, 2026.',
+      );
     });
 
     it('lets the author remove it — the whole point of the stage', () => {
@@ -265,6 +294,27 @@ describe('AgentFormPage — retiring tools', () => {
     });
   });
 
+  describe('a retiring tool with no recorded replacement or date', () => {
+    let component: AgentFormPage;
+    beforeEach(async () => {
+      component = await mount([{ kind: 'tool', ref: 'sk_hello_approval' }]);
+    });
+
+    it('falls back to a sentence that promises no date it cannot show', () => {
+      // The first cut of this notice said "remove it before the retirement
+      // date" unconditionally, pointing at a fact the UI never carried.
+      const rows = component.retiringSelectedTools();
+      expect(rows[0].detail).toBe('It will stop working once the retirement completes.');
+      expect(rows[0].detail).not.toMatch(/the retirement date/);
+    });
+
+    it('still states the lead-in, just without a detail it does not have', () => {
+      expect(component.retiringRowText(BARE_RETIRING)).toBe(
+        'Being retired — remove it from this agent when you can.',
+      );
+    });
+  });
+
   describe('a scoped binding to the retiring server', () => {
     let component: AgentFormPage;
     beforeEach(async () => {
@@ -273,7 +323,7 @@ describe('AgentFormPage — retiring tools', () => {
 
     it('reads as selected — retirement is a property of the server', () => {
       expect(component.isToolSelected('canvas_faculty')).toBe(true);
-      expect(component.retiringSelectedTools()).toEqual(['Canvas Faculty']);
+      expect(component.retiringSelectedTools().map((r) => r.label)).toEqual(['Canvas Faculty']);
     });
 
     it('lets the author remove the whole server, scoped ref and all', () => {
