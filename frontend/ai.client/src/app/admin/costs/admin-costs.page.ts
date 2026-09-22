@@ -16,6 +16,7 @@ import {
   heroChartPie,
   heroChatBubbleLeftRight,
   heroChevronDown,
+  heroServerStack,
   heroMagnifyingGlass,
   heroUsers,
 } from '@ng-icons/heroicons/outline';
@@ -28,10 +29,11 @@ import { TopUsersTableComponent } from './components/top-users-table.component';
 import { TopSessionsTableComponent } from './components/top-sessions-table.component';
 import { CostTrendsChartComponent } from './components/cost-trends-chart.component';
 import { ModelBreakdownComponent } from './components/model-breakdown.component';
+import { PlatformCostBreakdownComponent } from './components/platform-cost-breakdown.component';
 import { SpinnerComponent } from '../../components/spinner/spinner.component';
 
 /** The four views the dashboard's content is split across. */
-type CostTab = 'models' | 'trends' | 'users' | 'conversations';
+type CostTab = 'models' | 'trends' | 'platform' | 'users' | 'conversations';
 
 /**
  * Admin cost dashboard page.
@@ -61,6 +63,7 @@ type CostTab = 'models' | 'trends' | 'users' | 'conversations';
     TopSessionsTableComponent,
     CostTrendsChartComponent,
     ModelBreakdownComponent,
+    PlatformCostBreakdownComponent,
     SpinnerComponent,
   ],
   providers: [
@@ -71,6 +74,7 @@ type CostTab = 'models' | 'trends' | 'users' | 'conversations';
       heroChartPie,
       heroChatBubbleLeftRight,
       heroChevronDown,
+      heroServerStack,
       heroMagnifyingGlass,
       heroUsers,
     }),
@@ -157,14 +161,16 @@ type CostTab = 'models' | 'trends' | 'users' | 'conversations';
              drill-down of these four numbers. -->
         <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
           <app-system-summary-card
-            title="Total Cost"
+            [title]="allInAvailable() ? 'Total Cost (all-in)' : 'Total Cost'"
             [value]="formattedTotalCost()"
+            [detail]="totalCostDetail()"
             [trend]="null"
             icon="heroCurrencyDollar"
           />
           <app-system-summary-card
-            title="Avg Cost/User"
+            [title]="allInAvailable() ? 'Avg Cost/User (all-in)' : 'Avg Cost/User'"
             [value]="formattedAvgCostPerUser()"
+            [detail]="avgCostPerUserDetail()"
             [trend]="null"
             icon="heroUserCircle"
           />
@@ -274,6 +280,16 @@ type CostTab = 'models' | 'trends' | 'users' | 'conversations';
                 <app-cost-trends-chart [data]="trends()" />
               </section>
             }
+            @case ('platform') {
+              <section
+                role="tabpanel"
+                id="cost-panel-platform"
+                aria-labelledby="cost-tab-platform"
+                tabindex="0"
+              >
+                <app-platform-cost-breakdown [summary]="platformCosts()" />
+              </section>
+            }
             @case ('users') {
               <section
                 role="tabpanel"
@@ -373,6 +389,7 @@ export class AdminCostsPage implements OnInit {
   loadingTopSessions = this.stateService.loadingTopSessions;
   trends = this.stateService.trends;
   modelUsage = this.stateService.modelUsage;
+  platformCosts = this.stateService.platformCosts;
 
   /**
    * Tab order, and the default.
@@ -388,6 +405,7 @@ export class AdminCostsPage implements OnInit {
   }> = [
     { id: 'models', label: 'Model Usage', icon: 'heroChartPie' },
     { id: 'trends', label: 'Cost Trends', icon: 'heroArrowTrendingUp' },
+    { id: 'platform', label: 'Platform', icon: 'heroServerStack' },
     { id: 'users', label: 'Top Users', icon: 'heroUsers' },
     { id: 'conversations', label: 'Conversations', icon: 'heroChatBubbleLeftRight' },
   ];
@@ -404,6 +422,10 @@ export class AdminCostsPage implements OnInit {
   protected readonly tabCounts = computed<Record<CostTab, number | null>>(() => ({
     models: this.modelUsage().length || null,
     trends: this.trends().length || null,
+    // Service count, not a dollar figure: the badge is a row count
+    // everywhere else on the strip, and a "$686" badge beside "20" and "11"
+    // would read as three of the same quantity.
+    platform: this.platformServiceCount() || null,
     users: this.topUsers().length || null,
     conversations: this.topSessions().length || null,
   }));
@@ -421,17 +443,58 @@ export class AdminCostsPage implements OnInit {
     () => this.topUsers().length >= this.topUsersLimit()
   );
 
+  protected readonly platformServiceCount = computed(
+    () =>
+      (this.platformCosts()?.services ?? []).filter(s => s.category === 'platform')
+        .length,
+  );
+
+  /**
+   * Whether the headline cards can report all-in cost.
+   *
+   * False in an environment where the daily Cost Explorer sync is off (it is
+   * opt-in), in which case the cards keep their original inference-only
+   * meaning AND their original titles. The title carries the basis on
+   * purpose: a figure that silently changes what it measures is one two
+   * people will quote differently from the same screen.
+   */
+  protected readonly allInAvailable = computed(
+    () => this.platformCosts()?.available === true,
+  );
+
   // Formatted values for display
   formattedTotalCost = computed(() => {
-    const cost = this.stateService.totalCost();
-    return this.formatCurrency(cost);
+    const platform = this.platformCosts();
+    if (platform?.available) return this.formatCurrency(platform.totalCost);
+    return this.formatCurrency(this.stateService.totalCost());
+  });
+
+  protected readonly totalCostDetail = computed(() => {
+    const platform = this.platformCosts();
+    if (!platform?.available) return null;
+    return (
+      `${this.formatCurrency(platform.inferenceCost)} inference + ` +
+      `${this.formatCurrency(platform.platformCost)} platform`
+    );
   });
 
   formattedAvgCostPerUser = computed(() => {
+    const platform = this.platformCosts();
+    if (platform?.available) return this.formatCurrency(platform.costPerUser);
+
     const cost = this.stateService.totalCost();
     const users = this.stateService.activeUsers();
     if (users === 0) return this.formatCurrency(0);
     return this.formatCurrency(cost / users);
+  });
+
+  protected readonly avgCostPerUserDetail = computed(() => {
+    const platform = this.platformCosts();
+    if (!platform?.available) return null;
+    return (
+      `${this.formatCurrency(platform.inferenceCostPerUser)} inference + ` +
+      `${this.formatCurrency(platform.platformCostPerUser)} platform`
+    );
   });
 
   formattedActiveUsers = computed(() => {
@@ -457,6 +520,12 @@ export class AdminCostsPage implements OnInit {
     } catch {
       // Error is handled by state service
     }
+
+    // Awaited separately and never allowed to throw: the platform figures
+    // enrich a page that works without them, so an environment with the sync
+    // disabled must not lose the other four tabs. `loadPlatformCosts`
+    // swallows its own failures for the same reason.
+    await this.stateService.loadPlatformCosts();
   }
 
   protected selectTab(tab: CostTab): void {

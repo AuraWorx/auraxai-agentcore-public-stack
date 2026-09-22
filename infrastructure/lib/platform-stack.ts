@@ -49,6 +49,7 @@ import { RagIngestionLambdaConstruct } from './constructs/rag-ingestion/rag-inge
 import { KbSyncConstruct } from './constructs/kb-sync/kb-sync-construct';
 import { ManagedKbRoleConstruct } from './constructs/managed-kb/managed-kb-role-construct';
 import { KbMigrationConstruct } from './constructs/managed-kb/kb-migration-construct';
+import { PlatformCostSyncConstruct } from './constructs/costs/platform-cost-sync-construct';
 import { ScheduledRunsConstruct } from './constructs/scheduled-runs/scheduled-runs-construct';
 
 // Artifacts (data + render Lambda + CloudFront distribution).
@@ -273,6 +274,7 @@ export class PlatformStack extends cdk.Stack {
   private _ragIngestionFunction!: lambda.IFunction;
   private _kbMigration?: KbMigrationConstruct;
   private _tokenEnrichment?: TokenEnrichmentConstruct;
+  private _platformCostSync?: PlatformCostSyncConstruct;
   private readonly _spaBucketConstruct: SpaBucketConstruct;
   private readonly _mcpSandboxBucketConstruct: McpSandboxBucketConstruct;
   private readonly _artifactsDataConstruct: ArtifactsDataConstruct;
@@ -423,6 +425,19 @@ export class PlatformStack extends cdk.Stack {
     this.userCostSummaryTable = costTrackingTables.userCostSummaryTable;
     this.systemCostRollupTable = costTrackingTables.systemCostRollupTable;
     this.managedModelsTable = costTrackingTables.managedModelsTable;
+
+    // Platform cost sync — pulls the AWS bill (Cost Explorer, by service)
+    // into the same rollup table the per-model rollups use, so the admin
+    // dashboard can report all-in cost rather than inference alone. Opt-in
+    // (see PlatformCostsConfig): produces zero resources when disabled, and
+    // the dashboard simply reports inference cost as before.
+    if (config.platformCosts.enabled) {
+      this._platformCostSync = new PlatformCostSyncConstruct(
+        this,
+        'PlatformCostSync',
+        { config, systemCostRollupTable: this.systemCostRollupTable },
+      );
+    }
 
     const adminTables = new AdminTablesConstruct(this, 'AdminTables', {
       config,
@@ -983,6 +998,9 @@ export class PlatformStack extends cdk.Stack {
         { name: 'rag-ingestion', fn: this._ragIngestionFunction },
         ...(this._tokenEnrichment
           ? [{ name: 'token-enrichment', fn: this._tokenEnrichment.enrichmentFunction }]
+          : []),
+        ...(this._platformCostSync
+          ? [{ name: 'platform-cost-sync', fn: this._platformCostSync.syncFunction }]
           : []),
         ...(this._kbMigration
           ? [

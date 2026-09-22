@@ -75,6 +75,7 @@ export interface AppConfig {
   kbSync: KbSyncConfig;
   managedKb: ManagedKbConfig;
   scheduledRuns: ScheduledRunsConfig;
+  platformCosts: PlatformCostsConfig;
   memorySpaces: MemorySpacesConfig;
   feedbackEvalSampling: FeedbackEvalSamplingConfig;
   skills: SkillsConfig;
@@ -310,6 +311,25 @@ export const MANAGED_KB_RETENTION_WINDOW_DAYS = 30;
  * surface is governed separately by the `scheduled-runs` RBAC capability.
  */
 export interface ScheduledRunsConfig {
+  enabled: boolean;
+}
+
+/**
+ * Platform cost sync (AWS Cost Explorer -> admin cost dashboard).
+ *
+ * OPT-IN, deliberately against this repo's usual default-on-with-a-kill-switch
+ * posture. Every other flag gates a feature built entirely from resources we
+ * own; this one calls Cost Explorer, which (a) bills $0.01 per request,
+ * (b) needs `ce:GetCostAndUsage` that an SCP may deny, and (c) may not even be
+ * enabled in the account. Reading the account's billing data is a scoping
+ * decision per environment, so it follows `feedbackEvalSampling`: only the
+ * literal "true" enables, and a workflow forwarding an unset variable (which
+ * arrives as an EMPTY STRING) must never be what turns it on.
+ *
+ * When off, the construct produces zero resources and the dashboard shows
+ * inference cost only, exactly as it did before.
+ */
+export interface PlatformCostsConfig {
   enabled: boolean;
 }
 
@@ -935,6 +955,15 @@ export function loadConfig(scope: cdk.App): AppConfig {
       enabled: process.env.CDK_SCHEDULED_RUNS_ENABLED
         ? process.env.CDK_SCHEDULED_RUNS_ENABLED !== 'false'
         : scope.node.tryGetContext('scheduledRuns')?.enabled ?? true,
+    },
+    platformCosts: {
+      // Default OFF, opt-in — see PlatformCostsConfig for why this one does
+      // not follow the default-on pattern above. Only the literal "true"
+      // enables; an empty/unset workflow variable leaves it off. A
+      // `platformCosts.enabled: true` cdk.json context also enables it.
+      enabled: process.env.CDK_PLATFORM_COSTS_ENABLED
+        ? process.env.CDK_PLATFORM_COSTS_ENABLED === 'true'
+        : scope.node.tryGetContext('platformCosts')?.enabled ?? false,
     },
     feedbackEvalSampling: {
       // Default OFF, opt-in (the `fineTuning`-style deferred pattern inverted):
