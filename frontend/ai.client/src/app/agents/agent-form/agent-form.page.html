@@ -493,7 +493,9 @@
                             >
                               <span class="min-w-0 flex-1">
                                 <span class="flex items-center gap-1.5">
-                                  <span class="text-sm/6 font-medium text-gray-900 dark:text-white">{{ t.label }}</span>
+                                  <!-- `min-w-0 truncate` so a long tool name cannot shove the
+                                       retiring badge out of the row. -->
+                                  <span class="min-w-0 truncate text-sm/6 font-medium text-gray-900 dark:text-white">{{ t.label }}</span>
                                   <!--
                                     Retirement is disclosed as visible text, not a tooltip — the
                                     whole reason this section left chips behind. A retiring tool the
