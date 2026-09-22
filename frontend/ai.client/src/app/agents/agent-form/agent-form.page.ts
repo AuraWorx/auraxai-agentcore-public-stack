@@ -65,7 +65,7 @@ import {
   ShareAgentDialogData,
 } from '../components/share-agent-dialog.component';
 import { KnowledgeBaseSectionComponent } from '../../knowledge-base/knowledge-base-section.component';
-import { ToolService } from '../../services/tool/tool.service';
+import { ToolService, retirementDetail } from '../../services/tool/tool.service';
 import { AGENT_TEMPLATE_DRAFT_KEY, TemplateDraft } from './agent-templates';
 import { reconcileToolRefs } from './tool-ref-reconcile';
 
@@ -771,6 +771,26 @@ export class AgentFormPage implements OnInit, OnDestroy {
     return typeof status === 'string' && status !== 'active';
   }
 
+  /**
+   * The retirement line on a tool row: the lead-in (phrased for whether this agent
+   * already binds it), then the replacement and the date.
+   *
+   * Returned as one string for the row's existing **visible** warning line — not a
+   * tooltip. PR #1233 moved this disclosure out of hover text on purpose ("hover-only
+   * text is dead on touch and cannot be scanned at all"), and the replacement is the
+   * part an author most needs to read without hunting for it.
+   */
+  retiringRowText(item: BindableItem): string {
+    const lead = this.isToolSelected(item.ref)
+      ? 'Being retired — remove it from this agent when you can.'
+      : 'Being retired and can no longer be added to an agent.';
+    const detail = retirementDetail({
+      retirementNote: item.meta?.['retirementNote'] as string | null | undefined,
+      retiresOn: item.meta?.['retiresOn'] as string | null | undefined,
+    });
+    return detail ? `${lead} ${detail}` : lead;
+  }
+
   /** {@link isToolRetiring} keyed by ref, for the guard inside {@link toggleTool}. */
   private isToolRetiringByRef(ref: string): boolean {
     const item = this.tools().find((t) => t.ref === ref);
@@ -778,17 +798,34 @@ export class AgentFormPage implements OnInit, OnDestroy {
   }
 
   /**
-   * Labels of the retiring tools this agent still binds, for the section notice.
+   * The retiring tools this agent still binds, for the section notice.
    *
    * The chip's own `retiring` badge is easy to miss on a form with twenty chips,
    * and the action we need from the author (remove it, and resubmit if published)
    * does not fit on a chip. Empty for every agent that binds none, so the notice
    * does not exist for the overwhelmingly common case.
+   *
+   * One line per tool rather than one sentence listing them all: two tools being
+   * retired are usually two different stories, with different replacements and
+   * different dates, and joining them with a comma would attribute one tool's
+   * replacement to the other.
    */
   readonly retiringSelectedTools = computed(() =>
     this.tools()
       .filter((t) => this.isToolRetiring(t) && this.isToolSelected(t.ref))
-      .map((t) => t.label),
+      .map((t) => {
+        const detail = retirementDetail({
+          retirementNote: t.meta?.['retirementNote'] as string | null | undefined,
+          retiresOn: t.meta?.['retiresOn'] as string | null | undefined,
+        });
+        return {
+          label: t.label,
+          // Falls back to the vague form ONLY when the admin recorded neither a
+          // replacement nor a date. Earlier copy named "the retirement date"
+          // unconditionally, pointing at a fact the UI never carried.
+          detail: detail || 'It will stop working once the retirement completes.',
+        };
+      }),
   );
   isToolSelected(ref: string): boolean {
     for (const selected of this.selectedToolRefs()) {

@@ -416,10 +416,21 @@
           in this section the author has to act on, and collapsing Tools must not be a way
           to stop seeing it. See docs/specs/mcp-server-retirement.md §7.
         -->
-        @if (retiringSelectedTools().length) {
-          <p class="mt-2 rounded-lg bg-state-warning-50 px-3 py-2 text-xs/5 text-state-warning-700 dark:bg-state-warning-900/30 dark:text-state-warning-300">
-            {{ retiringSelectedTools().join(', ') }} {{ retiringSelectedTools().length === 1 ? 'is' : 'are' }} being retired. This agent keeps working for now — please remove {{ retiringSelectedTools().length === 1 ? 'it' : 'them' }} before the retirement date. If this agent is published, resubmit it so the change reaches the people using it.
-          </p>
+        @if (retiringSelectedTools().length; as retiringCount) {
+          <div class="mt-2 rounded-lg bg-state-warning-50 px-3 py-2 text-xs/5 text-state-warning-700 dark:bg-state-warning-900/30 dark:text-state-warning-300">
+            <!-- One line per tool, not one sentence listing them all: two tools being
+                 retired are usually two different stories, with different replacements
+                 and different dates, and a comma-joined list would attribute one
+                 tool's replacement to the other. -->
+            <ul class="flex flex-col gap-1">
+              @for (t of retiringSelectedTools(); track t.label) {
+                <li><span class="font-medium">{{ t.label }}</span> is being retired. {{ t.detail }}</li>
+              }
+            </ul>
+            <p class="mt-1.5">
+              This agent keeps working until then — please remove {{ retiringCount === 1 ? 'it' : 'them' }}. If this agent is published, resubmit it so the change reaches the people using it.
+            </p>
+          </div>
         }
 
         @if (toolsOpen()) {
@@ -508,7 +519,11 @@
                                   }
                                 </span>
                                 @if (isToolRetiring(t)) {
-                                  <span class="mt-0.5 block text-xs/5 text-state-warning-700 dark:text-state-warning-300">{{ isToolSelected(t.ref) ? 'Being retired — remove it from this agent when you can.' : 'Being retired and can no longer be added to an agent.' }}</span>
+                                  <!-- The lead-in plus, when an admin recorded them, the
+                                       replacement and the date — composed by the same
+                                       `retirementDetail()` every other surface uses, so
+                                       the four cannot drift (spec §7). -->
+                                  <span class="mt-0.5 block text-xs/5 text-state-warning-700 dark:text-state-warning-300">{{ retiringRowText(t) }}</span>
                                 }
                                 @if (t.description) {
                                   <!-- Out of the tooltip: hover-only text is dead on touch
