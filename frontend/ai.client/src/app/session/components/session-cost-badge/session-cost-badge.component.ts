@@ -3,11 +3,13 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  DestroyRef,
   effect,
   inject,
   Injector,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import { ChatStateService } from '../../services/chat/chat-state.service';
 import { QuotaStatusService } from '../../../services/quota/quota-status.service';
@@ -26,6 +28,14 @@ const BADGE_ENTRANCE_DELAY_MS = 350;
 const COST_ENTRANCE_MS = 250;
 const RING_ENTRANCE_DELAY_MS = BADGE_ENTRANCE_DELAY_MS + 150;
 const RING_FILL_DELAY_MS = 750;
+
+// The cost counts up to the new conversation total whenever the total
+// changes — on entrance (in step with the label's own fade-in) and again
+// after every turn, so a turn's spend reads as movement rather than as a
+// number that silently swapped. Counting only ever goes *up*: a drop means
+// a different session is now in view, and tallying downward towards another
+// conversation's total would be animating a number that never happened.
+const COST_COUNT_UP_MS = 650;
 
 @Component({
   selector: 'app-session-cost-badge',
@@ -59,7 +69,14 @@ const RING_FILL_DELAY_MS = 750;
           class="badge-cost-enter group/quota relative inline-flex items-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1 focus-visible:ring-offset-white dark:focus-visible:ring-offset-gray-900"
           [attr.tabindex]="hasQuotaTooltip() ? 0 : null"
           [attr.aria-label]="costAriaLabel()"
-        >{{ costLabel() }}
+        >
+          <!--
+            The digits are aria-hidden so the count-up's ~40 intermediate
+            frames never reach the surrounding polite live region; the span's
+            own aria-label already carries the settled figure, so a screen
+            reader hears the turn's total once instead of watching it tick.
+          -->
+          <span class="tabular-nums" aria-hidden="true">{{ displayedCostLabel() }}</span>
 
           @if (hasQuotaTooltip()) {
             <span
@@ -217,13 +234,28 @@ export class SessionCostBadgeComponent {
 
   protected readonly showContext = computed(() => this.contextWindow() > 0);
 
+  /**
+   * Format `value` with the digit count the *target* total warrants, not its
+   * own. Mid-count the two differ — a tally climbing towards $1.05 passes
+   * through $0.98 — and picking the format per-frame would swap four decimals
+   * for two partway up, reflowing the badge as it animates.
+   */
+  private formatCost(value: number, target: number): string {
+    if (target <= 0) return '$0.00';
+    if (target < 0.01) return '<$0.01';
+    const decimals = target < 1 ? 4 : 2;
+    return `$${Math.max(0, value).toFixed(decimals)}`;
+  }
+
   protected readonly costLabel = computed(() => {
     const value = this.cost();
-    if (value <= 0) return '$0.00';
-    if (value < 0.01) return '<$0.01';
-    if (value < 1) return `$${value.toFixed(4)}`;
-    return `$${value.toFixed(2)}`;
+    return this.formatCost(value, value);
   });
+
+  /** What the badge paints this frame — the tally, not the settled total. */
+  protected readonly displayedCostLabel = computed(() =>
+    this.formatCost(this.displayedCost(), this.cost()),
+  );
 
   protected readonly contextLabel = computed(() => {
     const pct = this.contextPctValue();
@@ -237,6 +269,12 @@ export class SessionCostBadgeComponent {
     return RING_CIRCUMFERENCE * (1 - pct / 100);
   });
 
+  private readonly displayedCostSignal = signal(0);
+  protected readonly displayedCost = this.displayedCostSignal.asReadonly();
+  private countUpFrame: number | null = null;
+  private countUpTimer: ReturnType<typeof setTimeout> | null = null;
+  private costEntranceDone = false;
+
   // displayedOffset starts at the empty-ring value so the SVG paints
   // empty on first render, then updates one frame later — letting the
   // CSS transition animate the fill on entrance. After the first
@@ -247,6 +285,33 @@ export class SessionCostBadgeComponent {
   private firstAnimateScheduled = false;
 
   constructor() {
+    inject(DestroyRef).onDestroy(() => this.cancelCountUp());
+
+    effect(() => {
+      const target = this.cost();
+
+      if (!this.visible()) {
+        // Hidden badge: snap, so the next mount counts up from empty again.
+        this.cancelCountUp();
+        this.costEntranceDone = false;
+        this.displayedCostSignal.set(0);
+        return;
+      }
+
+      if (!this.costEntranceDone) {
+        this.costEntranceDone = true;
+        // Hold at zero until the label's own fade-in has begun, then count
+        // up underneath it — the same staggered entrance the ring uses.
+        untracked(() => this.scheduleCountUp(target, BADGE_ENTRANCE_DELAY_MS));
+        return;
+      }
+
+      // `untracked`: scheduling reads the running tally to resume from it, and
+      // the tally is what this effect's own animation writes — tracking it
+      // would restart the count on every frame it produced.
+      untracked(() => this.scheduleCountUp(target, 0));
+    });
+
     effect(() => {
       // Reset to empty when the ring is hidden so the next mount animates again.
       if (!this.showContext()) {
@@ -278,6 +343,81 @@ export class SessionCostBadgeComponent {
         this.displayedOffsetSignal.set(target);
       }
     });
+  }
+
+  private cancelCountUp(): void {
+    if (this.countUpFrame !== null) {
+      cancelAnimationFrame(this.countUpFrame);
+      this.countUpFrame = null;
+    }
+    if (this.countUpTimer !== null) {
+      clearTimeout(this.countUpTimer);
+      this.countUpTimer = null;
+    }
+  }
+
+  private prefersReducedMotion(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+  }
+
+  /**
+   * Tally up to `target`, optionally after `delayMs`. A retarget mid-count
+   * (a multi-call turn bills more than once) resumes from wherever the tally
+   * had got to rather than restarting, so the number never jumps backwards.
+   */
+  private scheduleCountUp(target: number, delayMs: number): void {
+    this.cancelCountUp();
+
+    const snap = () => this.displayedCostSignal.set(target);
+
+    // A target at or below the tally means the badge switched conversations,
+    // not that money was refunded — snap rather than count down.
+    if (
+      target <= this.displayedCostSignal() ||
+      typeof requestAnimationFrame === 'undefined' ||
+      this.prefersReducedMotion()
+    ) {
+      if (delayMs > 0) {
+        this.countUpTimer = setTimeout(() => {
+          this.countUpTimer = null;
+          snap();
+        }, delayMs);
+      } else {
+        snap();
+      }
+      return;
+    }
+
+    const start = () => {
+      const from = this.displayedCostSignal();
+      const startedAt = performance.now();
+      const step = (now: number) => {
+        const t = Math.min(1, (now - startedAt) / COST_COUNT_UP_MS);
+        // easeOutCubic: fast off the mark, settling onto the final figure.
+        const eased = 1 - Math.pow(1 - t, 3);
+        this.displayedCostSignal.set(from + (target - from) * eased);
+        if (t < 1) {
+          this.countUpFrame = requestAnimationFrame(step);
+        } else {
+          this.countUpFrame = null;
+          snap();
+        }
+      };
+      this.countUpFrame = requestAnimationFrame(step);
+    };
+
+    if (delayMs > 0) {
+      this.countUpTimer = setTimeout(() => {
+        this.countUpTimer = null;
+        start();
+      }, delayMs);
+    } else {
+      start();
+    }
   }
 
   protected readonly ringStrokeClass = computed(() => {
