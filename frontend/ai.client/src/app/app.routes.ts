@@ -50,6 +50,12 @@ export const routes: Routes = [
         loadComponent: () => import('./admin/admin.layout').then(m => m.AdminLayout),
         canActivate: [adminGuard],
         loadChildren: () => import('./admin/admin.routes').then(m => m.adminRoutes),
+        // Declared once on the parent, and read by `resolveRouteChrome`'s
+        // deepest-declared-wins walk, so every child inherits it without
+        // repeating the flag 30 times. The shell answers it two ways: the
+        // sidenav swaps its body for the admin nav, and the content box drops
+        // its `max-w-7xl` cap so the console's tables get the full width.
+        data: { chrome: 'admin' },
     },
     // ── Assistant deprecation (Designer Phase 5) ────────────────────────────────────
     // There is one noun, and it is Agent (Marketplace D1). The Designer reached parity
