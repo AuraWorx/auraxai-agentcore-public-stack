@@ -1064,6 +1064,7 @@ export class ModelFormPage implements OnInit {
     iconSlug: this.iconSlugValue(),
     providerName: this.providerNameValue(),
     modelName: this.modelNameValue(),
+    modelId: this.modelIdValue(),
   }));
 
   private readonly providerNameValue = toSignal(
@@ -1072,6 +1073,9 @@ export class ModelFormPage implements OnInit {
   );
   private readonly modelNameValue = toSignal(this.modelForm.controls.modelName.valueChanges, {
     initialValue: this.modelForm.controls.modelName.value,
+  });
+  private readonly modelIdValue = toSignal(this.modelForm.controls.modelId.valueChanges, {
+    initialValue: this.modelForm.controls.modelId.value,
   });
 
   /**
@@ -1086,7 +1090,8 @@ export class ModelFormPage implements OnInit {
     const icon = resolveModelIcon(this.iconPreviewModel());
     if (icon.kind === 'upload') return 'Uploaded image';
     if (icon.kind === 'none') return 'No icon — showing the model\'s initial';
-    return this.iconSlugValue() ? 'Built-in logo' : 'Matched from the provider name';
+    if (icon.via === 'slug') return 'Built-in logo';
+    return icon.via === 'model' ? 'Matched from the model ID' : 'Matched from the provider name';
   });
 
   /** Pick a built-in logo, or clear the selection by picking the active one again. */
