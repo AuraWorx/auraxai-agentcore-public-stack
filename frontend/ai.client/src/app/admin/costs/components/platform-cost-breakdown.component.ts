@@ -96,6 +96,73 @@ import { getCategoricalColor } from '../../../shared/constants/chart-colors.cons
       </div>
     } @else {
       <div class="space-y-6">
+        <!-- Unscoped call to action. FIRST on the tab, above the numbers it
+             qualifies: a caveat printed after the figures is one people read
+             second, if at all. The heading states the FIX, not the symptom —
+             "these figures cover the whole account" describes a condition and
+             leaves the reader to hunt for what to do about it.
+
+             Only rendered while it applies. Once the tag is activated this
+             disappears on its own, so it never becomes furniture people learn
+             to scroll past. -->
+        @if (!scopedToDeployment()) {
+          <div
+            class="rounded-2xl border border-state-warning-300 bg-state-warning-50 p-6 dark:border-state-warning-800 dark:bg-state-warning-900/20"
+          >
+            <div class="flex items-start gap-3">
+              <span class="mt-0.5 shrink-0 text-state-warning-700 dark:text-state-warning-400">
+                <ng-icon name="heroExclamationTriangle" size="1.5rem" aria-hidden="true" />
+              </span>
+              <div class="min-w-0">
+                <h3 class="text-lg/7 font-semibold text-gray-900 dark:text-white">
+                  Activate
+                  <code class="rounded bg-white/70 px-1.5 py-0.5 font-mono text-base dark:bg-black/30">Project</code>
+                  as a cost allocation tag in the payer account
+                </h3>
+                <p class="mt-2 max-w-3xl text-sm/6 text-gray-700 dark:text-gray-300">
+                  Until then these figures cover the
+                  <strong>whole AWS account</strong>, not just this deployment.
+                  An account is not an application — anything else deployed
+                  here, another environment of this stack, another team's
+                  database, an unrelated service, is being counted in the
+                  infrastructure total and in cost per user.
+                </p>
+
+                <dl class="mt-4 space-y-1.5 text-sm/6 text-gray-700 dark:text-gray-300">
+                  <div class="flex gap-2">
+                    <dt class="shrink-0 font-medium text-gray-900 dark:text-white">Where</dt>
+                    <dd>
+                      AWS Billing → Cost allocation tags, in the
+                      <strong>payer</strong> account. An account inside an
+                      Organization cannot do this itself.
+                    </dd>
+                  </div>
+                  @if (summary()!.projectTag) {
+                    <div class="flex gap-2">
+                      <dt class="shrink-0 font-medium text-gray-900 dark:text-white">Tag</dt>
+                      <dd>
+                        <code class="rounded bg-white/70 px-1.5 py-0.5 font-mono text-xs dark:bg-black/30">Project</code>
+                        =
+                        <code class="rounded bg-white/70 px-1.5 py-0.5 font-mono text-xs dark:bg-black/30">{{ summary()!.projectTag }}</code>
+                        — already on every resource this stack creates. Nothing
+                        to configure here.
+                      </dd>
+                    </div>
+                  }
+                  <div class="flex gap-2">
+                    <dt class="shrink-0 font-medium text-gray-900 dark:text-white">Then</dt>
+                    <dd>
+                      The nightly sync picks it up on its own — no redeploy.
+                      Activation is <strong>not retroactive</strong>, so months
+                      before it stay account-wide.
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+          </div>
+        }
+
         <!-- 1. Where the money goes -->
         <div
           class="rounded-2xl border border-gray-200 bg-white shadow-xs dark:border-gray-700 dark:bg-gray-800"
@@ -113,8 +180,10 @@ import { getCategoricalColor } from '../../../shared/constants/chart-colors.cons
                     Infrastructure is filtered to this deployment's own
                     resources.
                   } @else {
+                    <!-- No "see below": the call to action sits directly
+                         above this card, and the badge repeats the scope. -->
                     <strong>Infrastructure covers the whole AWS account</strong>,
-                    not just this deployment — see below.
+                    not just this deployment.
                   }
                 </p>
               </div>
@@ -194,47 +263,6 @@ import { getCategoricalColor } from '../../../shared/constants/chart-colors.cons
             </div>
           </dl>
         </div>
-
-        <!-- 1b. Unscoped warning. Only shown when it applies: a permanent
-             caveat is one people learn to scroll past, and once the tag is
-             activated this disappears entirely. -->
-        @if (!scopedToDeployment()) {
-          <div
-            class="rounded-2xl border border-state-warning-300 bg-white p-6 shadow-xs dark:border-state-warning-700 dark:bg-gray-800"
-          >
-            <div class="flex items-start gap-3">
-              <span class="mt-0.5 shrink-0 text-state-warning-700 dark:text-state-warning-400">
-                <ng-icon name="heroExclamationTriangle" size="1.25rem" aria-hidden="true" />
-              </span>
-              <div class="min-w-0">
-                <h3 class="text-base/7 font-semibold text-gray-900 dark:text-white">
-                  These figures cover the whole account
-                </h3>
-                <p class="mt-1 max-w-3xl text-sm/6 text-gray-600 dark:text-gray-300">
-                  An account is not an application. Anything else deployed
-                  here — another environment of this stack, another team's
-                  database, an unrelated service — is being counted in the
-                  infrastructure total and in cost per user.
-                </p>
-                <p class="mt-3 max-w-3xl text-xs/5 text-gray-500 dark:text-gray-400">
-                  To scope this to just this deployment, activate
-                  <code class="rounded bg-gray-100 px-1 py-0.5 font-mono dark:bg-gray-700">Project</code>
-                  as a cost allocation tag in the
-                  <strong>payer</strong> account
-                  (Billing → Cost allocation tags). Every resource this stack
-                  creates already carries it
-                  @if (summary()!.projectTag) {
-                    with the value
-                    <code class="rounded bg-gray-100 px-1 py-0.5 font-mono dark:bg-gray-700">{{ summary()!.projectTag }}</code>
-                  }
-                  — nothing to configure here, and the next sync picks it up
-                  on its own. Activation is not retroactive, so months before
-                  it stay account-wide.
-                </p>
-              </div>
-            </div>
-          </div>
-        }
 
         <!-- 2. Reconciliation: our pricing tables vs what AWS billed -->
         <div
