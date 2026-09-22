@@ -755,3 +755,40 @@ class TestGetPlatformCostSummary:
         expected = datetime.now(timezone.utc).strftime("%Y-%m")
         assert result.period == expected
         mock_storage.get_platform_cost_summary.assert_awaited_once_with(expected)
+
+    @pytest.mark.asyncio
+    async def test_scope_round_trips_from_the_synced_row(
+        self, service, mock_storage
+    ):
+        """The UI must be able to say whether it is showing this deployment
+        or the whole account — an account is not an application."""
+        mock_storage.get_platform_cost_summary.return_value = {
+            **self.CE_SUMMARY, "scope": "deployment", "projectTag": "boisestateai-v2",
+        }
+        mock_storage.get_system_summary.return_value = dict(self.LEDGER)
+
+        result = await service.get_platform_cost_summary("2026-09")
+
+        assert result.scope == "deployment"
+        assert result.project_tag == "boisestateai-v2"
+
+    @pytest.mark.asyncio
+    async def test_rows_written_before_scoping_default_to_account(
+        self, service, mock_storage
+    ):
+        """Backward compatibility, and it must fail SAFE.
+
+        Rows synced before deployment scoping existed carry no `scope`. The
+        default has to be "account" — the pessimistic reading — because
+        defaulting to "deployment" would relabel an account-wide figure as
+        this app's cost with nothing to reveal the error.
+        """
+        summary = dict(self.CE_SUMMARY)
+        assert "scope" not in summary
+        mock_storage.get_platform_cost_summary.return_value = summary
+        mock_storage.get_system_summary.return_value = dict(self.LEDGER)
+
+        result = await service.get_platform_cost_summary("2026-09")
+
+        assert result.scope == "account"
+        assert result.project_tag is None

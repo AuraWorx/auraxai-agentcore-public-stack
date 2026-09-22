@@ -733,6 +733,8 @@ class AdminCostService:
                 round(delta / ce_inference * 100, 2) if ce_inference > 0 else 0.0
             ),
             services=services,
+            scope=summary.get("scope", "account"),
+            project_tag=summary.get("projectTag") or None,
             partial_month=bool(summary.get("partialMonth", False)),
             coverage_start=summary.get("coverageStart"),
             coverage_end=summary.get("coverageEnd"),

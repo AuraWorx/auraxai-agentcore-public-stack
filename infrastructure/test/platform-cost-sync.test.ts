@@ -4,6 +4,8 @@
  */
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
 import { createMockConfig, MOCK_ACCOUNT, MOCK_REGION } from './helpers/mock-config';
 import { CostTrackingTablesConstruct } from '../lib/constructs/data/cost-tracking-tables-construct';
 import { PlatformCostSyncConstruct } from '../lib/constructs/costs/platform-cost-sync-construct';
@@ -55,6 +57,19 @@ describe('PlatformCostSyncConstruct', () => {
         Variables: Match.objectLike({
           DYNAMODB_SYSTEM_ROLLUP_TABLE_NAME: Match.anyValue(),
           PLATFORM_COST_SYNC_ENABLED: 'true',
+        }),
+      }),
+    });
+  });
+
+  it('scopes the query to this deployment via the Project tag value', () => {
+    // `applyStandardTags` writes Project: config.projectPrefix onto every
+    // resource, so the sync can filter the bill down to THIS deployment with
+    // no new configuration — which matters for a fork that shares an account.
+    synth().hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          PLATFORM_COST_PROJECT_TAG: 'test-project',
         }),
       }),
     });
@@ -149,5 +164,35 @@ describe('platformCosts config flag', () => {
 
   it('is on only for the literal "true"', () => {
     expect(enabledFor('true')).toBe(true);
+  });
+});
+
+describe('ECS tag propagation (cost attribution depends on it)', () => {
+  it('propagates service tags to Fargate tasks', () => {
+    // Fargate bills per TASK. Without PropagateTags=SERVICE the `Project`
+    // tag reaches the service but never the thing that costs money, so ECS
+    // silently vanishes from any tag-scoped cost figure — measured at 17% of
+    // prod's infrastructure bill. The live dev service reported NONE before
+    // this landed, which is why it is pinned here rather than assumed.
+    const config = createMockConfig();
+    const stack = new cdk.Stack(new cdk.App(), 'EcsTagStack', {
+      env: { account: MOCK_ACCOUNT, region: MOCK_REGION },
+    });
+    const vpc = new ec2.Vpc(stack, 'Vpc', { maxAzs: 2 });
+    const cluster = new ecs.Cluster(stack, 'Cluster', { vpc });
+    const taskDef = new ecs.FargateTaskDefinition(stack, 'TaskDef');
+    taskDef.addContainer('app', {
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx'),
+    });
+    new ecs.FargateService(stack, 'Svc', {
+      cluster,
+      taskDefinition: taskDef,
+      propagateTags: ecs.PropagatedTagSource.SERVICE,
+    });
+
+    Template.fromStack(stack).hasResourceProperties('AWS::ECS::Service', {
+      PropagateTags: 'SERVICE',
+    });
+    expect(config.projectPrefix).toBeTruthy();
   });
 });

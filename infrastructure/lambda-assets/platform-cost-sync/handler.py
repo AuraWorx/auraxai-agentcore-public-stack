@@ -20,18 +20,33 @@ So this runs once a day, writes the answer into the existing
 `system-cost-rollup` table, and the read path never touches Cost Explorer.
 One invocation is one CE call per period synced: ~$0.30/year.
 
-Attribution, and why it is a service allowlist rather than tags
----------------------------------------------------------------
-Every resource `applyStandardTags` creates carries `Project` / `Environment` /
-`Version`, which *should* make this exact. It does not, yet: no cost
-allocation tag is activated in either account, so grouping by `Project`
-returns a single `Project$` bucket holding the entire bill. Activation is an
-org-management-account action (a Control Tower linked account gets
-`AccessDeniedException` listing them) and is **not retroactive**.
+Attribution: this deployment, not the whole account
+---------------------------------------------------
+An account is not an application. This stack is open source, so a deployer may
+well share an account with other workloads -- and ours does: dev-ai hosts five
+separate deployments of THIS stack plus unrelated apps, and both accounts run
+a `bsu-*-backend` Aurora cluster we do not provision. Billing the account to
+our users would be wrong by construction, not just imprecise.
 
-Meanwhile the accounts are shared -- `bsu-prod-backend` / `bsu-dev-backend`
-run an Aurora Serverless cluster we do not provision and must not bill to our
-users. So attribution is by service, in three buckets:
+So the sync asks for this deployment's own resources first, by the `Project`
+tag `applyStandardTags` already puts on everything (its value is the stack's
+`projectPrefix`, so no new configuration and nothing for a fork to set).
+
+`scope` on the summary records which answer the deployer actually got:
+
+  "deployment"  -- the tag filter returned data. Figures cover THIS stack.
+  "account"     -- it did not, so this is the whole account. Correct as a
+                   ceiling, wrong as an attribution, and the UI says so.
+
+The fallback is not a nicety. A cost allocation tag has to be ACTIVATED before
+Cost Explorer will group or filter by it, activation happens in the *payer*
+account (a linked account gets `AccessDeniedException` merely listing them),
+and it is **not retroactive**. A fork that has not done it -- or cannot --
+still gets a working dashboard, clearly labelled, instead of a blank one. We
+detect the state by comparing the two queries rather than by calling
+`ListCostAllocationTags`, which is exactly the call a linked account is denied.
+
+Within whichever scope applies, services are bucketed three ways:
 
   inference  -- the per-token model SKUs ("... (Amazon Bedrock Edition)").
                 Reported for RECONCILIATION ONLY. The dashboard's per-user
@@ -49,8 +64,16 @@ users. So attribution is by service, in three buckets:
 
 The split is deliberately coarse and deliberately visible: `excluded` is
 persisted and surfaced rather than silently dropped, because an operator
-needs to see what was left out to trust what was kept. Swap the allowlist for
-`GROUP BY TAG Project` once the tag is active; the row shape does not change.
+needs to see what was left out to trust what was kept. Under `deployment`
+scope most exclusions simply do not appear -- another team's database was
+never ours to begin with -- and the ones that remain are account-level
+charges the tag cannot reach.
+
+⚠️ ECS Fargate bills per TASK, and tasks do not inherit a service's tags
+without `propagateTags: SERVICE` (set in app-api-service-construct.ts). It was
+NONE until this landed, which would have dropped ~17% of prod's
+infrastructure out of the tagged scope while everything still looked healthy.
+If a tagged total looks low, check task tags before suspecting the filter.
 """
 
 from __future__ import annotations
@@ -151,8 +174,19 @@ def _month_bounds(period: str, today: date) -> Tuple[str, str, bool]:
     return start.isoformat(), (today + timedelta(days=1)).isoformat(), True
 
 
-def _fetch_service_costs(ce_client, start: str, end: str) -> List[Tuple[str, float]]:
+def _fetch_service_costs(
+    ce_client,
+    start: str,
+    end: str,
+    project_tag: str | None = None,
+) -> List[Tuple[str, float]]:
     """One CE call ($0.01) -> [(service_name, unblended_cost_usd)].
+
+    With `project_tag`, restricts to resources carrying `Project=<value>` --
+    this deployment's own resources rather than everything in the account.
+    An INACTIVE cost allocation tag is not an error to Cost Explorer: it
+    simply matches nothing and returns an empty result, which is what the
+    caller uses to detect that activation has not happened.
 
     Paginated defensively: ~30-40 services fit one page today, but a page-two
     truncation would show up as a quietly low platform total rather than an
@@ -169,6 +203,10 @@ def _fetch_service_costs(ce_client, start: str, end: str) -> List[Tuple[str, flo
             "Metrics": ["UnblendedCost"],
             "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
         }
+        if project_tag:
+            kwargs["Filter"] = {
+                "Tags": {"Key": "Project", "Values": [project_tag]}
+            }
         if next_token:
             kwargs["NextPageToken"] = next_token
 
@@ -211,6 +249,44 @@ def _dec(value: float) -> Decimal:
     return Decimal(str(round(value, 6)))
 
 
+def resolve_scoped_costs(
+    ce_client,
+    start: str,
+    end: str,
+    project_tag: str | None,
+) -> Tuple[List[Tuple[str, float]], str]:
+    """Costs for THIS deployment if the tag can deliver them, else the account.
+
+    Returns (rows, scope) where scope is "deployment" or "account".
+
+    Cost Explorer will not group or filter by a cost allocation tag until that
+    tag has been ACTIVATED in the payer account, and it reports the inactive
+    case as an empty result rather than an error. So the only reliable probe
+    is to ask and see -- and to ask for the account total too, because "the
+    tag returned nothing" and "this deployment genuinely spent nothing" look
+    identical from one query.
+
+    We do NOT probe with `ListCostAllocationTags`: that is precisely the call
+    an Organizations member account is denied, which is the topology most
+    likely to need the fallback in the first place.
+
+    Costs one extra CE call ($0.01/day) while unscoped. Once the tag is live
+    the first query answers and the second is never made.
+    """
+    if project_tag:
+        scoped = _fetch_service_costs(ce_client, start, end, project_tag=project_tag)
+        if scoped:
+            return scoped, "deployment"
+        logger.warning(
+            "Project tag %r returned no cost data — falling back to account scope. "
+            "Activate 'Project' as a cost allocation tag in the payer account to "
+            "scope these figures to this deployment.",
+            project_tag,
+        )
+
+    return _fetch_service_costs(ce_client, start, end), "account"
+
+
 def sync_period(
     period: str,
     ce_client,
@@ -219,11 +295,12 @@ def sync_period(
     today: date,
     account_id: str,
     min_service_cost: float,
+    project_tag: str | None = None,
 ) -> Dict[str, Any]:
     """Sync one YYYY-MM period. Idempotent: every write is a full overwrite."""
     start, end, partial = _month_bounds(period, today)
     excluded = _excluded_services()
-    services = _fetch_service_costs(ce_client, start, end)
+    services, scope = resolve_scoped_costs(ce_client, start, end, project_tag)
 
     totals = {"inference": 0.0, "platform": 0.0, "excluded": 0.0}
     rows: List[Dict[str, Any]] = []
@@ -271,6 +348,12 @@ def sync_period(
             "coverageEnd": end,
             "partialMonth": partial,
             "accountId": account_id,
+            # "deployment" = filtered to this stack's Project tag.
+            # "account"    = the tag is not activated (or matched nothing), so
+            #                these figures cover everything in the account.
+            #                A ceiling, not an attribution — the UI labels it.
+            "scope": scope,
+            "projectTag": project_tag or "",
             "currency": "USD",
             "source": "cost-explorer",
             "syncedAt": synced_at,
@@ -282,6 +365,7 @@ def sync_period(
             {
                 "event": "platform_cost_synced",
                 "period": period,
+                "scope": scope,
                 "platformCost": round(totals["platform"], 2),
                 "inferenceCost": round(totals["inference"], 2),
                 "excludedCost": round(totals["excluded"], 2),
@@ -293,6 +377,7 @@ def sync_period(
 
     return {
         "period": period,
+        "scope": scope,
         "platformCost": round(totals["platform"], 2),
         "inferenceCost": round(totals["inference"], 2),
         "excludedCost": round(totals["excluded"], 2),
@@ -342,6 +427,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:  # noqa: ANN
     account_id = os.environ.get("AWS_ACCOUNT_ID", "")
     today = datetime.now(timezone.utc).date()
 
+    # The value applyStandardTags writes as `Project` — the stack's own
+    # projectPrefix. Empty means "do not attempt deployment scoping", which
+    # is the documented way to force account-wide figures.
+    project_tag = (os.environ.get("PLATFORM_COST_PROJECT_TAG") or "").strip() or None
+
     synced: List[Dict[str, Any]] = []
     failures: List[Dict[str, str]] = []
 
@@ -355,6 +445,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:  # noqa: ANN
                     today=today,
                     account_id=account_id,
                     min_service_cost=min_service_cost,
+                    project_tag=project_tag,
                 )
             )
         except Exception as exc:  # noqa: BLE001

@@ -104,6 +104,15 @@ export interface PlatformCostSummary {
 
   services: PlatformServiceCost[];
 
+  /**
+   * `deployment` — filtered to this stack's own resources via its `Project`
+   * tag. `account` — the tag is not activated in the payer account, so these
+   * figures cover everything in the account: a ceiling, not an attribution.
+   * Always label which one the reader is looking at.
+   */
+  scope: 'deployment' | 'account';
+  projectTag: string | null;
+
   partialMonth: boolean;
   coverageStart: string | null;
   coverageEnd: string | null;

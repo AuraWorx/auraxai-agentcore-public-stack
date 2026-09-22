@@ -113,6 +113,15 @@ class PlatformCostSummary(BaseModel):
 
     services: List[PlatformServiceCost] = Field(default_factory=list)
 
+    scope: str = "account"
+    """"deployment" when the figures are filtered to this stack's own
+    resources by its `Project` tag; "account" when that tag is not activated
+    in the payer account, so they cover everything in the account. The second
+    is a ceiling, not an attribution, and the UI must say so — an account is
+    not an application, and this stack is open source, so a deployer may well
+    share one with other workloads."""
+    project_tag: Optional[str] = Field(None, alias="projectTag")
+
     partial_month: bool = Field(False, alias="partialMonth")
     coverage_start: Optional[str] = Field(None, alias="coverageStart")
     coverage_end: Optional[str] = Field(None, alias="coverageEnd")

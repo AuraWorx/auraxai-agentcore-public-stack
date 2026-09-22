@@ -87,21 +87,67 @@ aws lambda invoke --function-name <prefix>-platform-cost-sync \
   --payload '{"periods":["2026-08","2026-07","2026-06"]}' /dev/stdout
 ```
 
-## Attribution: a service allowlist, and why not tags
+## Attribution: this deployment, not the account
 
-`applyStandardTags` already puts `Project` / `Environment` / `Version` on every
-resource the stack creates, which *should* make this exact. It does not, yet:
+**An account is not an application.** This stack is open source, so a deployer
+may well share an account with other workloads — and ours does. dev-ai hosts
+**five** deployments of this stack (`beta-boisestateai-dev`,
+`boisestateai-v2-dev`, `bsu-agentcore`, `dev-boisestateai-v2`, `nightly-mv`)
+plus unrelated apps, and both accounts run a `bsu-*-backend` Aurora cluster we
+do not provision. prod-ai happens to hold exactly one deployment today, but
+that is luck, not design, and no fork should rely on it.
 
-- **No cost allocation tag is activated** in either account. Grouping by
-  `Project` returns a single `Project$` bucket holding the entire bill.
-- Activation is an **org-management-account** action. A Control Tower linked
-  account (dev-ai) gets `AccessDeniedException` merely listing them.
-- Activation is **not retroactive**, so every day of delay is a day of
-  attribution that cannot be reconstructed later.
+So the sync asks for **this deployment's own resources first**, filtering on
+the `Project` tag `applyStandardTags` already writes. Its value is the stack's
+`projectPrefix`, so there is nothing to configure and a fork inherits it.
 
-Meanwhile the accounts are shared — `bsu-prod-backend` / `bsu-dev-backend` run
-an Aurora Serverless cluster we do not provision and must not bill to our
-users. So attribution is by service, in three buckets:
+`scope` on the summary records which answer the deployer actually got:
+
+| `scope` | Meaning |
+|---|---|
+| `deployment` | The tag filter returned data. Figures cover **this stack**. |
+| `account` | It did not, so this is the **whole account** — a ceiling, not an attribution. The UI says so, prominently. |
+
+### Why the fallback exists
+
+Cost Explorer will not group or filter by a cost allocation tag until that tag
+is **activated in the payer account**:
+
+- Activation happens in the payer account. An Organizations member account
+  (dev-ai) gets `AccessDeniedException` merely *listing* the tags.
+- It is **not retroactive** — months before activation stay account-wide.
+- An inactive tag is **not an error**. Verified against prod: a filtered query
+  returns `HTTP 200`, zero groups, `$0.00`. That empty result is exactly what
+  `resolve_scoped_costs()` probes for — we deliberately do *not* call
+  `ListCostAllocationTags`, since that is the call a linked account is denied,
+  and a linked account is the topology most likely to need the fallback.
+
+A fork that has not activated the tag — or cannot — still gets a working,
+clearly-labelled dashboard instead of a blank one.
+
+> ⚠️ **ECS Fargate bills per TASK, and tasks do not inherit a service's tags**
+> without `propagateTags: SERVICE`. The live dev service reported `NONE`, which
+> would have dropped **~17% of prod's infrastructure** (~$118/month) out of the
+> tagged scope while everything still looked healthy. Set in
+> `app-api-service-construct.ts`. If a tagged total looks low, check task tags
+> before suspecting the filter.
+
+### Activation checklist
+
+1. Billing → **Cost allocation tags** in the **payer** account.
+2. Activate `Project`. (Standalone accounts self-serve; an org member needs the
+   management account.)
+3. Wait up to 24h for the first data, then let the nightly sync run. `scope`
+   flips to `deployment` on its own — no redeploy.
+
+Tag coverage was audited across 1,519 dev resources: ECR/ELB/Cognito/SQS 100%,
+DynamoDB 98%, KMS 96%, CloudWatch 91% — and the two largest lines specifically
+confirmed (our NAT gateway and our AgentCore runtime both carry
+`Project=dev-boisestateai-v2`, while other stacks' carry theirs or none).
+
+### Service buckets
+
+Within whichever scope applies, services are bucketed three ways:
 
 | Bucket | Contents |
 |---|---|
@@ -110,16 +156,10 @@ users. So attribution is by service, in three buckets:
 | `platform` | Everything else. The number the dashboard adds. |
 
 `excluded` rows are **persisted and displayed**, not silently dropped: an
-operator can only trust a total if they can see what was held out of it.
-
-> ⚠️ **Known limitation — account scope.** Infrastructure is measured per AWS
-> account. dev-ai hosts **five** deployments (`beta-boisestateai-dev`,
-> `boisestateai-v2-dev`, `bsu-agentcore`, `dev-boisestateai-v2`,
-> `nightly-mv`), so dev's platform figure and its reconciliation cover all of
-> them. Prod is a dedicated account with one deployment, so its figures are
-> sound apart from the excluded Aurora. The UI states this on the panel.
-> Activating the `Project` tag is what fixes it; the row shape does not change
-> when it does — only the query swaps to `GROUP BY TAG Project`.
+operator can only trust a total if they can see what was held out of it. Under
+`deployment` scope most exclusions simply never appear — another team's
+database was never ours — and what remains is account-level charges the tag
+cannot reach.
 
 ## Gotchas worth keeping
 
@@ -135,3 +175,10 @@ operator can only trust a total if they can see what was held out of it.
   is flagged `partialMonth`, which the UI renders as a *Month to date* badge.
 - **Costs persist as `Decimal`.** DynamoDB rejects floats, and that failure
   only shows up in cloud.
+- **An empty `PLATFORM_COST_PROJECT_TAG` disables scoping; it never filters on
+  `Project=''`.** Filtering on an empty value matches nothing, and the fallback
+  would mask it — reporting the account total as though it were scoped.
+- **Rows synced before scoping existed carry no `scope`, and default to
+  `account`.** The pessimistic default is deliberate: defaulting to
+  `deployment` would relabel an account-wide figure as this app's cost with
+  nothing to reveal the error.

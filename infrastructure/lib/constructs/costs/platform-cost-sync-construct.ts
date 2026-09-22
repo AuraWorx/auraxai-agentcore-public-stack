@@ -90,6 +90,19 @@ export class PlatformCostSyncConstruct extends Construct {
         DYNAMODB_SYSTEM_ROLLUP_TABLE_NAME: systemCostRollupTable.tableName,
         PLATFORM_COST_SYNC_ENABLED: 'true',
         AWS_ACCOUNT_ID: cdk.Stack.of(this).account,
+        // Scope the bill to THIS deployment rather than the whole account.
+        // `applyStandardTags` writes `Project: config.projectPrefix` onto
+        // every resource the stack creates, so the filter needs no new
+        // configuration and a fork inherits it for free.
+        //
+        // Cost Explorer only honours a cost allocation tag once it has been
+        // ACTIVATED in the payer account — an action a linked account cannot
+        // perform, and one that is not retroactive. Until then the filter
+        // matches nothing and the handler falls back to account scope,
+        // recording `scope: "account"` so the dashboard labels the figures
+        // instead of overstating them. Setting this to '' forces account
+        // scope deliberately.
+        PLATFORM_COST_PROJECT_TAG: config.projectPrefix,
         // Deliberately NOT set: the handler's own DEFAULT_EXCLUDED_SERVICES is
         // the source of truth. Setting it here from a config value that a
         // workflow forwards as an empty string is precisely how the browser

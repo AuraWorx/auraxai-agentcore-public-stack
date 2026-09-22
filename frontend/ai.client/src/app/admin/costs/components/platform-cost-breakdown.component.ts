@@ -108,20 +108,37 @@ import { getCategoricalColor } from '../../../shared/constants/chart-colors.cons
                 </h3>
                 <p class="mt-1 max-w-2xl text-sm/6 text-gray-500 dark:text-gray-400">
                   Inference from our own per-user ledger, infrastructure from
-                  AWS Cost Explorer. Infrastructure is measured
-                  <strong>per AWS account</strong> — where an account hosts
-                  more than one deployment, these figures cover all of them
-                  until the <code class="font-mono">Project</code> cost
-                  allocation tag is activated.
+                  AWS Cost Explorer.
+                  @if (scopedToDeployment()) {
+                    Infrastructure is filtered to this deployment's own
+                    resources.
+                  } @else {
+                    <strong>Infrastructure covers the whole AWS account</strong>,
+                    not just this deployment — see below.
+                  }
                 </p>
               </div>
-              @if (summary()!.partialMonth) {
+              <div class="flex shrink-0 flex-wrap items-center gap-2">
+                <!-- Scope first: it changes what every number below MEANS,
+                     where "month to date" only changes how much of one. -->
                 <span
-                  class="rounded-full bg-gray-100 px-3 py-1 text-xs/5 font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                  class="rounded-full px-3 py-1 text-xs/5 font-medium"
+                  [class]="
+                    scopedToDeployment()
+                      ? 'bg-gray-100 text-primary-accessible dark:bg-gray-700 dark:text-primary-50'
+                      : 'border border-state-warning-300 text-state-warning-700 dark:border-state-warning-700 dark:text-state-warning-400'
+                  "
                 >
-                  Month to date
+                  {{ scopedToDeployment() ? 'This deployment' : 'Whole account' }}
                 </span>
-              }
+                @if (summary()!.partialMonth) {
+                  <span
+                    class="rounded-full bg-gray-100 px-3 py-1 text-xs/5 font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                  >
+                    Month to date
+                  </span>
+                }
+              </div>
             </div>
           </div>
 
@@ -178,6 +195,47 @@ import { getCategoricalColor } from '../../../shared/constants/chart-colors.cons
           </dl>
         </div>
 
+        <!-- 1b. Unscoped warning. Only shown when it applies: a permanent
+             caveat is one people learn to scroll past, and once the tag is
+             activated this disappears entirely. -->
+        @if (!scopedToDeployment()) {
+          <div
+            class="rounded-2xl border border-state-warning-300 bg-white p-6 shadow-xs dark:border-state-warning-700 dark:bg-gray-800"
+          >
+            <div class="flex items-start gap-3">
+              <span class="mt-0.5 shrink-0 text-state-warning-700 dark:text-state-warning-400">
+                <ng-icon name="heroExclamationTriangle" size="1.25rem" aria-hidden="true" />
+              </span>
+              <div class="min-w-0">
+                <h3 class="text-base/7 font-semibold text-gray-900 dark:text-white">
+                  These figures cover the whole account
+                </h3>
+                <p class="mt-1 max-w-3xl text-sm/6 text-gray-600 dark:text-gray-300">
+                  An account is not an application. Anything else deployed
+                  here — another environment of this stack, another team's
+                  database, an unrelated service — is being counted in the
+                  infrastructure total and in cost per user.
+                </p>
+                <p class="mt-3 max-w-3xl text-xs/5 text-gray-500 dark:text-gray-400">
+                  To scope this to just this deployment, activate
+                  <code class="rounded bg-gray-100 px-1 py-0.5 font-mono dark:bg-gray-700">Project</code>
+                  as a cost allocation tag in the
+                  <strong>payer</strong> account
+                  (Billing → Cost allocation tags). Every resource this stack
+                  creates already carries it
+                  @if (summary()!.projectTag) {
+                    with the value
+                    <code class="rounded bg-gray-100 px-1 py-0.5 font-mono dark:bg-gray-700">{{ summary()!.projectTag }}</code>
+                  }
+                  — nothing to configure here, and the next sync picks it up
+                  on its own. Activation is not retroactive, so months before
+                  it stay account-wide.
+                </p>
+              </div>
+            </div>
+          </div>
+        }
+
         <!-- 2. Reconciliation: our pricing tables vs what AWS billed -->
         <div
           class="rounded-2xl border border-gray-200 bg-white p-6 shadow-xs dark:border-gray-700 dark:bg-gray-800"
@@ -226,13 +284,17 @@ import { getCategoricalColor } from '../../../shared/constants/chart-colors.cons
                   actually charged. This figure is a regression test on those
                   rates, not an input to any total.
                 } @else {
-                  Outside the 2% tolerance. Check these in order: the AWS
-                  figure is <strong>account-wide</strong>, so another
-                  deployment in this account inflates it and no amount of
-                  correct pricing will close the gap; a model's rate in
+                  Outside the 2% tolerance.
+                  @if (!scopedToDeployment()) {
+                    Check scope first: the AWS figure is
+                    <strong>account-wide</strong>, so another deployment here
+                    inflates it and no amount of correct pricing will close
+                    the gap. Otherwise —
+                  }
+                  a model's rate in
                   <code class="font-mono">curated-models.ts</code> may have
-                  drifted from its AWS model card; or spend landed on a model
-                  the catalog does not price. Only the last two are bugs.
+                  drifted from its AWS model card, or spend landed on a model
+                  the catalog does not price.
                 }
               </p>
             </div>
@@ -395,6 +457,10 @@ export class PlatformCostBreakdownComponent {
     if (!s || s.totalCost <= 0) return 0;
     return (s.inferenceCost / s.totalCost) * 100;
   });
+
+  protected readonly scopedToDeployment = computed(
+    () => this.summary()?.scope === 'deployment',
+  );
 
   protected readonly absDeltaPercent = computed(() =>
     Math.abs(this.summary()?.reconciliationDeltaPercent ?? 0),
