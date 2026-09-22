@@ -123,6 +123,26 @@ The SPA sends an httpOnly session cookie — not `Authorization: Bearer`. A rout
 
 Do not reintroduce a Bearer-only `Depends(...)` on any user-facing route. If you find one in older code, migrate it to `get_current_user_from_session`.
 
+### App shell chrome: `data.chrome` on the route
+
+The app shell (`app.ts` / `app.html`) decides what surrounds a page by reading `data.chrome` off the active route, never by testing the URL. Three states:
+
+| `chrome` | Sidenav | Content box |
+|----------|---------|-------------|
+| *(unset)* | chat nav | `mx-auto max-w-7xl` |
+| `'minimal'` | none | none — page fills the shell (the artifact viewers, `artifacts/:id` and `shared-artifact/:shareId`) |
+| `'admin'` | **admin nav** (`AdminNav` replaces the sidenav's body) | none — `AdminLayout` owns its own padding |
+
+**The walk is deepest-*declared*-wins, not leaf-only** (`shared/utils/route-chrome.ts`). `'admin'` is declared once on the parent `/admin` route and every child declares nothing; with the default `paramsInheritanceStrategy` (`'emptyOnly'`) Angular does **not** copy `data` onto a child that has its own path and component, which every admin page has. A leaf-only read therefore sees nothing on any of them. A leaf can still opt out by declaring something else (`'full'`).
+
+**Rule:** The admin console's navigation is the *sidenav's body*, not a column inside the page. Never re-add an `<aside>` nav to an admin page — the point of the swap is that admin surfaces (cost tables, the model catalog, the role matrix) get the full content width instead of sitting between two navigations, one of which lists conversations that cannot be opened from `/admin`.
+
+Three things that look optional and are not:
+
+- **`Sidenav.isAdminChrome` and `App.adminChrome` both read the flag.** Do not substitute a `/admin` URL test in either: two independent answers to "are we in the console?" is one more than can stay in agreement.
+- **`AdminLayout` carries its own small-screen nav opener.** The shell's floating hamburger is gated on `HeaderService.showContent()`, state the *session page* owns and admin pages never set — relying on it would make the admin nav reachable or not depending on where the user had been first.
+- **`.sidenav-body-enter` is global in `styles.css` on purpose.** The chat nav and the admin nav swap into the same slot and must arrive identically. Angular scopes keyframe *names* per component, so a copy of the rule inside a component compiles to a separately-named animation that looks identical today and drifts the first time one is tuned. Add a section to the stagger by applying the class plus an `animation-delay`, not by writing new keyframes.
+
 ## Debugging Quick Reference
 
 - **Tool not appearing:** Check `__init__.py` export, RBAC permissions, `enabled_tools`, ToolRegistry
