@@ -74,7 +74,10 @@ async function settle(fixture: ComponentFixture<AgentFormPage>): Promise<void> {
   fixture.detectChanges();
 }
 
-async function mount(bindings: { kind: string; ref: string }[]): Promise<{
+async function mount(
+  bindings: { kind: string; ref: string }[],
+  agentId: string | null = 'agt-1',
+): Promise<{
   fixture: ComponentFixture<AgentFormPage>;
   component: AgentFormPage;
 }> {
@@ -118,7 +121,7 @@ async function mount(bindings: { kind: string; ref: string }[]): Promise<{
       },
       { provide: SidenavService, useValue: { hide: vi.fn(), show: vi.fn() } },
       { provide: ThemeService, useValue: { isDark: () => false } },
-      { provide: ActivatedRoute, useValue: { snapshot: { paramMap: { get: () => 'agt-1' } } } },
+      { provide: ActivatedRoute, useValue: { snapshot: { paramMap: { get: () => agentId } } } },
     ],
   });
 
@@ -220,12 +223,18 @@ describe('AgentFormPage — scoped tool bindings', () => {
     });
 
     it('renders the per-tool rows once expanded', async () => {
+      // A saved agent with tools opens collapsed, so the panel has to be opened
+      // before its rows exist at all — see `toolsOpen`.
+      component.toolsOpen.set(true);
       component.toggleToolExpanded('canvas_faculty');
       fixture.detectChanges();
-      const switches = fixture.nativeElement.querySelectorAll('[role="switch"]');
-      expect(switches.length).toBe(3);
-      expect(fixture.nativeElement.textContent).toContain('grade_submission');
-      // `2 of 3` on the chip, so the narrowing is legible without expanding.
+      // Scoped to the server's own panel: the parent rows are switches too now, so
+      // a document-wide count would measure the catalog rather than the sub-tools.
+      const panel = fixture.nativeElement.querySelector('#agent-server-tools-canvas_faculty');
+      expect(panel).not.toBeNull();
+      expect(panel.querySelectorAll('[role="switch"]').length).toBe(3);
+      expect(panel.textContent).toContain('grade_submission');
+      // `2 of 3` on the row, so the narrowing is legible without expanding.
       expect(fixture.nativeElement.textContent).toContain('2 of 3');
     });
 
@@ -233,6 +242,76 @@ describe('AgentFormPage — scoped tool bindings', () => {
       const listCourses = component.serverTools(CANVAS)[0];
       expect(listCourses.summary).toBe('List courses.');
       expect(listCourses.detail).toContain('Args:');
+    });
+  });
+
+  /**
+   * The Tools section is a disclosure, and the default it opens at is the whole
+   * design: closed is only right when there is a summary to close *to*. A saved
+   * agent gets its one-line answer; a new or empty one keeps the list in front of
+   * the author, who otherwise has no way to learn what the platform can do.
+   */
+  describe('the Tools disclosure', () => {
+    it('opens collapsed for a saved agent that already has tools', async () => {
+      ({ component } = await mount([{ kind: 'tool', ref: 'canvas_faculty' }]));
+      expect(component.toolsOpen()).toBe(false);
+      expect(component.selectedToolCount()).toBe(1);
+      expect(component.selectedToolSummary()).toBe('Canvas Faculty');
+    });
+
+    it('stays open for a saved agent with no tools bound', async () => {
+      ({ component } = await mount([]));
+      expect(component.toolsOpen()).toBe(true);
+      expect(component.selectedToolSummary()).toBe('');
+    });
+
+    it('stays open in create mode', async () => {
+      ({ component } = await mount([], null));
+      expect(component.mode()).toBe('create');
+      expect(component.toolsOpen()).toBe(true);
+    });
+
+    it('caps the summary at three names', async () => {
+      ({ component } = await mount([
+        { kind: 'tool', ref: 'canvas_faculty' },
+        { kind: 'tool', ref: 'calculator' },
+      ]));
+      // Alphabetical, so the header does not reorder itself between visits.
+      expect(component.selectedToolSummary()).toBe('Calculator, Canvas Faculty');
+    });
+  });
+
+  describe('the Tools list', () => {
+    beforeEach(async () => {
+      ({ fixture, component } = await mount([]));
+    });
+
+    it('groups by catalog category, sorted', () => {
+      // CANVAS has no `category` on its meta, so both fall to the `Other` bucket —
+      // which is the point of the fallback: an uncategorised tool still has a home.
+      const groups = component.toolGroups();
+      expect(groups.map((g) => g.category)).toEqual(['Other']);
+      expect(groups[0].items.map((i) => i.label)).toEqual(['Calculator', 'Canvas Faculty']);
+    });
+
+    it('filters on label, description and category', () => {
+      component.toolQuery.set('canvas');
+      expect(component.toolGroups().flatMap((g) => g.items.map((i) => i.ref))).toEqual([
+        'canvas_faculty',
+      ]);
+
+      // Description, not label: Calculator's description is "Arithmetic".
+      component.toolQuery.set('arithmetic');
+      expect(component.toolGroups().flatMap((g) => g.items.map((i) => i.ref))).toEqual([
+        'calculator',
+      ]);
+    });
+
+    it('renders an empty state rather than a blank list when nothing matches', () => {
+      component.toolQuery.set('zzz-no-such-tool');
+      fixture.detectChanges();
+      expect(component.toolGroups()).toEqual([]);
+      expect(fixture.nativeElement.textContent).toContain('No tools match');
     });
   });
 

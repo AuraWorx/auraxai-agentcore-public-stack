@@ -33,6 +33,7 @@ import {
   heroCheck,
   heroAdjustmentsHorizontal,
   heroChevronDown,
+  heroMagnifyingGlass,
 } from '@ng-icons/heroicons/outline';
 import { Dialog } from '@angular/cdk/dialog';
 import { PickerComponent } from '@ctrl/ngx-emoji-mart';
@@ -112,6 +113,12 @@ interface DisplayServerTool {
   detail: string;
 }
 
+/** Tools sharing a catalog category, as one titled block of the Tools list. */
+interface ToolGroup {
+  category: string;
+  items: BindableItem[];
+}
+
 /** A memory-space selection with its per-binding config (access + alwaysLoad). */
 interface MemorySelection {
   ref: string;
@@ -160,6 +167,7 @@ interface MemorySelection {
       heroCheck,
       heroAdjustmentsHorizontal,
       heroChevronDown,
+      heroMagnifyingGlass,
     }),
   ],
 })
@@ -242,6 +250,22 @@ export class AgentFormPage implements OnInit, OnDestroy {
   readonly expandedToolRefs = signal<Set<string>>(new Set());
   /** Which sub-tools have their `Args:` reference detail open, keyed `serverRef::name`. */
   readonly expandedToolDetails = signal<Set<string>>(new Set());
+  /**
+   * Whether the Tools list is expanded.
+   *
+   * Create mode and an empty selection leave it OPEN: a section collapsed to
+   * "none selected" hides the list at exactly the moment the author needs it, and
+   * a first-time author has no other way to learn what the platform can do. A
+   * saved agent that already has tools collapses to its summary line instead,
+   * which answers "what can this agent do?" better than the open list does.
+   *
+   * Resolved from the record when its bindings land (`applyAgentToForm`) and
+   * deliberately NOT persisted across visits — a remembered collapse state is one
+   * whose cause the author cannot see.
+   */
+  readonly toolsOpen = signal(true);
+  /** Free-text filter over the tool list. Presentation only — never submitted. */
+  readonly toolQuery = signal('');
   readonly selectedSkillRefs = signal<Set<string>>(new Set());
   readonly memorySelections = signal<MemorySelection[]>([]);
 
@@ -455,6 +479,9 @@ export class AgentFormPage implements OnInit, OnDestroy {
     // so mark both the form and the out-of-form binding signals dirty explicitly.
     this.form.markAsDirty();
     this.bindingsDirty.set(true);
+    // A template's whole point is the toolset it hands you, so override the collapse
+    // `applyAgentToForm` just derived: the author should see what they were given.
+    this.toolsOpen.set(true);
 
     // Surface reconcile outcomes as a dismissible, one-line-each notice.
     if (flagged.length > 0) {
@@ -533,6 +560,8 @@ export class AgentFormPage implements OnInit, OnDestroy {
       // the knowledge-base section — no read-only display state to hydrate.
     }
     this.selectedToolRefs.set(toolRefs);
+    // Collapse Tools only when there is something to collapse *to* — see `toolsOpen`.
+    this.toolsOpen.set(toolRefs.size === 0);
     this.selectedSkillRefs.set(skillRefs);
     this.memorySelections.set(memory);
     this.syncFormToSignals();
@@ -632,6 +661,75 @@ export class AgentFormPage implements OnInit, OnDestroy {
     });
     this.bindingsDirty.set(true);
   }
+
+  // ---- tools: search, grouping and the collapsed summary ----------------
+
+  toggleToolsOpen(): void {
+    this.toolsOpen.update((open) => !open);
+  }
+
+  onToolSearch(event: Event): void {
+    this.toolQuery.set((event.target as HTMLInputElement).value);
+  }
+
+  /** A tool's catalog category, normalised so an unset one still groups somewhere. */
+  private toolCategory(item: BindableItem): string {
+    const raw = (item.meta?.['category'] as string | undefined) ?? '';
+    return raw.trim() || 'Other';
+  }
+
+  /**
+   * Search-filtered tools grouped by catalog category, both levels sorted.
+   *
+   * `meta.category` already rides on every bindable item, so grouping is what turns
+   * thirty-plus rows into something scannable without a backend change. Display order
+   * is free to be alphabetical: the determinism contract that matters is on what
+   * reaches `toolConfig`, not on what the author reads.
+   */
+  readonly toolGroups = computed<ToolGroup[]>(() => {
+    const query = this.toolQuery().trim().toLowerCase();
+    const matches = this.tools().filter((t) => {
+      if (!query) return true;
+      return (
+        t.label.toLowerCase().includes(query) ||
+        t.description.toLowerCase().includes(query) ||
+        this.toolCategory(t).toLowerCase().includes(query)
+      );
+    });
+
+    const byCategory = new Map<string, BindableItem[]>();
+    for (const t of matches) {
+      const key = this.toolCategory(t);
+      const bucket = byCategory.get(key);
+      if (bucket) bucket.push(t);
+      else byCategory.set(key, [t]);
+    }
+    return [...byCategory.entries()]
+      .map(([category, items]) => ({
+        category,
+        items: [...items].sort((a, b) => a.label.localeCompare(b.label)),
+      }))
+      .sort((a, b) => a.category.localeCompare(b.category));
+  });
+
+  /** How many catalog tools this agent has bound, whole or narrowed. */
+  readonly selectedToolCount = computed(
+    () => this.tools().filter((t) => this.isToolSelected(t.ref)).length,
+  );
+
+  /**
+   * The collapsed header's one-line answer to "what can this agent do?". Capped at
+   * three names so the header stays one line at the widths this form is used at.
+   */
+  readonly selectedToolSummary = computed<string>(() => {
+    const labels = this.tools()
+      .filter((t) => this.isToolSelected(t.ref))
+      .map((t) => t.label)
+      .sort((a, b) => a.localeCompare(b));
+    if (labels.length === 0) return '';
+    const shown = labels.slice(0, 3).join(', ');
+    return labels.length > 3 ? `${shown} +${labels.length - 3} more` : shown;
+  });
 
   // ---- tools (server toggle + per-tool scoping) -------------------------
   /**
