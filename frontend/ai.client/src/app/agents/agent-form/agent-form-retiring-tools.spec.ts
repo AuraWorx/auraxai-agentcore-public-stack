@@ -135,8 +135,59 @@ async function mount(bindings: { kind: string; ref: string }[]): Promise<AgentFo
   await fixture.whenStable();
   await new Promise((resolve) => setTimeout(resolve, 0));
   fixture.detectChanges();
+  lastFixture = fixture;
   return fixture.componentInstance;
 }
+
+/** The fixture from the most recent `mount`, for the tests that assert on markup. */
+let lastFixture: ComponentFixture<AgentFormPage> | null = null;
+
+/**
+ * Everything below asserts at the component API, which is exactly what a rewrite of
+ * the picker's markup can keep passing while silently dropping every affordance the
+ * author actually sees — as the chips-to-list change on this branch could have. These
+ * pin the three that now live only in the template.
+ */
+describe('AgentFormPage — retiring tools, as rendered', () => {
+  it('disables the row in the add direction and badges it', async () => {
+    const component = await mount([{ kind: 'tool', ref: 'calculator' }]);
+    const fixture = lastFixture!;
+    component.toolsOpen.set(true);
+    fixture.detectChanges();
+
+    const row = [...fixture.nativeElement.querySelectorAll('#agent-tools-panel li')].find(
+      (li: Element) => li.textContent?.includes('Canvas Faculty'),
+    ) as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.querySelector('[role="switch"]')?.hasAttribute('disabled')).toBe(true);
+    expect(row.textContent).toContain('retiring');
+    // Inline, not a tooltip — the whole reason this section left chips behind.
+    expect(row.textContent).toContain('can no longer be added');
+  });
+
+  it('leaves a bound retiring tool removable', async () => {
+    const component = await mount([{ kind: 'tool', ref: 'canvas_faculty' }]);
+    const fixture = lastFixture!;
+    component.toolsOpen.set(true);
+    fixture.detectChanges();
+
+    const row = [...fixture.nativeElement.querySelectorAll('#agent-tools-panel li')].find(
+      (li: Element) => li.textContent?.includes('Canvas Faculty'),
+    ) as HTMLElement;
+    expect(row.querySelector('[role="switch"]')?.hasAttribute('disabled')).toBe(false);
+    expect(row.textContent).toContain('remove it from this agent');
+  });
+
+  it('shows the section notice even while the disclosure is collapsed', async () => {
+    // The agent that binds a retiring tool is precisely the one that opens
+    // collapsed, so a notice gated on `toolsOpen()` would never be seen.
+    const component = await mount([{ kind: 'tool', ref: 'canvas_faculty' }]);
+    const fixture = lastFixture!;
+    expect(component.toolsOpen()).toBe(false);
+    expect(fixture.nativeElement.querySelector('#agent-tools-panel')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('is being retired');
+  });
+});
 
 describe('AgentFormPage — retiring tools', () => {
   describe('isToolRetiring', () => {
