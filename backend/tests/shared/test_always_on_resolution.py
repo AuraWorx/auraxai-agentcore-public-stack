@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from apis.shared.tools import freshness
-from apis.shared.tools.always_on import resolve_always_on_tool_ids
+from apis.shared.tools.always_on import resolve_always_on_tool_ids, union_enabled_tools
 from apis.shared.feature_flags import admin_always_on_tools_enabled
 
 USER = SimpleNamespace(user_id="u1", roles=["staff"])
@@ -220,3 +220,38 @@ class TestDeterministicOrder:
             return_value=_repo([_tool("search_web")]),
         ):
             assert await resolve_always_on_tool_ids(USER) == []
+
+
+class TestUnionHelperIsShared:
+    """`union_enabled_tools` now lives in shared so the `/invocations` path and
+    the voice WebSocket cannot drift apart (spec §1: a single seam).
+
+    The identity behaviour is the part that would drift silently, so it is
+    asserted here at its new home as well as at the call sites.
+    """
+
+    def test_routes_alias_is_the_shared_implementation(self):
+        from apis.inference_api.chat.routes import _with_auto_enabled_tools
+
+        original = ["a"]
+        assert _with_auto_enabled_tools(original, []) is original
+        assert _with_auto_enabled_tools(original, ["b"]) == ["a", "b"]
+
+    def test_voice_imports_the_same_helper(self):
+        from apis.inference_api.chat import voice_routes
+
+        assert voice_routes.union_enabled_tools is union_enabled_tools
+
+    def test_none_stays_none(self):
+        assert union_enabled_tools(None, []) is None
+
+    def test_returns_the_same_object_when_nothing_to_add(self):
+        original = ["a", "b"]
+        assert union_enabled_tools(original, []) is original
+        assert union_enabled_tools(original, ["a"]) is original
+
+    def test_appends_only_what_is_missing_in_the_order_given(self):
+        assert union_enabled_tools(["a"], ["b", "a", "c"]) == ["a", "b", "c"]
+
+    def test_builds_from_none_when_there_is_something_to_add(self):
+        assert union_enabled_tools(None, ["a"]) == ["a"]
