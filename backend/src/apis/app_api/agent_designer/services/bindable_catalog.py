@@ -123,6 +123,18 @@ async def _list_tools(user: User, svc: ToolCatalogService) -> List[BindableItem]
             meta={
                 "category": t.category,
                 "protocol": t.protocol,
+                # Display only — this is NOT a second access decision. The list
+                # is already RBAC-filtered above and every id in it is one the
+                # author may bind; `status` lets the picker refuse to ADD a
+                # retiring tool while leaving an already-bound one selected and
+                # visible (docs/specs/mcp-server-retirement.md §7).
+                #
+                # Deliberately not filtered out here. `binding_validation.
+                # _validate_tool` reads the same `get_user_accessible_tools`,
+                # so dropping a retiring tool from this list would 403 an
+                # author editing an Agent that keeps the binding — for a tool
+                # that Agent can still run.
+                "status": t.status,
                 "requiresOauthProvider": t.requires_oauth_provider,
                 "serverTools": [
                     {

@@ -14,6 +14,7 @@ import pytest
 
 from apis.app_api.agent_designer.services import bindable_catalog as bc
 from apis.shared.auth.models import User
+from apis.shared.tools.models import ToolStatus
 
 MODULE = "apis.app_api.agent_designer.services.bindable_catalog"
 
@@ -61,19 +62,66 @@ class TestModels:
 
 
 # --------------------------------------------------------------------------- tool
+def _tool(**kw):
+    base = dict(
+        tool_id="wikipedia", display_name="Wikipedia", description="Search Wikipedia",
+        category="research", protocol="mcp", status=ToolStatus.ACTIVE,
+        requires_oauth_provider=None,
+        server_tools=[SimpleNamespace(name="search", description="d", needs_approval=False, enabled=True)],
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _tool_svc(tools):
+    svc = MagicMock()
+    svc.get_user_accessible_tools = AsyncMock(return_value=tools)
+    return svc
+
+
 class TestTools:
     @pytest.mark.asyncio
     async def test_tool_projection_with_server_tools(self):
-        tool = SimpleNamespace(
-            tool_id="wikipedia", display_name="Wikipedia", description="Search Wikipedia",
-            category="research", protocol="mcp", requires_oauth_provider=None,
-            server_tools=[SimpleNamespace(name="search", description="d", needs_approval=False, enabled=True)],
-        )
-        svc = MagicMock()
-        svc.get_user_accessible_tools = AsyncMock(return_value=[tool])
-        items = await bc.list_bindable("tool", _user(), tool_service=svc)
+        items = await bc.list_bindable("tool", _user(), tool_service=_tool_svc([_tool()]))
         assert items[0].ref == "wikipedia"
         assert items[0].meta["serverTools"][0]["name"] == "search"
+
+    @pytest.mark.asyncio
+    async def test_status_rides_on_meta(self):
+        """The Designer picker's only signal that a tool is being retired.
+
+        Without it the palette cannot tell a retiring tool from a live one, and
+        §7 of docs/specs/mcp-server-retirement.md has nothing to gate on.
+        """
+        items = await bc.list_bindable(
+            "tool", _user(), tool_service=_tool_svc([_tool(status=ToolStatus.DEPRECATED)])
+        )
+        assert items[0].meta["status"] == "deprecated"
+
+    @pytest.mark.asyncio
+    async def test_status_serializes_as_a_plain_string(self):
+        """The SPA compares it to `'active'`, so an enum member on the wire would
+        make every tool read as retiring."""
+        items = await bc.list_bindable("tool", _user(), tool_service=_tool_svc([_tool()]))
+        assert items[0].model_dump(mode="json")["meta"]["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_a_retiring_tool_is_still_listed(self):
+        """Retirement hides a tool from NEW selection, in the SPA. It must not be
+        filtered out here: ``binding_validation._validate_tool`` reads the same
+        ``get_user_accessible_tools``, so dropping it would 403 an author editing
+        an Agent that keeps the binding — for a tool that Agent can still run.
+        """
+        items = await bc.list_bindable(
+            "tool",
+            _user(),
+            tool_service=_tool_svc([
+                _tool(tool_id="live"),
+                _tool(tool_id="retiring", status=ToolStatus.DEPRECATED),
+                _tool(tool_id="gone", status=ToolStatus.DISABLED),
+            ]),
+        )
+        assert [i.ref for i in items] == ["live", "retiring", "gone"]
 
 
 # --------------------------------------------------------------------------- skill
