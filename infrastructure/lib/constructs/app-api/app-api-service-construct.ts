@@ -302,6 +302,14 @@ export class AppApiServiceConstruct extends Construct {
       assignPublicIp: false,
       circuitBreaker: { enable: true, rollback: true },
       enableExecuteCommand: true,
+      // Fargate bills per TASK, and a task does not inherit the service's
+      // tags unless asked. Without this, `Project` (applied stack-wide by
+      // applyStandardTags) reaches the service but never the thing that
+      // actually costs money, so ECS Fargate is invisible to any
+      // tag-scoped cost query — 17% of prod's infrastructure bill
+      // (~$118/month) silently missing. Measured on the live dev service,
+      // which reported propagateTags: NONE.
+      propagateTags: ecs.PropagatedTagSource.SERVICE,
     });
 
     this.ecsService.attachToApplicationTargetGroup(targetGroup);

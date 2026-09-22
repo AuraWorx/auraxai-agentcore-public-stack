@@ -16,6 +16,12 @@ import { SidenavService } from '../services/sidenav/sidenav.service';
  * second nav column, and no `max-w-7xl` reading-width cap, which `app.html`
  * also drops for admin chrome.
  *
+ * `max-w-[100rem]` is a sprawl guard, not that cap: it is wider than any
+ * laptop the console is used on, so it changes nothing there, and only stops
+ * a 20-column cost table from stretching to 3000px on an ultrawide, where a
+ * row's rank and its dollars end up a head-turn apart. Anything narrower
+ * would be the reading-width cap this shell exists to drop.
+ *
  * The one piece of chrome left is the small-screen bar below: on desktop the
  * sidenav is always present, but on mobile it is an overlay, and the shell's
  * floating hamburger is conditioned on `HeaderService.showContent()` — state
@@ -109,7 +115,7 @@ import { SidenavService } from '../services/sidenav/sidenav.service';
       </div>
 
       <main
-        class="min-w-0 flex-1 px-4 py-8 sm:px-6 lg:px-8"
+        class="mx-auto w-full min-w-0 max-w-[100rem] flex-1 px-4 py-8 sm:px-6 lg:px-8"
         [class.page-enter-a]="contentEnterOnA()"
         [class.page-enter-b]="!contentEnterOnA()"
       >
