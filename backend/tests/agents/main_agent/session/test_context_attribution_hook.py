@@ -25,6 +25,12 @@ class FakeModel:
     include it).
     """
 
+    # The hook only computes a split when the model's counter is authoritative
+    # (real on Bedrock Converse, a heuristic on the OpenAI surfaces). This fake
+    # declares itself authoritative so the existing cases still exercise the
+    # computation; TestAuthoritativeCounterGate flips it.
+    token_count_is_authoritative = True
+
     def __init__(self, system=100, per_msg=10, tool_overhead=500, raise_on_count=False):
         self.system = system
         self.per_msg = per_msg
@@ -401,3 +407,97 @@ class TestProbeBaseline:
         await ContextAttributionHook()._on_before_model_call(_event(FakeAgent(a, messages=list(msgs)), projected=650))
         await ContextAttributionHook()._on_before_model_call(_event(FakeAgent(b, messages=list(msgs)), projected=650))
         assert len(a.calls) == len(b.calls) == 3
+
+
+class TestAuthoritativeCounterGate:
+    """No split at all where ``count_tokens`` is a heuristic.
+
+    ``toolTokens`` is ``projected_input_tokens - count_tokens(no tools)``. Those
+    are the same estimator only on Bedrock Converse. On the OpenAI surfaces
+    (``bedrock-responses``, ``mantle``) ``count_tokens`` degrades to chars/4
+    while the projection is anchored on real usage, so the residual is tools
+    PLUS the estimator disagreement — measured live on Kimi K3 as 13,967 then
+    7,145 for a byte-identical tool set.
+
+    Absent `prefixTokens` reads "not tracked"; a wrong one corrupts every share
+    computed from it. Nothing else is lost — cost and the context meter come
+    from provider-reported usage, not from this split.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_breakdown_when_the_counter_is_a_heuristic(self):
+        model = FakeModel()
+        model.token_count_is_authoritative = False
+        agent = FakeAgent(model, [{"role": "user", "content": [{"text": "hi"}]}])
+
+        await ContextAttributionHook(session_id="s1")._compute(_event(agent, 1000))
+
+        assert get_context_breakdown(agent) is None
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_even_spend_the_count_calls(self):
+        """The guard is before the two CountTokens calls, not after — a wrong
+        number we then discard would still have cost two round trips."""
+        model = FakeModel()
+        model.token_count_is_authoritative = False
+        agent = FakeAgent(model, [{"role": "user", "content": [{"text": "hi"}]}])
+
+        await ContextAttributionHook(session_id="s1")._compute(_event(agent, 1000))
+
+        assert model.calls == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_written_for_the_cost_row_either(self):
+        """`prefixTokens` reads the same split, so it must be absent too."""
+        from agents.main_agent.session.hooks.context_attribution import (
+            get_prefix_token_split,
+        )
+
+        model = FakeModel()
+        model.token_count_is_authoritative = False
+        agent = FakeAgent(model, [{"role": "user", "content": [{"text": "hi"}]}])
+
+        await ContextAttributionHook(session_id="s1")._compute(_event(agent, 1000))
+
+        assert get_prefix_token_split(agent) is None
+
+    @pytest.mark.asyncio
+    async def test_the_authoritative_path_is_unchanged(self):
+        model = FakeModel()
+        agent = FakeAgent(model, [{"role": "user", "content": [{"text": "hi"}]}])
+
+        await ContextAttributionHook(session_id="s1")._compute(_event(agent, 1000))
+
+        assert get_context_breakdown(agent) is not None
+
+    def test_it_classifies_the_real_model_classes(self):
+        """The gate has to hold against the actual classes, not just the fake.
+
+        Constructed offline — neither touches AWS at build time.
+        """
+        from agents.main_agent.core.bedrock_count_tokens import CountTokensBedrockModel
+        from agents.main_agent.session.hooks.context_attribution import (
+            _token_count_is_authoritative,
+        )
+        from apis.shared.models.bedrock_responses import build_bedrock_responses_model
+
+        converse = CountTokensBedrockModel(
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0", region_name="us-west-2"
+        )
+        responses = build_bedrock_responses_model("us.moonshotai.kimi-k3", region="us-west-2")
+
+        assert _token_count_is_authoritative(converse) is True
+        assert _token_count_is_authoritative(responses) is False
+
+    def test_an_explicit_declaration_beats_the_isinstance_check(self):
+        """The extension point for a transport that later gains a real counter."""
+        from agents.main_agent.session.hooks.context_attribution import (
+            _token_count_is_authoritative,
+        )
+        from apis.shared.models.bedrock_responses import build_bedrock_responses_model
+
+        responses = build_bedrock_responses_model("us.moonshotai.kimi-k3", region="us-west-2")
+        assert _token_count_is_authoritative(responses) is False
+
+        responses.token_count_is_authoritative = True
+        assert _token_count_is_authoritative(responses) is True

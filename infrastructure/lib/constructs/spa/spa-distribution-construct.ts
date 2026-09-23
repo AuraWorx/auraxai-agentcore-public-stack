@@ -230,6 +230,19 @@ function handler(event) {
     // `Content-Disposition: attachment` bodies and OAuth navigations, and an
     // opaque-origin directive on that whole surface risks breaking a download
     // for no additional protection over `default-src 'none'`.
+    //
+    // Note `override: true` on the CSP below: it REPLACES whatever the origin
+    // sent. app-api's RESOURCE_SECURITY_HEADERS
+    // (backend/src/apis/shared/skills/resource_types.py) sets a longer CSP
+    // ending in `; sandbox`, and behind CloudFront the browser does not see
+    // that suffix. Both layers are still load-bearing, on different paths: the
+    // ALB is internet-facing and a localhost SPA reaches the dev backend
+    // directly, and on those paths there is no edge policy at all, so the
+    // backend header is the only CSP the browser gets. Keep `override: true` —
+    // without it any route, middleware or error handler could define the CSP
+    // for the entire origin, which is exactly the regression this policy
+    // exists to prevent. api-security-headers.test.ts pins the omission so the
+    // two layers cannot drift apart unnoticed.
     const apiResponseHeadersPolicy = new cloudfront.ResponseHeadersPolicy(
       this,
       'ApiResponseHeadersPolicy',

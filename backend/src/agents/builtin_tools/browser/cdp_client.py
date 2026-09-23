@@ -93,6 +93,16 @@ class CdpSession:
     # -- protocol ----------------------------------------------------------
 
     async def _read_loop(self) -> None:
+        # The reader ending means the transport is gone, however it ended, so
+        # `_closed` is set in `finally` rather than only by our own `close()`.
+        # A peer-side close is the common case, not an exotic one: handing the
+        # browser to a human disables the automation stream, and the service
+        # closes this socket with a clean 1000 ("Disconnected by admin"). A
+        # clean close ends `async for` *normally* — no exception to catch — so
+        # a session that only tracked local closes stayed "open" forever while
+        # holding a dead socket, and `session_pool.acquire` kept handing that
+        # corpse back instead of reconnecting. Every later browse then failed
+        # for the life of the conversation.
         try:
             async for raw in self._ws:
                 try:
@@ -105,6 +115,7 @@ class CdpSession:
                 future = self._pending.pop(message_id, None)
                 if future is not None and not future.done():
                     future.set_result(message)
+            logger.info("cdp: socket closed by peer")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - surfaced on the next command
@@ -112,6 +123,12 @@ class CdpSession:
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(CdpError(f"CDP connection lost: {exc}"))
+            self._pending.clear()
+        finally:
+            self._closed = True
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(CdpError("CDP connection closed"))
             self._pending.clear()
 
     async def command(

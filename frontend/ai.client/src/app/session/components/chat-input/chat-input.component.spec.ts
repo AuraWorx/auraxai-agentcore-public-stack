@@ -1,16 +1,17 @@
-import { NO_ERRORS_SCHEMA, signal } from '@angular/core';
+import { computed, NO_ERRORS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentMentionService, MentionableAgent } from '../../../agents/services/agent-mention.service';
 import { SkillCommand, SkillCommandService } from '../../../services/skill/skill-command.service';
-import { FileUploadService } from '../../../services/file-upload';
+import { FileMetadata, FileUploadService } from '../../../services/file-upload';
 import { SystemPromptsService } from '../../../services/system-prompts/system-prompts.service';
 import { ToastService } from '../../../services/toast/toast.service';
 import { ToolService } from '../../../services/tool/tool.service';
 import { VoiceChatService } from '../../services/voice';
 import { SteeringService } from '../../services/chat/steering.service';
 import { ComposerDraftService } from '../../services/session/composer-draft.service';
+import { NEW_CONVERSATION_DRAFT_KEY } from '../../services/session/composer-draft-storage.service';
 import { ChatInputComponent } from './chat-input.component';
 
 const AGENTS: MentionableAgent[] = [
@@ -117,8 +118,10 @@ describe('ChatInputComponent — the `@` menu keyboard path (D11)', () => {
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds: signal([]),
+            readyUploads: signal([]),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -243,8 +246,10 @@ describe('ChatInputComponent — the `/` skill-command menu', () => {
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds: signal([]),
+            readyUploads: signal([]),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -409,8 +414,10 @@ describe('ChatInputComponent — queueing a follow-up mid-stream', () => {
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds: signal([]),
+            readyUploads: signal([]),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -621,8 +628,19 @@ describe('ChatInputComponent — mid-turn steering (PR-5)', () => {
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds,
+            // Kept in step with the ids: the composer reads the full upload to
+            // record an attachment's filename and size in the draft.
+            readyUploads: computed(() =>
+              readyUploadIds().map((uploadId) => ({
+                uploadId,
+                file: new File(['x'], `${uploadId}.pdf`, { type: 'application/pdf' }),
+                status: 'ready' as const,
+                progress: 100,
+              })),
+            ),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -853,8 +871,10 @@ describe('ChatInputComponent — a queue held behind a paused turn (PR-6)', () =
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds: signal([]),
+            readyUploads: signal([]),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -1094,8 +1114,10 @@ describe('ChatInputComponent — rotating discovery hints', () => {
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds: signal([]),
+            readyUploads: signal([]),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -1256,8 +1278,10 @@ describe('ChatInputComponent — composer drafts (feedback retry-with-correction
             pendingUploadsList: signal([]),
             hasActivePendingUploads: signal(false),
             readyUploadIds: signal([]),
+            readyUploads: signal([]),
             clearReadyUploads: () => undefined,
             clearPendingUpload: () => undefined,
+            listSessionFiles: async () => [],
           },
         },
         { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
@@ -1304,5 +1328,410 @@ describe('ChatInputComponent — composer drafts (feedback retry-with-correction
     fixture.detectChanges();
     expect(component.userInput()).toBe('');
     expect(drafts.pending()?.text).toBe('not mine');
+  });
+});
+
+describe('ChatInputComponent — unsent text survives leaving the conversation', () => {
+  let fixture: ComponentFixture<ChatInputComponent>;
+  let component: ChatInputComponent;
+  let textarea: HTMLTextAreaElement;
+
+  /** Live "ready" uploads the stubbed FileUploadService reports, per test. */
+  let stubReadyUploads: { uploadId: string; file: File; status: 'ready'; progress: number }[];
+  /** What `GET /files?sessionId=` answers, and what it was asked about. */
+  let stubSessionFiles: FileMetadata[];
+  let listedSessions: string[];
+  let listSessionFilesImpl: (sessionId: string) => Promise<FileMetadata[]>;
+
+  function serverFile(uploadId: string, sessionId = 'staged-1'): FileMetadata {
+    return {
+      uploadId,
+      filename: `${uploadId}.pdf`,
+      mimeType: 'application/pdf',
+      sizeBytes: 2048,
+      sessionId,
+      s3Uri: `s3://bucket/${uploadId}`,
+      status: 'ready',
+      createdAt: '2026-09-21T00:00:00Z',
+    };
+  }
+
+  function readyUpload(uploadId: string) {
+    return {
+      uploadId,
+      file: new File(['x'], `${uploadId}.pdf`, { type: 'application/pdf' }),
+      status: 'ready' as const,
+      progress: 100,
+    };
+  }
+
+  async function mount(draftKey: string | null): Promise<void> {
+    TestBed.resetTestingModule();
+    const readyUploads = signal(stubReadyUploads);
+    await TestBed.configureTestingModule({
+      imports: [ChatInputComponent],
+      providers: [
+        { provide: AgentMentionService, useClass: MentionServiceStub },
+        { provide: SkillCommandService, useClass: SkillCommandServiceStub },
+        {
+          provide: FileUploadService,
+          useValue: {
+            pendingUploadsList: readyUploads,
+            hasActivePendingUploads: signal(false),
+            readyUploadIds: computed(() => readyUploads().map((u) => u.uploadId)),
+            readyUploads,
+            clearReadyUploads: () => readyUploads.set([]),
+            clearPendingUpload: (uploadId: string) =>
+              readyUploads.update((list) => list.filter((u) => u.uploadId !== uploadId)),
+            listSessionFiles: (sessionId: string) => {
+              listedSessions.push(sessionId);
+              return listSessionFilesImpl(sessionId);
+            },
+          },
+        },
+        { provide: ToastService, useValue: { error: () => undefined, warning: () => undefined, info: () => undefined } },
+        { provide: ToolService, useValue: {} },
+        {
+          provide: VoiceChatService,
+          useValue: { status: signal('idle'), isVoiceActive: signal(false), agentTranscript: signal('') },
+        },
+        { provide: SystemPromptsService, useValue: { activePrompt: signal(null) } },
+        { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
+        { provide: SteeringService, useClass: SteeringServiceStub },
+      ],
+    })
+      .overrideComponent(ChatInputComponent, { set: { imports: [], schemas: [NO_ERRORS_SCHEMA] } })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(ChatInputComponent);
+    component = fixture.componentInstance;
+    fixture.componentRef.setInput('showFileControls', false);
+    fixture.componentRef.setInput('showVoiceControl', false);
+    fixture.componentRef.setInput('autoFocus', false);
+    fixture.componentRef.setInput('sessionId', draftKey);
+    fixture.componentRef.setInput('draftKey', draftKey);
+    fixture.detectChanges();
+    textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+  }
+
+  /** Type into the textarea the way the DOM does. */
+  function type(value: string): void {
+    textarea.value = value;
+    textarea.setSelectionRange(value.length, value.length);
+    textarea.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  /** Let the background reconcile resolve, then flush what it changed. */
+  async function settleMicrotasks(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    fixture.detectChanges();
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    stubReadyUploads = [];
+    stubSessionFiles = [];
+    listedSessions = [];
+    listSessionFilesImpl = async () => stubSessionFiles;
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('reinstates the draft when the composer comes back to the conversation', async () => {
+    await mount('s1');
+    type('where was I');
+
+    // Navigating away and back: the component is torn down and rebuilt.
+    await mount('s1');
+
+    expect(component.userInput()).toBe('where was I');
+    expect(textarea.value).toBe('where was I');
+  });
+
+  it('opens a conversation the user never typed in with an empty composer', async () => {
+    await mount('s1');
+    type('only in s1');
+
+    await mount('s2');
+
+    expect(component.userInput()).toBe('');
+  });
+
+  it('files the outgoing text under the conversation being left, not the one arriving', async () => {
+    await mount('s1');
+    type('belongs to s1');
+
+    // The live swap: one component instance, `draftKey` changing underneath it.
+    fixture.componentRef.setInput('draftKey', 's2');
+    fixture.detectChanges();
+    expect(component.userInput()).toBe('');
+
+    fixture.componentRef.setInput('draftKey', 's1');
+    fixture.detectChanges();
+    expect(component.userInput()).toBe('belongs to s1');
+  });
+
+  it('swaps in the other conversation\'s draft rather than carrying text across', async () => {
+    await mount('s1');
+    type('question for s1');
+    fixture.componentRef.setInput('draftKey', 's2');
+    fixture.detectChanges();
+    type('question for s2');
+
+    fixture.componentRef.setInput('draftKey', 's1');
+    fixture.detectChanges();
+
+    expect(component.userInput()).toBe('question for s1');
+  });
+
+  it('forgets the draft once the message is sent', async () => {
+    await mount('s1');
+    type('about to send');
+
+    component.submitChatRequest();
+    fixture.detectChanges();
+
+    await mount('s1');
+    expect(component.userInput()).toBe('');
+  });
+
+  it('brings an undelivered follow-up back as composer text, not as a chip', async () => {
+    await mount('s1');
+    fixture.componentRef.setInput('isChatLoading', true);
+    fixture.detectChanges();
+    type('a follow-up');
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true }));
+    fixture.detectChanges();
+    expect(component.queuedMessages().length).toBe(1);
+
+    await mount('s1');
+
+    // A chip would promise delivery at the end of a turn this component never
+    // saw start, so the flush edge never comes and it would sit there forever.
+    expect(component.queuedMessages()).toEqual([]);
+    expect(component.userInput()).toBe('a follow-up');
+  });
+
+  it('puts queued follow-ups ahead of the live text, in the order they were typed', async () => {
+    await mount('s1');
+    fixture.componentRef.setInput('isChatLoading', true);
+    fixture.detectChanges();
+
+    type('first');
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true }));
+    fixture.detectChanges();
+    type('second');
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true }));
+    fixture.detectChanges();
+    type('still being typed');
+
+    await mount('s1');
+
+    expect(component.userInput()).toBe('first\n\nsecond\n\nstill being typed');
+  });
+
+  it('does not bring back a follow-up the backend confirmed it holds', async () => {
+    await mount('s1');
+    fixture.componentRef.setInput('isChatLoading', true);
+    fixture.detectChanges();
+    type('already delivered');
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true }));
+    fixture.detectChanges();
+    // The arm lands: the backend is holding this text against the running turn,
+    // so restoring it would be the duplicate.
+    component.queuedMessages.update((queue) => queue.map((entry) => ({ ...entry, armed: true })));
+    fixture.detectChanges();
+
+    await mount('s1');
+
+    expect(component.userInput()).toBe('');
+  });
+
+  it('keeps the new-conversation composer separate from any session', async () => {
+    await mount(NEW_CONVERSATION_DRAFT_KEY);
+    type('a thought, before I pick a thread');
+
+    await mount('s1');
+    expect(component.userInput()).toBe('');
+
+    await mount(NEW_CONVERSATION_DRAFT_KEY);
+    expect(component.userInput()).toBe('a thought, before I pick a thread');
+  });
+
+  it('remembers nothing for a placement that opts out', async () => {
+    await mount(null);
+    type('throwaway preview text');
+
+    expect(localStorage.length).toBe(0);
+  });
+
+  // -- attachments ---------------------------------------------------------
+
+  it('brings back the files attached to a conversation', async () => {
+    stubReadyUploads = [readyUpload('u1'), readyUpload('u2')];
+    await mount('s1');
+    type('have a look at these');
+
+    stubReadyUploads = [];
+    stubSessionFiles = [serverFile('u1', 's1'), serverFile('u2', 's1')];
+    await mount('s1');
+    await settleMicrotasks();
+
+    expect(component.restoredAttachments().map((a) => a.uploadId)).toEqual(['u1', 'u2']);
+    expect(component.attachmentIds()).toEqual(['u1', 'u2']);
+  });
+
+  it('sends the restored ids rather than showing a card that does not travel', async () => {
+    stubReadyUploads = [readyUpload('u1')];
+    await mount('s1');
+    type('about the attached file');
+
+    stubReadyUploads = [];
+    stubSessionFiles = [serverFile('u1', 's1')];
+    await mount('s1');
+    await settleMicrotasks();
+
+    const sent: { fileUploadIds?: string[] }[] = [];
+    component.messageSubmitted.subscribe((m) => sent.push(m));
+    component.submitChatRequest();
+
+    expect(sent[0].fileUploadIds).toEqual(['u1']);
+    expect(component.restoredAttachments()).toEqual([]);
+  });
+
+  it('drops a restored attachment the server no longer confirms', async () => {
+    stubReadyUploads = [readyUpload('u1'), readyUpload('u2')];
+    await mount('s1');
+    type('two files');
+
+    // u2 was deleted from the file browser in the meantime. Held open so the
+    // pre-reconcile frame is observable rather than a race with the mount.
+    stubReadyUploads = [];
+    let release!: (files: FileMetadata[]) => void;
+    listSessionFilesImpl = () => new Promise((resolve) => (release = resolve));
+    await mount('s1');
+
+    // Painted straight from storage — the cards do not wait on the round trip.
+    expect(component.restoredAttachments().map((a) => a.uploadId)).toEqual(['u1', 'u2']);
+
+    release([serverFile('u1', 's1')]);
+    await settleMicrotasks();
+
+    expect(component.restoredAttachments().map((a) => a.uploadId)).toEqual(['u1']);
+  });
+
+  it('keeps the cached cards when the reconcile itself fails', async () => {
+    stubReadyUploads = [readyUpload('u1')];
+    await mount('s1');
+    type('one file');
+
+    stubReadyUploads = [];
+    listSessionFilesImpl = async () => {
+      throw new Error('network');
+    };
+    await mount('s1');
+    await settleMicrotasks();
+
+    // A blip must not silently strip an attachment; the send re-checks anyway.
+    expect(component.restoredAttachments().map((a) => a.uploadId)).toEqual(['u1']);
+  });
+
+  it('lets a restored attachment be taken off the composer', async () => {
+    stubReadyUploads = [readyUpload('u1')];
+    await mount('s1');
+    type('one file');
+
+    stubReadyUploads = [];
+    stubSessionFiles = [serverFile('u1', 's1')];
+    await mount('s1');
+    await settleMicrotasks();
+
+    component.onFileRemove('u1');
+    fixture.detectChanges();
+
+    expect(component.attachmentIds()).toEqual([]);
+    await mount('s1');
+    await settleMicrotasks();
+    expect(component.restoredAttachments()).toEqual([]);
+  });
+
+  it('does not carry one conversation\'s attachments into another', async () => {
+    stubReadyUploads = [readyUpload('u1')];
+    await mount('s1');
+    type('for s1 only');
+
+    fixture.componentRef.setInput('draftKey', 's2');
+    fixture.componentRef.setInput('sessionId', 's2');
+    fixture.detectChanges();
+
+    expect(component.attachmentIds()).toEqual([]);
+  });
+
+  it('carries the attachments of a follow-up queued behind a streaming turn', async () => {
+    stubReadyUploads = [readyUpload('u1')];
+    await mount('s1');
+    fixture.componentRef.setInput('isChatLoading', true);
+    fixture.detectChanges();
+    type('what does this say');
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true }));
+    fixture.detectChanges();
+
+    stubReadyUploads = [];
+    stubSessionFiles = [serverFile('u1', 's1')];
+    await mount('s1');
+    await settleMicrotasks();
+
+    // The question comes back with the file it was about, not without it.
+    expect(component.userInput()).toBe('what does this say');
+    expect(component.attachmentIds()).toEqual(['u1']);
+  });
+
+  // -- mentions -------------------------------------------------------------
+
+  it('re-binds a restored `@`-mention to the current Agent row', async () => {
+    await mount('s1');
+    type('@Al');
+    component.onMentionPicked(AGENTS[0]);
+    fixture.detectChanges();
+
+    await mount('s1');
+
+    expect(component.mentionedAgent()?.agentId).toBe('a1');
+    const sent: { mentionAgentId?: string }[] = [];
+    component.messageSubmitted.subscribe((m) => sent.push(m));
+    component.submitChatRequest();
+    expect(sent[0].mentionAgentId).toBe('a1');
+  });
+
+  it('does not re-bind an Agent that is no longer offered', async () => {
+    await mount('s1');
+    type('@Al');
+    component.onMentionPicked({ agentId: 'gone', name: 'Deleted', group: 'own' });
+    fixture.detectChanges();
+
+    await mount('s1');
+
+    // The id resolves against a live list, so an Agent that was deleted or
+    // unshared comes back as prose rather than as a binding the send rejects.
+    expect(component.mentionedAgent()).toBeNull();
+  });
+
+  it('drops a pending `@`-mention when the conversation changes under it', async () => {
+    await mount('s1');
+    type('@Al');
+    component.onMentionPicked(AGENTS[0]);
+    fixture.detectChanges();
+    expect(component.mentionedAgent()).not.toBeNull();
+
+    fixture.componentRef.setInput('draftKey', 's2');
+    fixture.detectChanges();
+
+    expect(component.mentionedAgent()).toBeNull();
   });
 });

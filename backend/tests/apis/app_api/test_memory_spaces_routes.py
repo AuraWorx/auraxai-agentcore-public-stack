@@ -424,7 +424,10 @@ class TestExport:
     def _open_zip(self, resp) -> zipfile.ZipFile:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/zip"
-        assert 'filename="My-Brain.zip"' in resp.headers["content-disposition"]
+        # The ASCII `filename` is derived from the real space name (spaces are
+        # legal in a quoted-string); the archive's internal folder keeps the
+        # stricter `_safe_component` slug.
+        assert 'filename="My Brain.zip"' in resp.headers["content-disposition"]
         return zipfile.ZipFile(io.BytesIO(resp.content))
 
     def test_owner_export_layout_and_contents(self, service, monkeypatch):
@@ -480,6 +483,46 @@ class TestExport:
         client, sid = self._seed(service, monkeypatch)
         monkeypatch.setenv("MEMORY_SPACES_ENABLED", "false")
         assert client.get(f"/memory/spaces/{sid}/export").status_code == 404
+
+    @pytest.mark.parametrize(
+        "name,expected_star,expected_ascii",
+        [
+            # Emoji — outside latin-1 entirely.
+            ("Research \U0001f9e0 Notes", "Research%20%F0%9F%A7%A0%20Notes.zip", "Research _ Notes.zip"),
+            # CJK — the ASCII fallback has nothing left to keep.
+            ("研究ノート", "%E7%A0%94%E7%A9%B6%E3%83%8E%E3%83%BC%E3%83%88.zip", "download.zip"),
+            # U+202F narrow no-break space (what macOS puts in screenshot
+            # names) and a curly quote — both latin-1 unencodable, both easy
+            # to paste into a space name without noticing.
+            ("Phil’s Space", "Phil%E2%80%99s%E2%80%AFSpace.zip", "Phil_s_Space.zip"),
+        ],
+    )
+    def test_export_non_latin1_name_downloads_with_real_name(
+        self, service, monkeypatch, name, expected_star, expected_ascii
+    ):
+        """A name Starlette cannot latin-1 encode must not 500 the download.
+
+        Before the shared helper the header was an f-string over the space
+        name, so writing the response raised `UnicodeEncodeError` and the user
+        got a 500 instead of their zip. The real name now rides `filename*`.
+        """
+        client = _client(service, monkeypatch, user=OWNER)
+        sid = client.post("/memory/spaces", json={"name": name}).json()["spaceId"]
+
+        resp = client.get(f"/memory/spaces/{sid}/export")
+
+        assert resp.status_code == 200
+        cd = resp.headers["content-disposition"]
+        # The wire bytes are latin-1 by the time we read them back, which is
+        # the regression this pins.
+        cd.encode("latin-1")
+        assert f"filename*=UTF-8''{expected_star}" in cd
+        assert f'filename="{expected_ascii}"' in cd
+        # And the payload is a real, readable archive.
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        assert any(n.endswith("/metadata.json") for n in zf.namelist())
+        meta = json.loads(zf.read(next(n for n in zf.namelist() if n.endswith("metadata.json"))))
+        assert meta["name"] == name
 
     def test_export_sanitizes_hostile_slug(self, service, monkeypatch):
         client = _client(service, monkeypatch, user=OWNER)

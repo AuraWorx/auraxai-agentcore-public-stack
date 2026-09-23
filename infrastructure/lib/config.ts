@@ -10,6 +10,30 @@ export interface CognitoConfig {
   // COGNITO is always included; entries here are added on top.
   supportedIdentityProviders?: string[];
   passwordMinLength?: number;  // Override default 8
+  // Whether anyone on the internet can self-register a native Cognito account
+  // through the Hosted UI's "Sign up" link.
+  //
+  // Defaults to FALSE — closed. Nothing in this stack needs it open:
+  //  - Federated sign-in is unaffected. This gates the `SignUp` API only; users
+  //    arriving through Entra/Okta are still provisioned just-in-time. Per AWS:
+  //    with self-registration off, "new users must be created by administrative
+  //    API actions using IAM API credentials or by sign-in with federated
+  //    providers."
+  //  - First-boot is unaffected. `CognitoService.create_admin_user` uses
+  //    `AdminCreateUser` + `AdminSetUserPassword`, which ignore this setting, so
+  //    a fresh fork still bootstraps its first admin through /auth/first-boot.
+  //
+  // Set `CDK_COGNITO_SELF_SIGNUP_ENABLED=true` to run an open-registration
+  // environment. Defaulting closed rather than open is deliberate: an operator
+  // who forgets to set the variable gets the safe posture, not a public signup
+  // page. This intentionally departs from the repo's "flags default ON" rule,
+  // which is about feature rollout, not access control.
+  //
+  // This MUST live here rather than being toggled in the console: CDK always
+  // renders `AdminCreateUserConfig.allowAdminCreateUserOnly` into the template,
+  // so the next deploy that touches the user pool for any reason overwrites an
+  // out-of-band console change without saying so.
+  selfSignUpEnabled?: boolean;
 }
 
 export interface AppConfig {
@@ -51,6 +75,7 @@ export interface AppConfig {
   kbSync: KbSyncConfig;
   managedKb: ManagedKbConfig;
   scheduledRuns: ScheduledRunsConfig;
+  platformCosts: PlatformCostsConfig;
   memorySpaces: MemorySpacesConfig;
   feedbackEvalSampling: FeedbackEvalSamplingConfig;
   skills: SkillsConfig;
@@ -286,6 +311,25 @@ export const MANAGED_KB_RETENTION_WINDOW_DAYS = 30;
  * surface is governed separately by the `scheduled-runs` RBAC capability.
  */
 export interface ScheduledRunsConfig {
+  enabled: boolean;
+}
+
+/**
+ * Platform cost sync (AWS Cost Explorer -> admin cost dashboard).
+ *
+ * OPT-IN, deliberately against this repo's usual default-on-with-a-kill-switch
+ * posture. Every other flag gates a feature built entirely from resources we
+ * own; this one calls Cost Explorer, which (a) bills $0.01 per request,
+ * (b) needs `ce:GetCostAndUsage` that an SCP may deny, and (c) may not even be
+ * enabled in the account. Reading the account's billing data is a scoping
+ * decision per environment, so it follows `feedbackEvalSampling`: only the
+ * literal "true" enables, and a workflow forwarding an unset variable (which
+ * arrives as an EMPTY STRING) must never be what turns it on.
+ *
+ * When off, the construct produces zero resources and the dashboard shows
+ * inference cost only, exactly as it did before.
+ */
+export interface PlatformCostsConfig {
   enabled: boolean;
 }
 
@@ -741,6 +785,9 @@ export function loadConfig(scope: cdk.App): AppConfig {
       passwordMinLength: parseIntEnv(process.env.CDK_COGNITO_PASSWORD_MIN_LENGTH)
         || scope.node.tryGetContext('cognito')?.passwordMinLength
         || 8,
+      selfSignUpEnabled: parseBooleanEnv(process.env.CDK_COGNITO_SELF_SIGNUP_ENABLED)
+        ?? scope.node.tryGetContext('cognito')?.selfSignUpEnabled
+        ?? false,
     },
     frontend: {
       certificateArn: process.env.CDK_FRONTEND_CERTIFICATE_ARN || scope.node.tryGetContext('frontend').certificateArn,
@@ -908,6 +955,15 @@ export function loadConfig(scope: cdk.App): AppConfig {
       enabled: process.env.CDK_SCHEDULED_RUNS_ENABLED
         ? process.env.CDK_SCHEDULED_RUNS_ENABLED !== 'false'
         : scope.node.tryGetContext('scheduledRuns')?.enabled ?? true,
+    },
+    platformCosts: {
+      // Default OFF, opt-in — see PlatformCostsConfig for why this one does
+      // not follow the default-on pattern above. Only the literal "true"
+      // enables; an empty/unset workflow variable leaves it off. A
+      // `platformCosts.enabled: true` cdk.json context also enables it.
+      enabled: process.env.CDK_PLATFORM_COSTS_ENABLED
+        ? process.env.CDK_PLATFORM_COSTS_ENABLED === 'true'
+        : scope.node.tryGetContext('platformCosts')?.enabled ?? false,
     },
     feedbackEvalSampling: {
       // Default OFF, opt-in (the `fineTuning`-style deferred pattern inverted):

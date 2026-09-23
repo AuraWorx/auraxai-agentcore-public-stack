@@ -33,6 +33,7 @@ from apis.shared.feature_flags import (
     mid_turn_steering_enabled,
     skills_enabled,
 )
+from apis.shared.files.document_read import is_document_class
 from apis.shared.files.file_resolver import get_file_resolver
 from apis.shared.files.models import (
     INLINE_ATTACHMENTS_MAX_TOTAL_BYTES,
@@ -59,6 +60,7 @@ from apis.shared.sessions.metadata import (
     ensure_session_metadata_exists,
     load_session_meta,
 )
+from apis.shared.tools.always_on import resolve_always_on_tool_ids, union_enabled_tools
 from apis.shared.tools.injected import (
     ARTIFACT_TOOL_IDS,
     EXCEL_SPREADSHEET_TOOL_IDS,
@@ -782,18 +784,32 @@ def _remember_document_session(session_id: str) -> None:
 async def _session_has_documents(
     session_id: str,
     user_id: str,
-    turn_upload_ids: list | None = None,
+    turn_has_document: bool = False,
 ) -> bool:
     """Whether ``document_read`` should exist on this turn.
 
-    True when this turn attaches uploads (their metadata rows already exist,
-    so no query is needed), when the session was seen carrying a document
-    earlier in this process, or when the session's upload rows include at
-    least one readable document (PDF, Word, text, markdown, HTML — not
-    spreadsheets, decks or images, which have other paths). Fail-closed on
-    error: a turn without the tool is today's behavior, never a broken turn.
+    True when this turn attached a file the tool can actually read (the
+    caller has already classified it, so no query is needed), when the
+    session was seen carrying a document earlier in this process, or when
+    the session's upload rows include at least one readable document (PDF,
+    Word, text, markdown, HTML — not spreadsheets, decks or images, which
+    have other paths). Fail-closed on error: a turn without the tool is
+    today's behavior, never a broken turn.
+
+    ``turn_has_document`` must be *classified*, not merely "this turn
+    attached something". It used to be the raw ``file_upload_ids`` list, and
+    the difference is the whole bug: an image, a spreadsheet or a deck is an
+    upload id but not a document, so an image-only turn injected a tool whose
+    listing is empty by construction — and, worse, memoized the session as a
+    document session, so every later turn in that process carried it too.
+    Measured in prod over 2026-09-20T22:00..2026-09-21T17:15: 13 of the 29
+    sessions with attachments held no readable document, they accounted for
+    **100%** of the window's avoidable ``toolConfigHash`` rotations, and
+    because the memo is per-process while the DynamoDB query is not, the tool
+    (and therefore the cacheable prefix) flapped A→B→A→B as microVMs
+    recycled. Each flip re-writes the whole prefix at 1.25x input.
     """
-    if turn_upload_ids:
+    if turn_has_document:
         _remember_document_session(session_id)
         return True
     if _DOCUMENT_SESSIONS.get(session_id):
@@ -813,24 +829,52 @@ async def _session_has_documents(
 async def _document_tools_gate(
     session_id: str,
     user_id: str,
-    turn_upload_ids: list | None = None,
+    turn_has_document: bool = False,
 ) -> bool:
     """The single answer to "does this turn carry ``document_read``" — the
     builder and the resume path's cache key both read it, so the two can
-    never disagree (a disagreement orphans a paused agent)."""
+    never disagree (a disagreement orphans a paused agent).
+
+    The resume path calls this with ``turn_has_document=False`` and relies on
+    the answer being reproducible from session state alone. That only holds
+    once the short-circuit is classified: an image-only turn used to answer
+    True on the way in (raw upload ids) and False on resume (the query sees
+    no readable document), so the resumed agent missed the slot the paused
+    turn was cached under.
+    """
     from apis.shared.feature_flags import document_read_enabled
 
     if not document_read_enabled():
         return False
     if not session_id or not user_id:
         return False
-    return await _session_has_documents(session_id, user_id, turn_upload_ids)
+    return await _session_has_documents(session_id, user_id, turn_has_document)
+
+
+def _resolved_files_include_a_document(resolved_files: list | None) -> bool:
+    """Whether this turn's resolved uploads include one ``document_read`` can read.
+
+    The turn-level half of the injection gate. Classification, not presence:
+    images, spreadsheets and presentations all arrive as upload ids and none
+    of them is a document — spreadsheets route through the analysis tools and
+    decks through the PowerPoint tools, and ``document_read``'s own listing
+    filters them out, so injecting it for those turns buys nothing and
+    rotates ``toolConfigHash``.
+
+    Mirrors what ``_session_has_tabular`` already does for the Spreadsheet
+    Analysis auto-enable, which takes ``turn_has_tabular=bool(diverted_tabular)``
+    — a classified signal — rather than "the request carried files".
+    """
+    return any(
+        is_document_class(getattr(rf, "content_type", "") or "", getattr(rf, "filename", "") or "")
+        for rf in (resolved_files or ())
+    )
 
 
 async def _build_document_tools(
     session_id: str,
     user_id: str,
-    turn_upload_ids: list | None = None,
+    turn_has_document: bool = False,
 ) -> list:
     """Context-bound ``document_read`` for a session that has a readable attachment.
 
@@ -840,8 +884,13 @@ async def _build_document_tools(
     ``DOCUMENT_READ_ENABLED=false``. The gate's answer also feeds the agent
     cache key (``has_document_tools``), so an agent cached before the first
     upload is never served without the tool afterwards.
+
+    ``turn_has_document`` is this turn's *classified* answer — see
+    ``_session_has_documents``. Passing "did this turn attach anything"
+    injects the tool for image, spreadsheet and deck attachments, which it
+    cannot read.
     """
-    if not await _document_tools_gate(session_id, user_id, turn_upload_ids):
+    if not await _document_tools_gate(session_id, user_id, turn_has_document):
         return []
 
     from agents.builtin_tools.document_read_tool import make_document_read_tool
@@ -909,17 +958,14 @@ async def _session_has_tabular(
 
 
 def _with_auto_enabled_tools(enabled_tools: list | None, auto_ids: list[str]) -> list | None:
-    """``enabled_tools`` plus ``auto_ids`` not already present, appended in the
-    order given. Returns the same object when there is nothing to add, so a
-    caller that passed ``None`` still passes ``None`` and every consumer of the
-    list (cache key, builders, guidance, ToolFilter) sees one value."""
-    if not auto_ids:
-        return enabled_tools
-    current = list(enabled_tools or [])
-    missing = [tool_id for tool_id in auto_ids if tool_id not in current]
-    if not missing:
-        return enabled_tools
-    return current + missing
+    """``enabled_tools`` plus ``auto_ids`` not already present.
+
+    Thin alias over ``apis.shared.tools.always_on.union_enabled_tools``, which
+    is where the semantics now live so the voice entry point can share them
+    rather than keep a second copy. Kept as a module-local name because every
+    call site and test in this module refers to it.
+    """
+    return union_enabled_tools(enabled_tools, auto_ids)
 
 
 async def _auto_enabled_attachment_tool_ids(
@@ -977,6 +1023,43 @@ async def _apply_attachment_tool_autoenable(
         current_user, session_id, user_id, turn_has_tabular=turn_has_tabular
     )
     return _with_auto_enabled_tools(enabled_tools, auto_ids)
+
+
+async def _apply_admin_always_on_tools(
+    enabled_tools: list | None,
+    current_user: User,
+    agent_bound_tools: bool = False,
+) -> list | None:
+    """``enabled_tools`` for this turn with the admin-pinned tools unioned in.
+
+    Sits at the same seam as ``_apply_attachment_tool_autoenable`` and for the
+    same reason: every ``get_agent`` caller on the invocation path goes through
+    it, so the main turn and the MCP App dispatch compute the same effective
+    list and therefore the same agent-cache slot.
+
+    ``agent_bound_tools`` is whether an Agent's ``tool`` bindings are driving
+    this turn. **When they are, nothing is pinned.** An Agent that binds tools
+    owns its toolset the way ``modelConfig`` owns the model, and unioning into
+    it would override the author's explicit scoping.
+
+    ⚠️ The exemption is "the Agent binds its own toolset", NOT "the turn ran an
+    Agent". ``_resolve_tools`` returns ``None`` — so ``agent_bound_tools`` is
+    False — for an Agent with no ``tool`` bindings, and such a turn falls
+    through to the user's picker and **does** get the pinned set. That is
+    deliberate: a template-derived Agent starts with empty ``bindings``
+    (``agent_templates/seed.py``), and exempting it would make always-on
+    opt-out-by-construction — anyone could shed a pinned tool with a trivial
+    unbound Agent. See docs/specs/admin-always-on-tools.md §7 D4.
+
+    This is a deliberate divergence from the attachment auto-enable above,
+    which applies to the effective list and so does reach Agent-bound turns:
+    that one serves the *user's* intent (they attached the file), this one
+    serves the *admin's* — and the Agent author is exercising admin intent too.
+    """
+    if agent_bound_tools:
+        return enabled_tools
+    always_on_ids = await resolve_always_on_tool_ids(current_user)
+    return _with_auto_enabled_tools(enabled_tools, always_on_ids)
 
 
 def _estimate_decoded_size(file: "FileContent") -> int:
@@ -1783,9 +1866,15 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 user_id=user_id,
                 auth_token=auth_token,
                 # Same auto-enable seam as the main turn, so a spreadsheet
-                # session's dispatch reads the slot the real turns fill.
-                enabled_tools=await _apply_attachment_tool_autoenable(
-                    input_data.enabled_tools, current_user, input_data.session_id, user_id
+                # session's dispatch reads the slot the real turns fill — and
+                # the same always-on union, or the dispatch would compute a
+                # different effective list and miss into its own agent-cache
+                # slot on every App call.
+                enabled_tools=await _apply_admin_always_on_tools(
+                    await _apply_attachment_tool_autoenable(
+                        input_data.enabled_tools, current_user, input_data.session_id, user_id
+                    ),
+                    current_user,
                 ),
                 model_id=input_data.model_id,
                 system_prompt=input_data.system_prompt,
@@ -1844,9 +1933,15 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 user_id=user_id,
                 auth_token=auth_token,
                 # Same auto-enable seam as the main turn, so a spreadsheet
-                # session's dispatch reads the slot the real turns fill.
-                enabled_tools=await _apply_attachment_tool_autoenable(
-                    input_data.enabled_tools, current_user, input_data.session_id, user_id
+                # session's dispatch reads the slot the real turns fill — and
+                # the same always-on union, or the dispatch would compute a
+                # different effective list and miss into its own agent-cache
+                # slot on every App call.
+                enabled_tools=await _apply_admin_always_on_tools(
+                    await _apply_attachment_tool_autoenable(
+                        input_data.enabled_tools, current_user, input_data.session_id, user_id
+                    ),
+                    current_user,
                 ),
                 model_id=input_data.model_id,
                 system_prompt=input_data.system_prompt,
@@ -1969,6 +2064,12 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 MAX_FILES_PER_MESSAGE,
             )
 
+    # Whether THIS turn attached something `document_read` can actually read.
+    # Classified here, from the resolved uploads, rather than inferred from
+    # `file_upload_ids` being non-empty: an image, a spreadsheet and a deck
+    # are all upload ids and none of them is a document. Feeds the injection
+    # gate and therefore `toolConfig` — see `_session_has_documents`.
+    turn_has_document = False
     if upload_ids_to_resolve:
         try:
             file_resolver = get_file_resolver()
@@ -1983,6 +2084,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 all_files.append(
                     FileContent(filename=rf.filename, content_type=rf.content_type, bytes=rf.bytes)
                 )
+            turn_has_document = _resolved_files_include_a_document(resolved_files)
             logger.info(f"Resolved {len(resolved_files)} files from upload IDs")
         except Exception:
             logger.warning("Failed to resolve file upload IDs", exc_info=True)
@@ -3060,6 +3162,19 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 turn_has_tabular=bool(diverted_tabular),
             )
 
+            # Tools an admin pinned are unioned in for users whose roles grant
+            # them, unless this Agent binds its own toolset (D4). Applied to
+            # the same *effective* list for the same reason as the line above:
+            # one value flows into the cache key, every builder, and the
+            # paused-turn snapshot. The set depends only on the catalog and the
+            # user's roles, so it is constant across a session and does not
+            # flip the key turn to turn.
+            effective_enabled_tools = await _apply_admin_always_on_tools(
+                effective_enabled_tools,
+                current_user,
+                agent_bound_tools=agent_tools_override is not None,
+            )
+
             # An Agent's skill bindings replace the request's skills for this turn so
             # ChatAgent's AgentSkills plugin discloses exactly the bound set (D5,
             # resolved per invoker above). Reassigning these function-scope locals here
@@ -3112,7 +3227,7 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
             document_tools = await _build_document_tools(
                 session_id=input_data.session_id,
                 user_id=user_id,
-                turn_upload_ids=input_data.file_upload_ids,
+                turn_has_document=turn_has_document,
             )
             extra_tools = extra_tools + document_tools
 
@@ -3212,14 +3327,32 @@ async def invocations(request: InvocationRequest, current_user: User = Depends(g
                 )
 
         # Build citations list for persistence (convert context chunks to citation format)
+        # Build citations list for persistence (convert context chunks to citation format)
+        #
+        # #111: when the agent's ``show_citations`` flag is off, suppress citations
+        # entirely — leaving this list empty is a single choke point that turns off all
+        # three downstream consumers at once: the ``event: citation`` SSE below, the
+        # ``citations=...`` persisted on the stored message, and the copy handed to
+        # ``agent.stream_async``. RAG retrieval and prompt augmentation above are
+        # deliberately untouched: the model still receives the context chunks, the user
+        # just is not shown (or able to download) the sources.
+        show_citations = getattr(assistant, "show_citations", True)
         citations_for_storage = []
-        if context_chunks:
+        if context_chunks and show_citations:
             for chunk in context_chunks:
                 citations_for_storage.append(
                     {
                         "assistantId": input_data.rag_assistant_id,
                         "documentId": chunk.get("metadata", {}).get("document_id", ""),
-                        "fileName": chunk.get("metadata", {}).get("source", "Unknown Source"),
+                        # Managed KBs carry the filename under ``filename`` (set at ingest,
+                        # managed_backend.py); legacy S3-Vectors used ``source``. Read
+                        # managed first, fall back to legacy, then the placeholder — before
+                        # this, every managed-KB citation rendered "Unknown Source".
+                        "fileName": (
+                            chunk.get("metadata", {}).get("filename")
+                            or chunk.get("metadata", {}).get("source")
+                            or "Unknown Source"
+                        ),
                         "text": chunk.get("text", "")[:500],  # Limit excerpt length
                     }
                 )

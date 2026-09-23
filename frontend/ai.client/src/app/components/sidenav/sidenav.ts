@@ -1,6 +1,10 @@
 import { Component, inject, computed, signal } from '@angular/core';
-import { Router, RouterLink, RouterLinkActive } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
+import { filter } from 'rxjs/operators';
 import { SessionList } from './components/session-list/session-list';
+import { AdminNav } from '../../admin/admin-nav';
+import { isAdminChromeRoute } from '../../shared/utils/route-chrome';
 import { SessionService } from '../../session/services/session/session.service';
 import { UserService } from '../../auth/user.service';
 import { SessionService as BffSessionService } from '../../auth/session.service';
@@ -11,7 +15,7 @@ import { BrandingService } from '../../../branding/branding.service';
 
 @Component({
   selector: 'app-sidenav',
-  imports: [SessionList, UserDropdownComponent, TooltipDirective, RouterLink, RouterLinkActive],
+  imports: [SessionList, AdminNav, UserDropdownComponent, TooltipDirective, RouterLink, RouterLinkActive],
   templateUrl: './sidenav.html',
   styleUrl: './sidenav.css',
 })
@@ -25,6 +29,27 @@ export class Sidenav {
 
   /** Whether the branding logo image failed to load (Requirement 2.8). */
   protected logoLoadFailed = signal(false);
+
+  /** Re-read on every completed navigation; the value itself is unused,
+   *  it exists so `isAdminChrome` recomputes when the route changes. */
+  private readonly navigated = toSignal(
+    this.router.events.pipe(filter((e) => e instanceof NavigationEnd)),
+    { initialValue: null },
+  );
+
+  /**
+   * Whether the active route is inside the admin console, in which case the
+   * sidenav's body is the console's navigation instead of the chat one.
+   *
+   * Derived from the route's `chrome` flag rather than a `/admin` URL test:
+   * the shell already reads that flag to decide the content box, and two
+   * independent answers to "are we in the console?" is one more than can stay
+   * in agreement.
+   */
+  protected readonly isAdminChrome = computed(() => {
+    this.navigated();
+    return isAdminChromeRoute(this.router.routerState.snapshot.root);
+  });
 
   // Access to current session signals - available for use in template or component logic
   readonly currentSession = this.sessionService.currentSession;

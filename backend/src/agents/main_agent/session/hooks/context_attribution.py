@@ -43,9 +43,39 @@ later clean turn instead. An absent ``prefixTokens`` reads "not tracked" (the
 ledger's convention); a wrong one silently corrupts every share computed from
 it.
 
+**Why the split is not computed at all on OpenAI-surface providers.**
+The same residual argument has a second, larger failure mode that is a property
+of the *transport* rather than of any one turn. ``toolTokens`` subtracts our
+``count_tokens`` call from Strands' ``projected_input_tokens``, and those are
+only the same estimator on Bedrock Converse, where ``BedrockModel`` implements
+a native CountTokens. On ``bedrock-responses`` and ``mantle`` the model is an
+``OpenAIResponsesModel``, whose ``count_tokens`` consults the native endpoint
+only when ``use_native_token_count`` is set — and that endpoint is **not
+served** on bedrock-runtime's OpenAI surface: enabling it makes ``count_tokens``
+return ``None`` (measured against ``us.moonshotai.kimi-k3``, us-west-2,
+2026-09-21; Strands returns None rather than raising, so it would poison the
+arithmetic silently). Left unset, it degrades to the chars/4 heuristic.
+
+Subtracting a heuristic from a usage-anchored projection does not yield tool
+tokens; it yields tools *plus* the estimator disagreement, which moves with the
+conversation. Measured live on one Kimi K3 session: the same byte-identical
+tool set (``toolConfigHash`` 8f6647f7f7 on both calls) reported **13,967** then
+**7,145** — a 2x swing on the number whose entire job is saying what fills the
+window. Forcing both sides through ``count_tokens`` makes the residual exactly
+stable (5,882 on a short conversation and 5,882 on a long one, +0 drift), which
+confirms the mechanism is the mismatch and not the tools.
+
+So the split is skipped for those providers, on the same principle the
+attachment guard states: an absent ``prefixTokens`` reads "not tracked", which
+the ledger already handles, while a wrong one silently corrupts every share
+computed from it. **Nothing else is lost** — every cost figure, the context
+meter (``lastContextTokens`` = input + cacheRead + cacheWrite, summed from real
+usage) and the window all come from provider-reported usage, not from this
+split. Re-enable by deleting the guard once the native count is served here;
+tracked in ``docs/kaizen/review-queue.md``.
+
 Best-effort: any failure is swallowed so context attribution can never break a
-model call. For non-Bedrock models ``count_tokens`` falls back to a heuristic,
-so the numbers are approximate there.
+model call.
 """
 
 import hashlib
@@ -56,6 +86,8 @@ from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
 from strands.hooks import BeforeModelCallEvent, HookProvider, HookRegistry
+
+from apis.shared.observability.prefix_tokens import prefix_split_is_plausible
 
 logger = logging.getLogger(__name__)
 
@@ -196,24 +228,82 @@ def get_context_breakdown(agent: Any) -> Optional[dict]:
     return getattr(agent, _BREAKDOWN_ATTR, None)
 
 
-def get_prefix_token_split(agent: Any) -> Optional[Dict[str, int]]:
+def get_prefix_token_split(
+    agent: Any,
+    prompt_tokens: Optional[int] = None,
+) -> Optional[Dict[str, int]]:
     """The stable ``{"system": n, "tools": n}`` split for this agent, or ``None``.
 
     Persisted on each call's cost row (as ``prefixTokens``) so the static
     prefix a session carries — and which part of it is tool schemas — is a
     stored fact rather than a scan-and-guess. Same numbers the SSE breakdown
     reports; this just reads the cached split without re-counting.
+
+    ``prompt_tokens`` is the turn's real prompt size from provider-reported
+    usage. When given, a split whose ``system + tools`` exceeds it is dropped
+    rather than persisted: the static prefix is a subset of the prompt, so that
+    is arithmetically impossible and means the cached residual is stale or
+    corrupt (see ``apis.shared.observability.prefix_tokens``). Dropping follows
+    the ledger's convention that an absent ``prefixTokens`` reads "not tracked".
+
+    The stale split is deliberately **not** invalidated here. Recomputing costs
+    two CountTokens calls, and if the underlying estimator disagreement is
+    systematic for this session it would pay them on every turn — trading a
+    wrong number for a latency regression. The session simply reports "not
+    tracked" from this point on.
     """
     split = getattr(agent, _SPLIT_ATTR, None)
     if not isinstance(split, dict):
         return None
     try:
-        return {
-            "system": int(split.get("systemTokens") or 0),
-            "tools": int(split.get("toolTokens") or 0),
-        }
+        system_tokens = int(split.get("systemTokens") or 0)
+        tool_tokens = int(split.get("toolTokens") or 0)
     except (TypeError, ValueError):
         return None
+    if not prefix_split_is_plausible(system_tokens, tool_tokens, prompt_tokens):
+        logger.warning(
+            "Prefix split dropped as implausible: system=%d tools=%d exceed "
+            "the turn's %s-token prompt",
+            system_tokens,
+            tool_tokens,
+            prompt_tokens,
+        )
+        return None
+    return {"system": system_tokens, "tools": tool_tokens}
+
+
+def _token_count_is_authoritative(model: Any) -> bool:
+    """Whether ``model.count_tokens`` is a real count rather than a heuristic.
+
+    Only Bedrock Converse serves one. ``CountTokensBedrockModel`` subclasses
+    ``BedrockModel``, so the isinstance check covers our Converse path and
+    excludes the OpenAI surfaces (``bedrock-responses``, ``mantle``) whose
+    ``count_tokens`` silently degrades — see the module docstring for the
+    measurement.
+
+    Deliberately a capability check on the model object rather than a provider
+    allowlist: the thing that actually decides this is which class implements
+    ``count_tokens``, and a name list would drift from it.
+
+    A model may override the answer by declaring a boolean
+    ``token_count_is_authoritative`` attribute. That is the extension point for
+    a future transport that gains a real counter (and what the tests use to
+    exercise both branches without pretending to be a ``BedrockModel``).
+
+    Args:
+        model: The Strands model backing this agent.
+
+    Returns:
+        ``True`` when the split can be trusted; ``False`` to skip it.
+    """
+    declared = getattr(model, "token_count_is_authoritative", None)
+    if isinstance(declared, bool):
+        return declared
+    try:
+        from strands.models.bedrock import BedrockModel
+    except Exception:  # noqa: BLE001 - never let a probe break a turn
+        return False
+    return isinstance(model, BedrockModel)
 
 
 class ContextAttributionHook(HookProvider):
@@ -240,6 +330,14 @@ class ContextAttributionHook(HookProvider):
     async def _compute(self, event: BeforeModelCallEvent) -> None:
         agent = event.agent
         model = agent.model
+        if not _token_count_is_authoritative(model):
+            # No trustworthy counter on this transport — emit nothing rather
+            # than a residual that is really an estimator disagreement.
+            logger.debug(
+                "Context attribution skipped: %s has no authoritative count_tokens",
+                type(model).__name__,
+            )
+            return
         system_prompt = getattr(agent, "system_prompt", None)
         system_prompt_content = getattr(agent, "_system_prompt_content", None)
         full = event.projected_input_tokens

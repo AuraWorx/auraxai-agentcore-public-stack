@@ -68,6 +68,7 @@
           [showAnnouncements]="showAnnouncements()"
           [announcementPlacement]="announcementPlacement()"
           [sessionId]="sessionId()"
+          [draftKey]="draftKey()"
           [isChatLoading]="isChatLoading()"
           [showFileControls]="resolvedConfig().showFileControls"
           [showVoiceControl]="resolvedConfig().showVoiceControl"
@@ -127,6 +128,7 @@
             [showAnnouncements]="showAnnouncements()"
           [announcementPlacement]="announcementPlacement()"
             [sessionId]="sessionId()"
+            [draftKey]="draftKey()"
             [isChatLoading]="isChatLoading()"
             [showFileControls]="resolvedConfig().showFileControls"
           [showVoiceControl]="resolvedConfig().showVoiceControl"
@@ -175,6 +177,7 @@
             [showAnnouncements]="showAnnouncements()"
           [announcementPlacement]="announcementPlacement()"
             [sessionId]="sessionId()"
+            [draftKey]="draftKey()"
             [isChatLoading]="isChatLoading()"
             [showFileControls]="resolvedConfig().showFileControls"
           [showVoiceControl]="resolvedConfig().showVoiceControl"
@@ -228,6 +231,7 @@
               [showAnnouncements]="showAnnouncements()"
           [announcementPlacement]="announcementPlacement()"
               [sessionId]="sessionId()"
+              [draftKey]="draftKey()"
               [isChatLoading]="isChatLoading()"
               [showFileControls]="resolvedConfig().showFileControls"
           [showVoiceControl]="resolvedConfig().showVoiceControl"
@@ -264,6 +268,7 @@
             [isChatLoading]="isChatLoading()"
             [streamingMessageId]="streamingMessageId()"
             [embeddedMode]="true"
+            [allowDownload]="citationsDownloadAllowed()"
             (continueRequested)="continueRequested.emit()" />
         </div>
       </div>
@@ -295,17 +300,11 @@
               (shareClicked)="onAssistantShare()" />
           </div>
         }
-        <!-- Cost + context, same placement as full-page mode. Pinned to this
-             chat's own session: an embedded chat is deliberately NOT the viewed
-             session, so an unpinned badge would report whatever conversation the
-             user last opened — a plausible number belonging to something else. -->
-        <div class="flex justify-end pb-1 pr-[10px]">
-          <app-session-cost-badge [sessionId]="sessionId()" />
-        </div>
         <app-chat-input
           [showAnnouncements]="showAnnouncements()"
           [announcementPlacement]="announcementPlacement()"
           [sessionId]="sessionId()"
+          [draftKey]="draftKey()"
           [isChatLoading]="isChatLoading()"
           [showFileControls]="resolvedConfig().showFileControls"
           [showVoiceControl]="resolvedConfig().showVoiceControl"
@@ -313,6 +312,12 @@
           (messageCancelled)="onMessageCancelled()"
           (fileAttached)="onFileAttached($event)"
 >
+          <!-- Cost + context, sharing the composer's meta row with the quota
+               tab. Pinned to this chat's own session: an embedded chat is
+               deliberately NOT the viewed session, so an unpinned badge would
+               report whatever conversation the user last opened — a plausible
+               number belonging to something else. -->
+          <app-session-cost-badge composerMeta class="pb-1" [sessionId]="sessionId()" />
         </app-chat-input>
       </div>
     </div>
@@ -334,6 +339,7 @@
           [streamingMessageId]="streamingMessageId()"
           [feedbackAgent]="feedbackAgent()"
           [sessionId]="sessionId()"
+          [allowDownload]="citationsDownloadAllowed()"
           (continueRequested)="continueRequested.emit()" />
       </div>
     </div>
@@ -344,13 +350,11 @@
       [class.sidenav-expanded]="!isSidenavCollapsed()"
       [class.artifact-pane-open]="artifactPanelOpen()">
       <div class="mx-auto px-4 max-w-[720px]">
-        <div class="flex justify-end pb-1 pr-[10px]">
-          <app-session-cost-badge />
-        </div>
         <app-chat-input
           [showAnnouncements]="showAnnouncements()"
           [announcementPlacement]="announcementPlacement()"
           [sessionId]="sessionId()"
+          [draftKey]="draftKey()"
           [isChatLoading]="isChatLoading()"
           [showFileControls]="resolvedConfig().showFileControls"
           [showVoiceControl]="resolvedConfig().showVoiceControl"
@@ -358,6 +362,9 @@
           (messageCancelled)="onMessageCancelled()"
           (fileAttached)="onFileAttached($event)"
 >
+          <!-- Cost + context, sharing the composer's meta row with the quota
+               tab; unpinned so it follows the viewed session. -->
+          <app-session-cost-badge composerMeta class="pb-1" />
         </app-chat-input>
       </div>
     </div>

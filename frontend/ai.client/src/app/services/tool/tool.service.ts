@@ -40,6 +40,8 @@ export interface ServerTool {
   description?: string | null;
   needsApproval?: boolean;
   enabled: boolean;
+  /** An admin pinned this individual tool: always on, not user-togglable. */
+  alwaysOn?: boolean;
 }
 
 /**
@@ -53,10 +55,28 @@ export interface Tool {
   icon: string | null;
   protocol: ToolProtocol;
   status: ToolStatus;
+  /**
+   * What to do instead of this tool, set by an admin on a non-`active` tool
+   * (e.g. 'Replaced by Canvas for Faculty'). Absent on an older backend and on
+   * every active tool, so every consumer must treat it as optional.
+   */
+  retirementNote?: string | null;
+  /** ISO date (YYYY-MM-DD) this tool stops working. Same optionality. */
+  retiresOn?: string | null;
   grantedBy: string[];
   enabledByDefault: boolean;
   userEnabled: boolean | null;
   isEnabled: boolean;
+  /**
+   * An admin pinned this tool: the backend unions it into every turn and the
+   * picker must render it locked. Optional on the wire so an older backend
+   * (which omits it) reads `undefined` -> falsy, i.e. today's unlocked toggle
+   * — see docs/specs/admin-always-on-tools.md §10.1.
+   *
+   * Already scoped to THIS user: the backend only sets it when the caller's
+   * roles grant the tool, because always-on enables and never grants.
+   */
+  alwaysOn?: boolean;
   /**
    * OAuth provider this tool needs the user to connect before it will work,
    * or null/absent when it needs no per-user consent. Mirrors the catalog's
@@ -68,6 +88,73 @@ export interface Tool {
    * non-MCP tools or servers whose tools are discovered live.
    */
   serverTools?: ServerTool[];
+}
+
+/**
+ * An administrator has marked this tool non-`active` — it is being retired and
+ * must not be newly enabled. Existing selections are untouched: the backend
+ * still grants it, still builds its client, and an Agent that binds it still
+ * runs. This is a picker rule, never an access decision
+ * (docs/specs/mcp-server-retirement.md §7).
+ *
+ * Absent/unknown `status` reads as active, so an older backend leaves every
+ * tool freely togglable — i.e. today's behaviour.
+ */
+export function isRetiring(tool: Pick<Tool, 'status'>): boolean {
+  return typeof tool.status === 'string' && tool.status !== 'active';
+}
+
+/** The retirement facts a picker needs, however the surface happens to carry them. */
+export interface RetirementInfo {
+  retirementNote?: string | null;
+  retiresOn?: string | null;
+}
+
+/**
+ * Render an ISO `retiresOn` for a human, or `null` if it is absent or unparseable.
+ *
+ * Parsed as UTC noon rather than `new Date('2026-10-31')`, which is midnight UTC
+ * and prints as the day *before* for anyone west of Greenwich — which is
+ * everyone here. A retirement date that reads a day early is the one kind of
+ * wrong that would actually cost someone.
+ */
+export function formatRetiresOn(retiresOn?: string | null): string | null {
+  if (!retiresOn) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(retiresOn);
+  if (!m) return null;
+  const [y, mo, day] = [+m[1], +m[2], +m[3]];
+  const d = new Date(Date.UTC(y, mo - 1, day, 12));
+  if (Number.isNaN(d.getTime())) return null;
+  // `Date.UTC` ROLLS OVER rather than failing: 2026-13-45 becomes February 2027,
+  // which would render as a confident, wrong retirement date. The backend
+  // validator rejects that shape, but an older row or a hand-edited DynamoDB
+  // item can still carry it, so re-read the parts and insist they match.
+  if (d.getUTCFullYear() !== y || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== day) {
+    return null;
+  }
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+/**
+ * The one sentence every retirement surface appends after its own lead-in.
+ *
+ * Four shapes, because both fields are independently optional and the sentence
+ * has to stay grammatical in all of them — this exists so the Customize card,
+ * the detail page, the Designer notice and the schedule form cannot drift into
+ * four different phrasings of the same fact.
+ *
+ * Deliberately says nothing when both are absent: an admin who set neither has
+ * told us nothing, and "no replacement is available" is a claim we would be
+ * inventing on their behalf.
+ */
+export function retirementDetail(info: RetirementInfo): string {
+  const when = formatRetiresOn(info.retiresOn);
+  // Admins punctuate or don't; strip a trailing stop so we never render "X..".
+  const note = info.retirementNote?.trim().replace(/[.\s]+$/, '') || null;
+  if (note && when) return `${note}. It stops working on ${when}.`;
+  if (note) return `${note}.`;
+  if (when) return `It stops working on ${when}.`;
+  return '';
 }
 
 /**
@@ -307,6 +394,16 @@ export class ToolService {
     if ((options?.respectAgentLock ?? true) && this._agentLockedToolIds() !== null) return;
     const tool = this._tools().find(t => t.toolId === toolId);
     if (!tool) return;
+    // Admin-pinned: the backend unions it in regardless, so a toggle here
+    // could only produce a picker that disagrees with the turn. The UI renders
+    // the control disabled; this is the guard behind it, for the keyboard and
+    // programmatic paths that never see a disabled attribute.
+    if (tool.alwaysOn) return;
+    // Retiring: an administrator has marked it non-`active`. It can be turned
+    // OFF but not ON, so a user who already has it keeps it while nobody new
+    // picks it up. Same backstop role as the guard above — the UI disables the
+    // control in that one direction. See docs/specs/mcp-server-retirement.md §7.
+    if (isRetiring(tool) && !tool.isEnabled) return;
 
     const subs = tool.serverTools ?? [];
     const newState = !tool.isEnabled;
@@ -316,6 +413,11 @@ export class ToolService {
       // so the new state wins over any lingering per-tool preference.
       const prefs: Record<string, boolean> = { [toolId]: newState };
       for (const s of subs) {
+        // A pinned tool of an otherwise-togglable server stays on when the
+        // user switches the server off. Sending `false` for it would be
+        // dropped by the backend guard anyway (D6) — not sending it keeps the
+        // picker's optimistic state and the saved state in agreement.
+        if (s.alwaysOn) continue;
         prefs[makeScopedToolId(toolId, s.name)] = newState;
       }
       this._tools.update(tools =>
@@ -323,9 +425,14 @@ export class ToolService {
           t.toolId === toolId
             ? {
                 ...t,
-                isEnabled: newState,
+                // A server with a pinned tool is still effectively on: the
+                // row's state is "any tool enabled", and one of them cannot
+                // be turned off.
+                isEnabled: newState || subs.some(s => s.alwaysOn),
                 userEnabled: newState,
-                serverTools: (t.serverTools ?? []).map(s => ({ ...s, enabled: newState })),
+                serverTools: (t.serverTools ?? []).map(s =>
+                  s.alwaysOn ? s : { ...s, enabled: newState }
+                ),
               }
             : t
         )
@@ -373,6 +480,14 @@ export class ToolService {
     const tool = this._tools().find(t => t.toolId === toolId);
     const sub = tool?.serverTools?.find(s => s.name === name);
     if (!tool || !sub) return;
+    // Pinned individually, or by the whole server being pinned.
+    if (sub.alwaysOn || tool.alwaysOn) return;
+    // Retiring, and the server is entirely off: turning one of its tools on
+    // would be adopting the server. Gated on the SERVER's state, not the
+    // sub-tool's, because access — and retirement — are properties of the
+    // server (`can_access_tool` keys on the base id). Narrowing a server the
+    // user already has stays open.
+    if (isRetiring(tool) && !tool.isEnabled) return;
 
     const newState = !sub.enabled;
 

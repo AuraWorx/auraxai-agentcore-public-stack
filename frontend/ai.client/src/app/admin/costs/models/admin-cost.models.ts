@@ -45,6 +45,82 @@ export interface SystemCostSummary {
 
 // ========== Model Usage Summary ==========
 
+/** One AWS service's cost for a period, as Cost Explorer reported it. */
+export interface PlatformServiceCost {
+  serviceName: string;
+  cost: number;
+  /**
+   * `platform` — infrastructure this platform causes (ECS, AgentCore, NAT…).
+   * `inference` — per-token model SKUs; reconciliation only, never summed
+   *               into a total (our own ledger is the source for those).
+   * `excluded`  — another team's resources in the same account, plus
+   *               account-level charges no single application causes
+   *               (Support, the Control Tower governance baseline).
+   *               Returned rather than filtered so an operator can see what
+   *               was held out of the total they are being shown.
+   */
+  category: 'platform' | 'inference' | 'excluded';
+  /** Share of the PLATFORM subtotal, not of the grand total. */
+  percentageOfPlatform: number;
+}
+
+/**
+ * All-in platform cost for a period.
+ *
+ * Mirrors `PlatformCostSummary` in
+ * backend/src/apis/app_api/admin/costs/models.py — a breaking change to
+ * either needs both in the same PR.
+ *
+ * `inferenceCost` comes from our own per-user ledger; `platformCost` comes
+ * from Cost Explorer. `ceInferenceCost` is Cost Explorer's own figure for the
+ * model SKUs and exists ONLY to reconcile the two — it is never added to a
+ * total, and a widening `reconciliationDeltaPercent` means our pricing tables
+ * have drifted from what AWS actually charged.
+ */
+export interface PlatformCostSummary {
+  period: string;
+  /**
+   * False when the daily sync has never run for this period — the feature is
+   * opt-in per environment. Render an explanation, never a zero: "$0.00
+   * platform cost" reads as "the infrastructure is free".
+   */
+  available: boolean;
+
+  inferenceCost: number;
+  platformCost: number;
+  totalCost: number;
+  excludedCost: number;
+
+  platformSharePercent: number;
+
+  activeUsers: number;
+  costPerUser: number;
+  inferenceCostPerUser: number;
+  platformCostPerUser: number;
+
+  ceInferenceCost: number;
+  reconciliationDelta: number;
+  reconciliationDeltaPercent: number;
+
+  services: PlatformServiceCost[];
+
+  /**
+   * `deployment` — filtered to this stack's own resources via its `Project`
+   * tag. `account` — the tag is not activated in the payer account, so these
+   * figures cover everything in the account: a ceiling, not an attribution.
+   * Always label which one the reader is looking at.
+   */
+  scope: 'deployment' | 'account';
+  projectTag: string | null;
+
+  partialMonth: boolean;
+  coverageStart: string | null;
+  coverageEnd: string | null;
+  accountId: string | null;
+  currency: string;
+  syncedAt: string | null;
+}
+
 export interface ModelUsageSummary {
   modelId: string;
   modelName: string;

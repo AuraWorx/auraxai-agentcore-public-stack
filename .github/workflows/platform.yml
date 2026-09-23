@@ -19,6 +19,10 @@ on:
       - 'scripts/platform/**'
       # fetch-dcv-sdk.sh runs in THIS workflow, before synth.
       - 'scripts/build/**'
+      # recover-evicted-deploy.sh runs in THIS workflow. A change to the
+      # guard that re-dispatches an evicted peer deploy must itself be
+      # exercised by a real run.
+      - 'scripts/ci/**'
       - '.github/workflows/platform.yml'
 
 permissions:
@@ -30,15 +34,68 @@ env:
 
 # Shared "deploy-<ref>" group with backend.yml so a CFN deploy and the
 # API-driven backend code deploys never mutate the same ECS service /
-# AgentCore Runtime / Lambda concurrently — they queue instead.
+# AgentCore Runtime / Lambda concurrently.
 # cancel-in-progress: false avoids leaving CloudFormation in
 # ROLLBACK_IN_PROGRESS / UPDATE_ROLLBACK_FAILED after a mid-deploy cancel.
-# Enforced by tests/supply_chain/test_concurrency_config.py.
+#
+# ⚠️ This group does NOT queue. It is a latch with a queue depth of one:
+# "any existing pending job or workflow in the same concurrency group will
+# be canceled and the new queued job or workflow will take its place." A
+# third run entering an occupied group therefore KILLS the run that was
+# waiting, with zero jobs executed and a `cancelled` conclusion that looks
+# exactly like a human cancel. One merge is enough — a commit touching both
+# infrastructure/ and backend/ starts two runs that compete with each other
+# and with the previous merge's still-running deploy.
+#
+# Losing a pending run is harmless when a LATER run of the SAME workflow
+# supersedes it, and silently skips a CDK deploy when the evictor is
+# backend.yml. The `recover-evicted-peer` job below closes that gap; do not
+# remove it while this group is shared.
+# Enforced by backend/tests/supply_chain/test_concurrency_config.py.
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # Recover a peer deploy that GitHub silently evicted from the shared
+  # "deploy-<ref>" concurrency group when THIS run claimed the pending slot.
+  # A concurrency group is a latch with a queue depth of ONE, not a queue:
+  # "any existing pending job or workflow in the same concurrency group will
+  # be canceled and the new queued job or workflow will take its place." So a
+  # third run entering an occupied group kills whichever run was waiting,
+  # before it executes a single job, leaving a `cancelled` conclusion that is
+  # indistinguishable from a human pressing Cancel.
+  #
+  # That is harmless when the evicted run is superseded by a LATER run of the
+  # SAME workflow (both deploy the tree at HEAD, and git is cumulative). It is
+  # destructive across workflows: a Backend Deploy run does not run
+  # `cdk deploy`, so when it evicts a pending Platform Stack run the
+  # infrastructure change is simply never applied and CI stays green.
+  #
+  # No `needs`, so the recovery dispatch goes out at the top of the run rather
+  # than behind the deploy it is unrelated to. The re-dispatched run queues
+  # behind this one, so the concurrency guarantee is preserved.
+  # See scripts/ci/recover-evicted-deploy.sh.
+  # Enforced by backend/tests/supply_chain/test_concurrency_config.py.
+  recover-evicted-peer:
+    name: Recover evicted peer deploy
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+      # `gh workflow run` re-dispatches the peer workflow.
+      actions: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect and recover an evicted Backend Deploy run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/recover-evicted-deploy.sh backend.yml
+
   test-infra:
     name: Test infrastructure (jest)
     permissions:
@@ -119,6 +176,11 @@ jobs:
       CDK_COGNITO_CALLBACK_URLS: ${{ vars.CDK_COGNITO_CALLBACK_URLS }}
       CDK_COGNITO_LOGOUT_URLS: ${{ vars.CDK_COGNITO_LOGOUT_URLS }}
       CDK_COGNITO_SUPPORTED_IDPS: ${{ vars.CDK_COGNITO_SUPPORTED_IDPS }}
+      # Public "Sign up" link on the Cognito Hosted UI. Unset/empty means
+      # CLOSED — users arrive via a federated IdP or an administrator creates
+      # them. Set to "true" only for an environment that wants open public
+      # registration. Federated sign-in works either way.
+      CDK_COGNITO_SELF_SIGNUP_ENABLED: ${{ vars.CDK_COGNITO_SELF_SIGNUP_ENABLED }}
       CDK_ARTIFACTS_CERTIFICATE_ARN: ${{ vars.CDK_ARTIFACTS_CERTIFICATE_ARN }}
       # Extra origins allowed to frame the artifacts iframe via CSP
       # frame-ancestors (beyond the deployed SPA origin) — e.g.
@@ -205,6 +267,13 @@ jobs:
       # `CDK_AGENTS_API_ENABLED` variable to "true" in an environment (e.g. dev)
       # to enable it there for dogfooding.
       CDK_AGENTS_API_ENABLED: ${{ vars.CDK_AGENTS_API_ENABLED }}
+      # Platform cost sync from AWS Cost Explorer (docs/specs/platform-cost-visibility.md).
+      # Default OFF (opt-in): only the literal "true" enables it. Unset resolves
+      # to empty string, which config.ts treats as "not set" and falls back to
+      # the `platformCosts.enabled` cdk.json context (itself default off). Set
+      # the `CDK_PLATFORM_COSTS_ENABLED` variable to "true" in an environment to
+      # deploy the daily sync Lambda there.
+      CDK_PLATFORM_COSTS_ENABLED: ${{ vars.CDK_PLATFORM_COSTS_ENABLED }}
       # MCP user-identity forwarding — optional Cognito Pre-Token-Generation v2
       # Lambda that copies user attributes into access-token claims so
       # personalized MCP tools can identify the caller

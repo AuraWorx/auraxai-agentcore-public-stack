@@ -1,6 +1,6 @@
 ---
 name: kaizen-research
-description: Weekly Friday early-morning external + internal scan for emerging functionality, agentic trends, tools, and feature/UX improvements in the AgentCore Public Stack repo. Tracks AWS Bedrock + AgentCore announcements, Strands Agents releases, FastMCP (used by externally hosted MCP servers), the aws-samples/sample-strands-agent-with-agentcore reference repo, the MCP ecosystem (including MCP Apps + extensions), frontier model announcements, agent-harness patterns (including opencode (anomalyco/opencode) as an open-source coding-agent harness reference scanned through tooling, cost-effectiveness, and context-engineering lenses — releases-first, light touch), agentic UI/UX patterns (MCP Apps, Vercel AI SDK, assistant-ui, NN/g AI research, Linear/Cursor/Anthropic product blogs), and LibreChat as a parallel open-source agentic-platform reference (releases-first, light touch). Audits internal signals (recent commits, open PRs, CI failures, version-pin lag, dormant skills). Outputs a dated research doc + queues ideas in `docs/kaizen/review-queue.md` for that same morning's `kaizen-review-prep` (runs ~2 hours later) to rank into decisions. Opens a PR into `develop`. **Out of scope**: security advisories / Dependabot / CodeQL — those have dedicated tooling and don't need a weekly kaizen lens. Triggers: "kaizen research", "weekly research scan", "external scan", "what should we look at this week".
+description: Weekly Friday early-morning external + internal scan for emerging functionality, agentic trends, tools, and feature/UX improvements in the AgentCore Public Stack repo. Tracks AWS Bedrock + AgentCore announcements, Strands Agents releases, FastMCP (used by externally hosted MCP servers), the aws-samples/sample-strands-agent-with-agentcore reference repo, the MCP ecosystem (including MCP Apps + extensions), frontier model announcements, agent-harness patterns (including opencode (anomalyco/opencode) as an open-source coding-agent harness reference scanned through tooling, cost-effectiveness, and context-engineering lenses — releases-first, light touch), agentic UI/UX patterns (MCP Apps, Vercel AI SDK, assistant-ui, NN/g AI research, Linear/Cursor/Anthropic product blogs), and LibreChat as a parallel open-source agentic-platform reference (releases-first, light touch). Audits internal signals (recent commits, open PRs, CI failures, version-pin lag, dormant skills). Outputs a dated research doc + queues ideas in `docs/kaizen/review-queue.md` for that same morning's `kaizen-review-prep` (runs ~4 hours later) to rank into decisions. Opens a PR into `develop`. **Out of scope**: security advisories / Dependabot / CodeQL — those have dedicated tooling and don't need a weekly kaizen lens. Triggers: "kaizen research", "weekly research scan", "external scan", "what should we look at this week".
 ---
 
 # Kaizen Research
@@ -18,7 +18,7 @@ Friday early morning. The "what's the rest of the world learning that we should 
 
 ## When to run
 
-Friday early morning (~6am MT). `kaizen-review-prep` runs ~2 hours later (~8am MT) so both docs are waiting when Phil sits down Friday morning. Phil reviews, picks 1–3 to ship over the coming week, and POCs additional items over the weekend. Last weekend's POC findings surface in *this* run's review-prep as Carried Over items (lifted from comments on the previous week's research PR).
+Friday early morning (~6am MT). `kaizen-review-prep` runs ~4 hours later (~10am MT), a gap sized to this scan's own runtime (2h18m on 2026-09-11) rather than to the 2 hours the two skills used to claim — on 2026-09-18 the prep ran 18 minutes after this scan started and produced a review with no research doc. Both docs are waiting when Phil sits down Friday late morning; he reviews, picks 1–3 to ship over the coming week, and the *outcomes* of those picks are what review-prep reads the following Friday.
 
 ## Sources
 
@@ -436,8 +436,7 @@ gh pr create --base develop --head "$BRANCH" \
 
 ## Review
 - Read the research doc.
-- Comment on the PR with reactions and any weekend POC findings — these become first-class signal for *next* Friday's `kaizen-review-prep`.
-- POC promising ideas over the weekend.
+- Ship, decline or defer individual ideas in their own PRs — a merged PR is the signal `kaizen-review-prep` reads next Friday. Deep analysis belongs in a `docs/kaizen/review-queue.md` entry on the PR branch that produced it, where the next review will find it.
 
 ## Decision
 Ship the doc to `develop`. Ranking into decisions happens in the kaizen-review-prep PR opened later this morning. Action on individual ideas happens in separate PRs the following week.

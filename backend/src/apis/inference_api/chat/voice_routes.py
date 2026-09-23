@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from apis.shared.sessions.metadata import get_session_metadata, store_session_metadata
+from apis.shared.tools.always_on import union_enabled_tools
 from apis.shared.sessions.models import SessionMetadata
 
 logger = logging.getLogger(__name__)
@@ -72,14 +73,63 @@ def _extract_user_from_token(token: str) -> Optional[Dict[str, str]]:
         user_id = payload.get("sub")
         if not user_id:
             return None
+        # Same claim precedence as `get_current_user_trusted`: Cognito groups
+        # first, then a plain `roles` claim, normalised to a list. Voice needs
+        # these to resolve RBAC at all — without them a `User` would carry no
+        # roles and `resolve_user_permissions` would fall back to the `default`
+        # role, which is a *substitute* for matching nothing, not a baseline
+        # everyone shares. Resolving against it would answer a different
+        # question than "what may this caller use?".
+        roles = payload.get("cognito:groups") or payload.get("roles", [])
+        if isinstance(roles, str):
+            roles = [roles]
         return {
             "user_id": str(user_id),
             "email": payload.get("email") or payload.get("preferred_username") or "",
+            "roles": list(roles),
             "raw_token": token,
         }
     except jwt.DecodeError as e:
         logger.warning(f"Failed to decode voice auth token: {e}")
         return None
+
+
+async def _always_on_tool_ids_for_voice(
+    auth_token: str, user_id: str
+) -> list:
+    """The admin-pinned tool ids this voice connection is entitled to.
+
+    Voice is in scope for always-on (docs/specs/admin-always-on-tools.md §7
+    D5) but reaches the agent by its own path: a WebSocket that cannot use
+    `Depends()`, so there is no `User` in hand the way there is on
+    `/invocations`.
+
+    RBAC is resolved from the caller's roles, so one is rebuilt here from the
+    connection's token using the same claims `get_current_user_trusted` reads.
+
+    **Fails closed to today's behaviour.** With no token — or a token that
+    carries no `sub` — nothing is pinned, rather than guessing with an empty
+    role list: that would resolve the `default` role's grant, which is not the
+    caller's. Losing a pinned tool on a voice turn is a downgrade; pinning
+    against the wrong grant set would be a correctness bug.
+    """
+    if not auth_token:
+        logger.info("Voice connection has no token; not resolving always-on tools")
+        return []
+    user_info = _extract_user_from_token(auth_token)
+    if not user_info:
+        return []
+    from apis.shared.auth.models import User
+    from apis.shared.tools.always_on import resolve_always_on_tool_ids
+
+    user = User(
+        email=user_info.get("email", ""),
+        name="",
+        user_id=user_info.get("user_id") or user_id,
+        roles=user_info.get("roles") or [],
+        raw_token=auth_token,
+    )
+    return await resolve_always_on_tool_ids(user)
 
 
 async def _ensure_session_metadata(session_id: str, user_id: str) -> None:
@@ -356,9 +406,17 @@ async def voice_stream(
         await websocket.close(code=4001, reason="Authentication required")
         return
 
+    # Admin-pinned tools reach voice too (D5). Resolved BEFORE the connection
+    # log below, because that log is the first thing anyone reads when
+    # debugging a voice toolset — emitting it ahead of the union made it
+    # under-report by exactly the tools this feature adds.
+    always_on_ids = await _always_on_tool_ids_for_voice(auth_token, user_id)
+    enabled_tools_list = union_enabled_tools(enabled_tools_list, always_on_ids)
+
     logger.info(
         f"Voice WebSocket connected: session={_sanitize_log(session_id)}, "
         f"user={_sanitize_log(user_id)}, tools={len(enabled_tools_list or [])}, "
+        f"pinned={len(always_on_ids)}, "
         f"auth_token={'present' if auth_token else 'missing'}"
     )
 

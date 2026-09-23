@@ -150,6 +150,15 @@ export class ChatContainerComponent {
   sessionId = input<string | null>(null);
 
   // Optional inputs
+
+  /**
+   * Conversation key for composer draft persistence, forwarded to
+   * `app-chat-input` untouched. Null (the default) means this placement
+   * remembers nothing — see the input's own note for why it is not
+   * `sessionId`.
+   */
+  draftKey = input<string | null>(null);
+
   assistant = input<Assistant | null>(null);
 
   /**
@@ -243,6 +252,15 @@ export class ChatContainerComponent {
 
   // Computed signals
   protected readonly hasMessages = computed(() => this.messages().length > 0);
+  /**
+   * #111: whether the active agent permits source-document download from citations.
+   * Read from the Agent shape first (the Designer surface), falling back to the legacy
+   * Assistant shape, defaulting true so existing agents behave exactly as before.
+   * Passed to <app-message-list> → the citation card to hide its download button.
+   */
+  protected readonly citationsDownloadAllowed = computed(
+    () => this.agent()?.allowDocumentDownload ?? this.assistant()?.allowDocumentDownload ?? true,
+  );
   protected readonly showSkeleton = computed(
     () => this.isLoadingSession() && !this.hasMessages()
   );

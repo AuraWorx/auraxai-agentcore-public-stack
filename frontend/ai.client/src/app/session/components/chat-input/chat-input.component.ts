@@ -32,6 +32,7 @@ import { StorageQuotaBannerComponent } from '../../../components/storage-quota-b
 import { SpinnerComponent } from '../../../components/spinner/spinner.component';
 import {
   FileUploadService,
+  FileMetadata,
   PendingUpload,
   ALLOWED_EXTENSIONS,
   maxFileSizeFor,
@@ -56,6 +57,12 @@ import {
 import { SkillCommandMenuComponent } from './skill-command-menu.component';
 import { SteeringService } from '../../services/chat/steering.service';
 import { ComposerDraftService } from '../../services/session/composer-draft.service';
+import {
+  ComposerDraftStorageService,
+  EMPTY_DRAFT,
+  StoredAttachment,
+  StoredComposerDraft,
+} from '../../services/session/composer-draft-storage.service';
 
 // Must stay in sync with the inline min-height/max-height on the textarea in
 // chat-input.component.html.
@@ -111,6 +118,16 @@ interface QueuedMessage {
   id: string;
   content: string;
   fileUploadIds?: string[];
+  /**
+   * Display metadata for `fileUploadIds`, captured at queue time.
+   *
+   * Queueing releases the composer's attachments so the next follow-up can
+   * attach its own, which means the ids on this entry outlive the only two
+   * places their filename and size could be read from. Without this copy a
+   * queued question restored after a reload comes back without the file it
+   * was about.
+   */
+  attachments?: StoredAttachment[];
   mentionAgentId?: string;
   invokedSkillIds?: string[];
   /**
@@ -132,6 +149,51 @@ interface QueuedMessage {
 interface MentionToken {
   query: string;
   start: number;
+}
+
+/**
+ * A restored card back into the shape storage keeps.
+ *
+ * The composer holds restored attachments as `FileMetadata` — the card's own
+ * server-side shape — so the template binds them directly instead of mapping
+ * on every change detection pass. Only the four display fields are stored;
+ * `s3Uri`, `createdAt` and `status` come back from the reconcile, and nothing
+ * reads them before it lands.
+ */
+function toStoredAttachment(file: FileMetadata): StoredAttachment {
+  return {
+    uploadId: file.uploadId,
+    filename: file.filename,
+    mimeType: file.mimeType,
+    sizeBytes: file.sizeBytes,
+  };
+}
+
+/** The cached half of a `FileMetadata`, good enough to paint a card with. */
+function toFileMetadata(attachment: StoredAttachment, sessionId: string): FileMetadata {
+  return {
+    uploadId: attachment.uploadId,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    sessionId,
+    s3Uri: '',
+    status: 'ready',
+    createdAt: '',
+  };
+}
+
+/**
+ * First mention of each upload id wins, so an attachment held by both the
+ * composer and a queued follow-up is stored (and restored) once.
+ */
+function dedupeAttachments(attachments: StoredAttachment[]): StoredAttachment[] {
+  const seen = new Set<string>();
+  return attachments.filter(attachment => {
+    if (seen.has(attachment.uploadId)) return false;
+    seen.add(attachment.uploadId);
+    return true;
+  });
 }
 
 @Component({
@@ -160,6 +222,7 @@ export class ChatInputComponent {
   private readonly toastService = inject(ToastService);
   private readonly steering = inject(SteeringService);
   private readonly composerDraft = inject(ComposerDraftService);
+  private readonly draftStorage = inject(ComposerDraftStorageService);
   private readonly toolService = inject(ToolService);
   private readonly voiceChatService = inject(VoiceChatService);
   protected readonly systemPromptsService = inject(SystemPromptsService);
@@ -211,6 +274,22 @@ export class ChatInputComponent {
    */
   readonly announcementPlacement = input<'above' | 'below'>('above');
 
+  /**
+   * Which conversation's unsent text this composer parks and takes back, or
+   * `null` (the default) to remember nothing.
+   *
+   * Deliberately not `sessionId`. That input is the id file uploads attach
+   * to, which a new conversation mints the moment a file is staged — keying
+   * drafts off it would blank the composer the instant someone attached a
+   * file to text they had already typed. The container passes the *route*
+   * conversation, or `NEW_CONVERSATION_DRAFT_KEY` for one not yet sent.
+   *
+   * Opt-in rather than opt-out, unlike the `show*` controls above: an
+   * embedded preview pane is a throwaway, and text left in one should not
+   * come back the next time it is opened.
+   */
+  readonly draftKey = input<string | null>(null);
+
   private readonly messageInput = viewChild<ElementRef<HTMLTextAreaElement>>('messageInput');
 
   // Use the input directly - parent controls loading state
@@ -242,6 +321,26 @@ export class ChatInputComponent {
   /** Whether a turn has been observed in flight since the last queue flush. */
   private turnInFlight = false;
 
+  /**
+   * The draft key this composer is currently mirroring, or `undefined` before
+   * it has adopted one.
+   *
+   * The three states are distinct and all load-bearing: `undefined` means
+   * there is no outgoing draft to park (first mount), `null` means
+   * persistence is off for this placement, and a string is a conversation
+   * whose text must be written back before the composer adopts another's.
+   */
+  private mirroredDraftKey: string | null | undefined = undefined;
+
+  /**
+   * An `@`-mention restored from a draft, waiting for the candidate list to
+   * load so it can be re-bound to a current row. Cleared on the first resolve
+   * attempt with a non-empty list — a hit binds, a miss drops it, and both are
+   * final so a later list change cannot resurrect a mention the user has since
+   * removed.
+   */
+  private readonly pendingMentionAgentId = signal<string | null>(null);
+
   // Output events
   fileAttached = output<File>();
   messageSubmitted = output<Message>();
@@ -252,8 +351,40 @@ export class ChatInputComponent {
   readonly hasActivePendingUploads = this.fileUploadService.hasActivePendingUploads;
   readonly readyUploadIds = this.fileUploadService.readyUploadIds;
 
+  /**
+   * Files attached in an earlier visit to this conversation, rebuilt from the
+   * stored draft.
+   *
+   * Metadata, not an upload: the bytes are already in S3 and the id is all the
+   * send needs, so there is nothing to re-upload and no `File` to hold. They
+   * render through `app-file-card`'s existing `[file]` input — the same shape
+   * the file browser passes it — which is why restoring one costs no changes
+   * to the card.
+   *
+   * Painted straight from storage so the cards are there on first frame, then
+   * reconciled against the server (see `reconcileRestoredAttachments`), which
+   * is what makes a stale or hand-edited id disappear instead of failing at
+   * send time.
+   */
+  readonly restoredAttachments = signal<FileMetadata[]>([]);
+
+  /**
+   * Every upload id this message would carry: restored first, then the ones
+   * uploaded in this sitting, so the order matches the order they were
+   * attached. Both send paths read this rather than `readyUploadIds`, or a
+   * restored attachment would show a card and then not travel.
+   */
+  readonly attachmentIds = computed(() => [
+    ...new Set([
+      ...this.restoredAttachments().map(attachment => attachment.uploadId),
+      ...this.readyUploadIds(),
+    ]),
+  ]);
+
   // Computed: show file attachments area
-  readonly showFileAttachments = computed(() => this.pendingUploads().length > 0);
+  readonly showFileAttachments = computed(
+    () => this.pendingUploads().length > 0 || this.restoredAttachments().length > 0,
+  );
 
   /**
    * Whether a follow-up typed right now could land *inside* the running turn.
@@ -408,7 +539,7 @@ export class ChatInputComponent {
   // Computed: can submit (has content or ready files)
   readonly canSubmit = computed(() => {
     const hasText = this.userInput().trim().length > 0;
-    const hasReadyFiles = this.readyUploadIds().length > 0;
+    const hasReadyFiles = this.attachmentIds().length > 0;
     const isUploading = this.hasActivePendingUploads();
     return (hasText || hasReadyFiles) && !isUploading;
   });
@@ -598,7 +729,12 @@ export class ChatInputComponent {
     });
 
     // Focus the textarea on first mount...
-    afterNextRender(() => this.focusInput());
+    // ...and size it, because a draft restored before the view existed set the
+    // signal but had no element to grow.
+    afterNextRender(() => {
+      this.focusInput();
+      this.sizeTextareaTo(untracked(this.userInput));
+    });
     // ...and whenever the session changes (new or existing). When switching
     // between sessions in the messages view the component instance is reused,
     // so afterNextRender alone would not refocus.
@@ -614,6 +750,45 @@ export class ChatInputComponent {
         this.hintStep.set(0);
         this.hintsSettled.set(false);
       }
+    });
+
+    // Park the composer's unsent text under its conversation, and take back
+    // whatever was parked when the user returns to one.
+    //
+    // A single effect over both signals, because the two cases have to be
+    // told apart: when only the text changed, mirror it; when the
+    // conversation changed, the text still belongs to the one being left, so
+    // it is written *there* before this composer adopts the new one's draft.
+    // Keying the write off the incoming conversation instead would file one
+    // thread's half-written question under another's.
+    //
+    // Every path that empties the composer — send, queue-as-follow-up, the
+    // user deleting it — flows through `userInput` and so forgets the draft
+    // without naming it, which is why none of those call sites mention
+    // persistence at all.
+    effect(() => {
+      const key = this.draftKey();
+      const draft = this.composerDraftSnapshot();
+      untracked(() => this.syncDraft(key, draft));
+    });
+
+    // Re-bind a restored `@`-mention once the candidate list arrives.
+    //
+    // The draft stores the Agent's id, not the row: a name, icon or tagline
+    // that changed since the draft was written must come back current, and an
+    // Agent that was deleted or unshared must come back not at all rather than
+    // as a stale row the send would reject. The list loads lazily, so this
+    // waits for it instead of resolving at adopt time — `pendingMentionAgentId`
+    // is what holds the intent across that gap.
+    effect(() => {
+      const candidates = this.mentionService.mentionable();
+      const wanted = this.pendingMentionAgentId();
+      if (!wanted || candidates.length === 0) return;
+      const match = candidates.find(agent => agent.agentId === wanted);
+      untracked(() => {
+        this.pendingMentionAgentId.set(null);
+        if (match) this.mentionedAgent.set(match);
+      });
     });
 
     // A feature (today: the feedback retry-with-correction) can hand this
@@ -708,7 +883,16 @@ export class ChatInputComponent {
       // stays visible and removable rather than being fired into a rejection.
       this.turnInFlight = false;
       this.queuedMessages.set(rest);
-      this.messageSubmitted.emit({ ...next, timestamp: new Date() });
+      // Built field by field rather than spread: the entry also carries queue
+      // bookkeeping (`id`, `armed`, cached attachment metadata) that is ours,
+      // not the conversation's.
+      this.messageSubmitted.emit({
+        content: next.content,
+        timestamp: new Date(),
+        fileUploadIds: next.fileUploadIds,
+        mentionAgentId: next.mentionAgentId,
+        invokedSkillIds: next.invokedSkillIds,
+      });
     });
   }
 
@@ -716,6 +900,167 @@ export class ChatInputComponent {
     if (this.autoFocus()) {
       this.messageInput()?.nativeElement.focus();
     }
+  }
+
+  /**
+   * Everything about the composer worth coming back to, as one value the
+   * persistence effect can depend on.
+   *
+   * **Only unarmed follow-ups are captured.** An armed entry is one the
+   * backend has confirmed it holds against the running turn, so the user's
+   * words are already delivered and restoring them would be the duplicate;
+   * an unarmed one has no such confirmation and dies with this component, so
+   * it is the one actually at risk. Between those two the ambiguous case —
+   * armed while the arm request was still in flight — resolves as a visible
+   * duplicate rather than a silent loss, which is the same trade the queue
+   * itself makes (see `QueuedMessage.armed`).
+   */
+  private composerDraftSnapshot(): StoredComposerDraft {
+    const queuedEntries = this.queuedMessages().filter(entry => !entry.armed);
+    const attachments = [
+      ...this.attachmentMetadata(),
+      // A queued follow-up carries its own attachments; they are just as unsent
+      // as the composer's, and folding the text back without them would send
+      // the question without the file it was about.
+      ...queuedEntries.flatMap(entry => entry.attachments ?? []),
+    ];
+    return {
+      text: this.userInput(),
+      mentionAgentId: this.mentionedAgent()?.agentId ?? this.pendingMentionAgentId() ?? undefined,
+      queued: queuedEntries.map(entry => entry.content).filter(content => !!content),
+      attachments: dedupeAttachments(attachments),
+      attachmentSessionId: this.sessionId() ?? undefined,
+    };
+  }
+
+  /** Every attachment currently on the composer, in the order it will be sent. */
+  private attachmentMetadata(): StoredAttachment[] {
+    return dedupeAttachments([
+      ...this.restoredAttachments().map(toStoredAttachment),
+      ...this.fileUploadService.readyUploads().map(upload => ({
+        uploadId: upload.uploadId,
+        filename: upload.file.name,
+        mimeType: upload.file.type || 'application/octet-stream',
+        sizeBytes: upload.file.size,
+      })),
+    ]);
+  }
+
+  /**
+   * Mirror the composer into storage, or swap drafts when the conversation
+   * changed. See the effect in the constructor.
+   */
+  private syncDraft(key: string | null, draft: StoredComposerDraft): void {
+    if (key === this.mirroredDraftKey) {
+      if (key !== null) this.draftStorage.write(key, draft);
+      return;
+    }
+    // `draft` is the outgoing conversation's — park it there first. `undefined`
+    // is first mount, where there is nothing to park.
+    if (this.mirroredDraftKey) {
+      this.draftStorage.write(this.mirroredDraftKey, draft);
+      // `FileUploadService` is application-wide, so its pending list is not
+      // scoped to a conversation by itself. The line above just filed these
+      // under the conversation being left; releasing them here is what stops
+      // them following the user into the next one.
+      this.fileUploadService.clearReadyUploads();
+    }
+    this.mirroredDraftKey = key;
+    this.adoptDraft(key === null ? EMPTY_DRAFT : this.draftStorage.read(key));
+    // Write the adopted state straight back, rather than waiting for the next
+    // change. On first mount there is nothing to wait for, and a file staged
+    // from the empty-state page before this composer rendered would otherwise
+    // never be filed against the conversation at all.
+    if (key !== null) this.draftStorage.write(key, this.composerDraftSnapshot());
+  }
+
+  /**
+   * Replace the composer's contents with a conversation's remembered draft
+   * (or empty it, when that conversation has none).
+   *
+   * **Queued follow-ups come back as composer text, not as queued chips.** A
+   * chip promises the follow-up goes out when the turn ends, and after a
+   * reload there is no turn left to hang that promise on: the flush is
+   * edge-triggered on a stream this component never saw start, so a restored
+   * chip would sit there forever. Text makes no promise and loses nothing —
+   * the user presses Enter and it queues again. They land ahead of the live
+   * text because that is the order they were written in.
+   *
+   * The textarea is written directly as well as through the signal: the
+   * `[value]` binding only lands on the next change detection, and the resize
+   * below has to measure the new text, not the old.
+   */
+  private adoptDraft(draft: StoredComposerDraft): void {
+    const text = [...(draft.queued ?? []), draft.text]
+      .map(part => part.trim())
+      .filter(part => !!part)
+      .join('\n\n');
+
+    this.userInput.set(text);
+    this.mentionedAgent.set(null);
+    this.pendingMentionAgentId.set(draft.mentionAgentId ?? null);
+    if (draft.mentionAgentId) void this.mentionService.load();
+    this.closeMentionMenu();
+    this.closeSkillMenu();
+
+    this.restoredAttachments.set(
+      (draft.attachments ?? []).map(attachment =>
+        toFileMetadata(attachment, draft.attachmentSessionId ?? ''),
+      ),
+    );
+    void this.reconcileRestoredAttachments(draft.attachmentSessionId);
+
+    const textarea = this.messageInput()?.nativeElement;
+    if (textarea) textarea.value = text;
+    this.sizeTextareaTo(text);
+  }
+
+  /**
+   * Check restored attachments against the server and drop what it does not
+   * confirm.
+   *
+   * The cards are already on screen by the time this runs, which is the point:
+   * storage is a display cache so the composer paints in one frame, and this
+   * is what stops that cache outliving the truth. A file deleted from the file
+   * browser, an id left over from another account, a hand-edited entry — all
+   * resolve to nothing here and the card goes away, rather than travelling
+   * with the send and silently resolving to no file server-side.
+   *
+   * Failure is deliberately a no-op: the listing is owner-scoped and the send
+   * re-checks ownership anyway, so a network blip should leave the user's
+   * attachments on screen rather than quietly stripping them.
+   */
+  private async reconcileRestoredAttachments(sessionId: string | undefined): Promise<void> {
+    const wanted = new Set(untracked(this.restoredAttachments).map(a => a.uploadId));
+    if (!sessionId || wanted.size === 0) return;
+    const adoptedFor = this.mirroredDraftKey;
+    try {
+      const files = await this.fileUploadService.listSessionFiles(sessionId);
+      // The conversation moved on while the request was in flight; whatever
+      // this answers is about a composer that no longer exists.
+      if (this.mirroredDraftKey !== adoptedFor) return;
+      const confirmed = files.filter(file => wanted.has(file.uploadId));
+      const byId = new Map(confirmed.map(file => [file.uploadId, file]));
+      this.restoredAttachments.update(list =>
+        list.flatMap(attachment => {
+          const server = byId.get(attachment.uploadId);
+          return server ? [server] : [];
+        }),
+      );
+    } catch {
+      // Leave the cached cards alone — see the note above.
+    }
+  }
+
+  /** Grow the textarea to `text`, or collapse it to one row when empty. */
+  private sizeTextareaTo(text: string): void {
+    const textarea = this.messageInput()?.nativeElement;
+    if (!textarea) return;
+    if (!text) {
+      this.resetTextareaHeight();
+      return;
+    }
+    this.autoResize(textarea);
   }
 
   /**
@@ -764,7 +1109,7 @@ export class ChatInputComponent {
    */
   private queueChatRequest(): void {
     const content = this.userInput().trim();
-    const fileUploadIds = this.readyUploadIds();
+    const fileUploadIds = this.attachmentIds();
 
     if (!content && fileUploadIds.length === 0) {
       return;
@@ -779,6 +1124,7 @@ export class ChatInputComponent {
       id: uuidv4(),
       content,
       fileUploadIds: fileUploadIds.length > 0 ? [...fileUploadIds] : undefined,
+      attachments: fileUploadIds.length > 0 ? this.attachmentMetadata() : undefined,
       mentionAgentId: this.mentionedAgent()?.agentId,
       invokedSkillIds: this.invokedSkillIds(),
     };
@@ -798,7 +1144,7 @@ export class ChatInputComponent {
     this.closeMentionMenu();
     this.closeSkillMenu();
     this.resetTextareaHeight();
-    this.fileUploadService.clearReadyUploads();
+    this.clearAttachments();
   }
 
   /**
@@ -850,7 +1196,7 @@ export class ChatInputComponent {
 
   submitChatRequest() {
     const content = this.userInput().trim();
-    const fileUploadIds = this.readyUploadIds();
+    const fileUploadIds = this.attachmentIds();
 
     // Must have content or files to submit
     if (!content && fileUploadIds.length === 0) {
@@ -880,7 +1226,7 @@ export class ChatInputComponent {
     this.closeMentionMenu();
     this.closeSkillMenu();
     this.resetTextareaHeight();
-    this.fileUploadService.clearReadyUploads();
+    this.clearAttachments();
   }
 
   cancelChatRequest() {
@@ -916,7 +1262,19 @@ export class ChatInputComponent {
    * Handle file removal from pending uploads
    */
   onFileRemove(uploadId: string): void {
+    // A restored card has no live upload behind it, so it comes off this list
+    // instead. Removing from both is safe and saves the caller knowing which
+    // kind of card it clicked.
+    this.restoredAttachments.update(list =>
+      list.filter(attachment => attachment.uploadId !== uploadId),
+    );
     this.fileUploadService.clearPendingUpload(uploadId);
+  }
+
+  /** Release every attachment on the composer — what a send or a queue clears. */
+  private clearAttachments(): void {
+    this.restoredAttachments.set([]);
+    this.fileUploadService.clearReadyUploads();
   }
 
   /**
